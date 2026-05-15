@@ -122,6 +122,52 @@ func (s *FileService) ListPools(accountID uuid.UUID) ([]Pool, error) {
 	return out, nil
 }
 
+func (s *FileService) ValidatePoolUsage(accountID uuid.UUID, poolID *string, fileSize int64, contentType string) error {
+	if poolID == nil || strings.TrimSpace(*poolID) == "" {
+		return nil
+	}
+	pool, err := s.GetPool(*poolID)
+	if err != nil {
+		return err
+	}
+	if pool.IsHidden && pool.AccountID != accountID {
+		return fmt.Errorf("pool is hidden")
+	}
+	if !pool.PolicyConfig.PublicUsable && pool.AccountID != accountID {
+		return fmt.Errorf("pool is not public")
+	}
+	if pool.PolicyConfig.RequirePrivilege > 0 && pool.AccountID != accountID {
+		return fmt.Errorf("pool requires higher privilege")
+	}
+	if pool.PolicyConfig.MaxFileSize != nil && fileSize > *pool.PolicyConfig.MaxFileSize {
+		return fmt.Errorf("file size exceeds pool limit")
+	}
+	if len(pool.PolicyConfig.AcceptTypes) > 0 && !acceptTypeAllowed(pool.PolicyConfig.AcceptTypes, contentType) {
+		return fmt.Errorf("content type not accepted by pool")
+	}
+	return nil
+}
+
+func acceptTypeAllowed(acceptTypes []string, contentType string) bool {
+	contentType = strings.TrimSpace(strings.ToLower(contentType))
+	if contentType == "" {
+		return false
+	}
+	for _, accepted := range acceptTypes {
+		accepted = strings.TrimSpace(strings.ToLower(accepted))
+		if accepted == "" {
+			continue
+		}
+		if accepted == contentType {
+			return true
+		}
+		if strings.HasSuffix(accepted, "/*") && strings.HasPrefix(contentType, strings.TrimSuffix(accepted, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error) {
 	var files []database.CloudFile
 	if err := s.db.Preload("Object").Where("account_id = ? AND parent_id IS NULL AND indexed = true", accountID).Find(&files).Error; err != nil {

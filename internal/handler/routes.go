@@ -39,7 +39,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 
 	u := r.Group("/api/files/upload")
 	{
-		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, tasks) })
+		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks) })
 		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks) })
 		u.POST("/chunk/:taskId/:idx", func(c *gin.Context) { uploadChunk(c, cfg, tasks) })
 		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, bus) })
@@ -55,7 +55,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 
 	p := r.Group("/api/pools")
 	{
-		p.GET("", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
+		p.GET("", func(c *gin.Context) { listPools(c, files) })
 		p.DELETE("/:id/recycle", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
 	}
 
@@ -118,6 +118,21 @@ func listChildren(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, items)
 }
 
+func listPools(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	items, err := files.ListPools(uuid.MustParse(result.Account.GetId()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("X-Total", strconv.Itoa(len(items)))
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
 func listRoot(c *gin.Context, files *service.FileService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -155,7 +170,7 @@ func createFolder(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, folder)
 }
 
-func createUploadTask(c *gin.Context, cfg *config.Config, tasks *service.TaskService) {
+func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -186,6 +201,10 @@ func createUploadTask(c *gin.Context, cfg *config.Config, tasks *service.TaskSer
 	}
 	if strings.TrimSpace(req.ContentType) == "" {
 		req.ContentType = "application/octet-stream"
+	}
+	if err := files.ValidatePoolUsage(uuid.MustParse(result.Account.GetId()), req.PoolID, req.FileSize, req.ContentType); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 	chunks := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), req.Name, req.FileSize, req.PoolID, req.FileName, req.ContentType, req.ChunkSize, chunks)
@@ -330,6 +349,10 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	object, err := files.DetectAndCreateObject(mergedPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := files.ValidatePoolUsage(task.AccountID, task.PoolID, *task.FileSize, object.MimeType); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	storageKey := &object.ID
