@@ -1,14 +1,23 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"src.solsynth.dev/sosys/filesystem/internal/database"
+	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
 
 type FileService struct {
@@ -20,6 +29,10 @@ func NewFileService(db *database.DB, stor storage.Backend) *FileService {
 	return &FileService{db: db, stor: stor}
 }
 
+func (s *FileService) DB() *database.DB { return s.db }
+
+func (s *FileService) Storage() storage.Backend { return s.stor }
+
 func (s *FileService) GetFile(id string) (*database.CloudFile, error) {
 	var file database.CloudFile
 	if err := s.db.Preload("Object").First(&file, "id = ?", id).Error; err != nil {
@@ -30,7 +43,7 @@ func (s *FileService) GetFile(id string) (*database.CloudFile, error) {
 
 func (s *FileService) GetChildren(parentID string) ([]database.CloudFile, error) {
 	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("parent_id = ?", parentID).Find(&files).Error; err != nil {
+	if err := s.db.Preload("Object").Where("parent_id = ?", parentID).Where("deleted_at IS NULL").Find(&files).Error; err != nil {
 		return nil, err
 	}
 	return files, nil
@@ -53,7 +66,7 @@ func (s *FileService) CreateFolder(accountID uuid.UUID, name string, parentID *s
 }
 
 func (s *FileService) CreateFile(accountID uuid.UUID, name string, objectID string, parentID *string, appType *string) (*database.CloudFile, error) {
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, ParentID: parentID, Indexed: true, ApplicationType: appType}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, ParentID: parentID, Indexed: true, ApplicationType: appType, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
 	if err := s.db.Create(file).Error; err != nil {
 		return nil, err
 	}
@@ -70,10 +83,16 @@ func (s *FileService) MarkDerived(parentID string, kind string) error {
 		return err
 	}
 	if kind == "system.thumbnail" {
-		return s.db.Model(&database.FileObject{}).Where("id = ?", parent.ObjectID).Update("has_thumbnail", count > 0).Error
+		if parent.ObjectID == nil {
+			return nil
+		}
+		return s.db.Model(&database.FileObject{}).Where("id = ?", *parent.ObjectID).Update("has_thumbnail", count > 0).Error
 	}
 	if kind == "system.compression" {
-		return s.db.Model(&database.FileObject{}).Where("id = ?", parent.ObjectID).Update("has_compression", count > 0).Error
+		if parent.ObjectID == nil {
+			return nil
+		}
+		return s.db.Model(&database.FileObject{}).Where("id = ?", *parent.ObjectID).Update("has_compression", count > 0).Error
 	}
 	return nil
 }
@@ -114,12 +133,93 @@ func (s *FileService) TouchCompatibilityFlags(fileID string) error {
 	return nil
 }
 
+func (s *FileService) SaveChunk(tempDir, taskID string, idx int, reader io.Reader) (string, error) {
+	chunkDir := filepath.Join(tempDir, taskID)
+	if err := os.MkdirAll(chunkDir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(chunkDir, fmt.Sprintf("%d.chunk", idx))
+	out, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, reader); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *FileService) MergeChunks(taskID, chunkDir, mergedPath string, chunksCount int, progress func(int, int) error) error {
+	out, err := os.Create(mergedPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	for i := 0; i < chunksCount; i++ {
+		path := filepath.Join(chunkDir, fmt.Sprintf("%d.chunk", i))
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			_ = in.Close()
+			return err
+		}
+		_ = in.Close()
+		if progress != nil {
+			if err := progress(i+1, chunksCount); err != nil {
+				return err
+			}
+		}
+	}
+	_ = taskID
+	return nil
+}
+
+func (s *FileService) DetectAndCreateObject(path string) (*database.FileObject, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	mimeType := "application/octet-stream"
+	if len(data) > 0 {
+		mimeType = mimetype.Detect(data).String()
+	}
+	object := &database.FileObject{ID: database.NewID(), MimeType: mimeType, Hash: "", Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false, HasThumbnail: false}
+	if err := s.db.Create(object).Error; err != nil {
+		return nil, err
+	}
+	return object, nil
+}
+
+func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objectID string, poolID *string, appType *string) (*database.CloudFile, error) {
+	_ = poolID
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
+	if err := s.db.Create(file).Error; err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, name string, objectID string, appType string) (*database.CloudFile, error) {
+	pt := parentID
+	typeName := appType
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
+	if err := s.db.Create(file).Error; err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
 type TaskService struct{ db *database.DB }
 
 func NewTaskService(db *database.DB) *TaskService { return &TaskService{db: db} }
 
-func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, size int64, poolID *string, fileName string, contentType string) (*database.PersistentTask, error) {
-	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID}
+func (s *TaskService) DB() *database.DB { return s.db }
+
+func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
+	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err
 	}
@@ -134,9 +234,21 @@ func (s *TaskService) GetUploadTask(taskID string) (*database.PersistentTask, er
 	return &task, nil
 }
 
+func (s *TaskService) GetUploadTaskByTaskID(taskID string) (*database.PersistentTask, error) {
+	return s.GetUploadTask(taskID)
+}
+
 func (s *TaskService) ListTasks(accountID uuid.UUID) ([]database.PersistentTask, error) {
 	var tasks []database.PersistentTask
-	if err := s.db.Where("account_id = ?", accountID).Find(&tasks).Error; err != nil {
+	if err := s.db.Where("account_id = ?", accountID).Order("last_activity desc").Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+func (s *TaskService) ListRecentTasks(accountID uuid.UUID, limit int) ([]database.PersistentTask, error) {
+	var tasks []database.PersistentTask
+	if err := s.db.Where("account_id = ?", accountID).Order("last_activity desc").Limit(limit).Find(&tasks).Error; err != nil {
 		return nil, err
 	}
 	return tasks, nil
@@ -154,6 +266,46 @@ func (s *TaskService) Progress(taskID string, progress float64) error {
 	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"progress": progress, "updated_at": time.Now(), "last_activity": time.Now()}).Error
 }
 
+func (s *TaskService) UpdateUploadedChunk(taskID string, idx int) error {
+	var task database.PersistentTask
+	if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+		return err
+	}
+	var chunks []int
+	if len(task.UploadedChunks) > 0 {
+		_ = json.Unmarshal(task.UploadedChunks, &chunks)
+	}
+	for _, existing := range chunks {
+		if existing == idx {
+			return nil
+		}
+	}
+	chunks = append(chunks, idx)
+	raw, _ := json.Marshal(chunks)
+	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"uploaded_chunks": datatypes.JSON(raw), "chunks_uploaded": len(chunks), "updated_at": time.Now(), "last_activity": time.Now()}).Error
+}
+
+func (s *TaskService) IsChunkUploaded(taskID string, idx int) (bool, error) {
+	var task database.PersistentTask
+	if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+		return false, err
+	}
+	var chunks []int
+	if len(task.UploadedChunks) > 0 {
+		_ = json.Unmarshal(task.UploadedChunks, &chunks)
+	}
+	for _, existing := range chunks {
+		if existing == idx {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *TaskService) ResetPending(taskID string) error {
+	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"status": "pending", "progress": 0.0, "updated_at": time.Now(), "last_activity": time.Now()}).Error
+}
+
 func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {
 	tx := s.db.Where("account_id = ? and status in ?", accountID, []string{"completed", "failed", "cancelled", "expired"}).Delete(&database.PersistentTask{})
 	return tx.RowsAffected, tx.Error
@@ -166,4 +318,72 @@ func Check(err error) error {
 		return fmt.Errorf("%w", err)
 	}
 	return nil
+}
+
+func DetectMimeType(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "application/octet-stream", nil
+	}
+	return mimetype.Detect(data).String(), nil
+}
+
+func CopyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
+func CopyStreamToChunk(tempDir, taskID string, idx int, reader io.Reader) (string, error) {
+	chunkDir := filepath.Join(tempDir, taskID)
+	if err := os.MkdirAll(chunkDir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(chunkDir, fmt.Sprintf("%d.chunk", idx))
+	out, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, reader); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func IsImageMime(mimeType string) bool { return strings.HasPrefix(mimeType, "image/") }
+func IsVideoMime(mimeType string) bool { return strings.HasPrefix(mimeType, "video/") }
+
+func DerivativeKind(mimeType, suffix string) string {
+	if suffix == "thumbnail" {
+		return "system.thumbnail"
+	}
+	if strings.HasPrefix(suffix, "compressed") {
+		return "system.compression"
+	}
+	return "system.generated"
+}
+
+func PublishFileUploaded(ctx context.Context, bus *eventbus.Bus, evt eventbus.FileUploadedEvent) error {
+	if bus == nil || bus.Conn == nil {
+		return nil
+	}
+	_, err := bus.Conn.JetStream()
+	_ = ctx
+	return err
 }

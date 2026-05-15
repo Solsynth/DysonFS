@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 
-	"src.solsynth.dev/sosys/filesystem/internal/appctx"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/handler"
@@ -20,20 +19,12 @@ func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.Ta
 	r.Use(gin.Recovery())
 	r.Use(cors.New(cors.Config{AllowAllOrigins: true, AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Origin", "Content-Type", "Authorization", "X-Forwarded-Authorization", "X-Original-Authorization"}, ExposeHeaders: []string{"X-Total"}}))
 
-	var authMiddleware gin.HandlerFunc
 	if cfg.Auth.Target != "" {
 		authenticator, err := dyauth.NewGrpcTokenAuthenticator(dyauth.GrpcAuthDialConfig{Target: cfg.Auth.Target, UseTLS: cfg.Auth.UseTLS})
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to init authenticator")
 		}
-		authMiddleware = dyauth.AuthMiddleware(authenticator)
-		r.Use(func(c *gin.Context) {
-			c.Set(appctx.KeyFileService, files)
-			c.Set(appctx.KeyTaskService, tasks)
-			c.Set(appctx.KeyEventBus, bus)
-			c.Next()
-		})
-		r.Use(authMiddleware)
+		r.Use(dyauth.OptionalAuthMiddleware(authenticator))
 	}
 
 	handler.RegisterRoutes(r, cfg, files, tasks, bus)

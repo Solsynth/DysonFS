@@ -85,6 +85,10 @@ type PersistentTask struct {
 	Status          string         `json:"status"`
 	AccountID       uuid.UUID      `json:"account_id"`
 	Progress        float64        `json:"progress"`
+	ChunkSize       int64          `json:"chunk_size"`
+	ChunksCount     int            `json:"chunks_count"`
+	ChunksUploaded  int            `json:"chunks_uploaded"`
+	UploadedChunks  datatypes.JSON `gorm:"type:jsonb" json:"uploaded_chunks"`
 	Parameters      datatypes.JSON `gorm:"type:jsonb" json:"parameters"`
 	Results         datatypes.JSON `gorm:"type:jsonb" json:"results"`
 	ErrorMessage    *string        `json:"error_message"`
