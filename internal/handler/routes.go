@@ -32,9 +32,11 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
 		f.GET("/me", func(c *gin.Context) { listRoot(c, files) })
 		f.POST("/batches/delete", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
-		f.DELETE("/:id", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+		f.DELETE("/:id", func(c *gin.Context) { deleteFile(c, files) })
 		f.DELETE("/me/recycle", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
 		f.DELETE("/recycle", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
+		f.GET("/:id/permissions", func(c *gin.Context) { getFilePermissions(c, files) })
+		f.PUT("/:id/permissions", func(c *gin.Context) { updateFilePermissions(c, files) })
 	}
 
 	u := r.Group("/api/files/upload")
@@ -57,6 +59,8 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	{
 		p.GET("", func(c *gin.Context) { listPools(c, files) })
 		p.DELETE("/:id/recycle", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
+		p.GET("/:id/permissions", func(c *gin.Context) { getPoolPermissions(c, files) })
+		p.PUT("/:id/permissions", func(c *gin.Context) { updatePoolPermissions(c, files) })
 	}
 
 	b := r.Group("/api/billing")
@@ -78,6 +82,11 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+	result, _, ok := auth.GetAuth(c)
+	if ok && !files.CanAccessFile(result.Account, result.Session, file, "read") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
 	c.JSON(http.StatusOK, file)
 }
 
@@ -85,6 +94,11 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 	file, err := files.GetFile(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	result, _, ok := auth.GetAuth(c)
+	if ok && !files.CanAccessFile(result.Account, result.Session, file, "read") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
 	if file.StorageKey == nil && file.Object != nil && file.Object.StorageKey != nil {
@@ -114,23 +128,137 @@ func listChildren(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+	result, _, ok := auth.GetAuth(c)
+	if ok {
+		filtered := make([]database.CloudFile, 0, len(items))
+		for _, item := range items {
+			if files.CanAccessFile(result.Account, result.Session, &item, "read") {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
 	c.Header("X-Total", "0")
 	c.JSON(http.StatusOK, items)
 }
 
 func listPools(c *gin.Context, files *service.FileService) {
 	result, _, ok := auth.GetAuth(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
+	var accountID uuid.UUID
+	if ok {
+		accountID = uuid.MustParse(result.Account.GetId())
 	}
-	items, err := files.ListPools(uuid.MustParse(result.Account.GetId()))
+	items, err := files.ListPools(accountID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.Header("X-Total", strconv.Itoa(len(items)))
 	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func getPoolPermissions(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	pool, err := files.GetPool(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !files.CanAccessPool(result.Account, pool, "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	perms, err := files.ListPoolPermissions(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": perms})
+}
+
+func updatePoolPermissions(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	pool, err := files.GetPool(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !files.CanAccessPool(result.Account, pool, "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	var req struct {
+		Items []database.PoolPermission `json:"items"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := files.UpdatePoolPermissions(c.Param("id"), req.Items); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func getFilePermissions(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !files.CanAccessFile(result.Account, result.Session, file, "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	perms, err := files.ListFilePermissions(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": perms})
+}
+
+func updateFilePermissions(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !files.CanAccessFile(result.Account, result.Session, file, "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	var req struct {
+		Items []database.FilePermission `json:"items"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := files.UpdateFilePermissions(c.Param("id"), req.Items); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func listRoot(c *gin.Context, files *service.FileService) {
@@ -170,6 +298,28 @@ func createFolder(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, folder)
 }
 
+func deleteFile(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !files.CanAccessFile(result.Account, result.Session, file, "delete") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if err := files.DeleteFile(file.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -202,7 +352,8 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	if strings.TrimSpace(req.ContentType) == "" {
 		req.ContentType = "application/octet-stream"
 	}
-	if err := files.ValidatePoolUsage(uuid.MustParse(result.Account.GetId()), req.PoolID, req.FileSize, req.ContentType); err != nil {
+	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
+	if err := files.ValidatePoolUsage(ctx, req.PoolID, req.FileSize, req.ContentType); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -351,10 +502,8 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := files.ValidatePoolUsage(task.AccountID, task.PoolID, *task.FileSize, object.MimeType); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
+	_ = ctx
 	storageKey := &object.ID
 	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), object.ID, task.PoolID, task.ApplicationType, storageKey)
 	if err != nil {

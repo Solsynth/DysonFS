@@ -14,10 +14,12 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
+	gen "src.solsynth.dev/sosys/go/proto"
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 type PoolConfig struct {
@@ -53,6 +55,18 @@ type Pool struct {
 	BillingConfig PoolBillingConfig  `json:"billing_config"`
 	PolicyConfig  PoolConfig        `json:"policy_config"`
 	IsHidden      bool              `json:"is_hidden"`
+}
+
+type SubjectPermission struct {
+	SubjectType string `json:"subject_type"`
+	SubjectID   string `json:"subject_id"`
+	Permission  string `json:"permission"`
+}
+
+type AccessContext struct {
+	Account  *gen.DyAccount
+	Session  *gen.DyAuthSession
+	IsPublic bool
 }
 
 type FileService struct {
@@ -122,7 +136,149 @@ func (s *FileService) ListPools(accountID uuid.UUID) ([]Pool, error) {
 	return out, nil
 }
 
-func (s *FileService) ValidatePoolUsage(accountID uuid.UUID, poolID *string, fileSize int64, contentType string) error {
+func (s *FileService) ListPoolPermissions(poolID string) ([]database.PoolPermission, error) {
+	var perms []database.PoolPermission
+	if err := s.db.Where("pool_id = ?", poolID).Find(&perms).Error; err != nil {
+		return nil, err
+	}
+	return perms, nil
+}
+
+func (s *FileService) ListFilePermissions(fileID string) ([]database.FilePermission, error) {
+	var perms []database.FilePermission
+	if err := s.db.Where("file_id = ?", fileID).Find(&perms).Error; err != nil {
+		return nil, err
+	}
+	return perms, nil
+}
+
+func (s *FileService) UpdatePoolPermissions(poolID string, perms []database.PoolPermission) error {
+	return s.db.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("pool_id = ?", poolID).Delete(&database.PoolPermission{}).Error; err != nil {
+			return err
+		}
+		if len(perms) == 0 {
+			return nil
+		}
+		return tx.Create(&perms).Error
+	})
+}
+
+func (s *FileService) UpdateFilePermissions(fileID string, perms []database.FilePermission) error {
+	return s.db.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("file_id = ?", fileID).Delete(&database.FilePermission{}).Error; err != nil {
+			return err
+		}
+		if len(perms) == 0 {
+			return nil
+		}
+		return tx.Create(&perms).Error
+	})
+}
+
+func (s *FileService) IsPoolPublic(poolID string) (bool, error) {
+	pool, err := s.GetPool(poolID)
+	if err != nil {
+		return false, err
+	}
+	return pool.PolicyConfig.PublicUsable, nil
+}
+
+func (s *FileService) CanAccessPool(account *gen.DyAccount, pool *Pool, permission string) bool {
+	if pool == nil {
+		return false
+	}
+	if account != nil && account.GetIsSuperuser() {
+		return true
+	}
+	if account != nil && pool.AccountID.String() == account.GetId() {
+		return true
+	}
+	if pool.PolicyConfig.PublicUsable {
+		return true
+	}
+	return false
+}
+
+func (s *FileService) CanUsePool(ctx AccessContext, pool *Pool, permission string) bool {
+	if pool == nil {
+		return false
+	}
+	if ctx.Account != nil && ctx.Account.GetIsSuperuser() {
+		return true
+	}
+	if ctx.Account != nil && pool.AccountID.String() == ctx.Account.GetId() {
+		return true
+	}
+	if pool.PolicyConfig.PublicUsable {
+		return true
+	}
+	var perms []database.PoolPermission
+	if err := s.db.Where("pool_id = ? AND permission = ?", pool.ID, permission).Find(&perms).Error; err != nil {
+		return false
+	}
+	for _, perm := range perms {
+		switch perm.SubjectType {
+		case "account":
+			if ctx.Account != nil && perm.SubjectID == ctx.Account.GetId() {
+				return true
+			}
+		case "scope":
+			if ctx.Session != nil {
+				for _, scope := range ctx.Session.GetScopes() {
+					if scope == perm.SubjectID {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (s *FileService) IsResourcePublic(perms []database.FilePermission) bool {
+	return len(perms) == 0
+}
+
+func (s *FileService) CanAccessFile(account *gen.DyAccount, session *gen.DyAuthSession, file *database.CloudFile, permission string) bool {
+	if file == nil {
+		return false
+	}
+	if account != nil && account.GetIsSuperuser() {
+		return true
+	}
+	if account != nil && file.AccountID.String() == account.GetId() {
+		return true
+	}
+	var perms []database.FilePermission
+	if err := s.db.Where("file_id = ? AND permission = ?", file.ID, permission).Find(&perms).Error; err != nil {
+		return false
+	}
+	if len(perms) == 0 {
+		return true
+	}
+	for _, perm := range perms {
+		switch perm.SubjectType {
+		case "account":
+			if account != nil && perm.SubjectID == account.GetId() {
+				return true
+			}
+		case "scope":
+			if session != nil {
+				for _, scope := range session.GetScopes() {
+					if scope == perm.SubjectID {
+						return true
+					}
+				}
+			}
+		case "public":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *FileService) ValidatePoolUsage(ctx AccessContext, poolID *string, fileSize int64, contentType string) error {
 	if poolID == nil || strings.TrimSpace(*poolID) == "" {
 		return nil
 	}
@@ -130,14 +286,8 @@ func (s *FileService) ValidatePoolUsage(accountID uuid.UUID, poolID *string, fil
 	if err != nil {
 		return err
 	}
-	if pool.IsHidden && pool.AccountID != accountID {
-		return fmt.Errorf("pool is hidden")
-	}
-	if !pool.PolicyConfig.PublicUsable && pool.AccountID != accountID {
-		return fmt.Errorf("pool is not public")
-	}
-	if pool.PolicyConfig.RequirePrivilege > 0 && pool.AccountID != accountID {
-		return fmt.Errorf("pool requires higher privilege")
+	if !s.CanUsePool(ctx, pool, "write") {
+		return fmt.Errorf("pool access denied")
 	}
 	if pool.PolicyConfig.MaxFileSize != nil && fileSize > *pool.PolicyConfig.MaxFileSize {
 		return fmt.Errorf("file size exceeds pool limit")

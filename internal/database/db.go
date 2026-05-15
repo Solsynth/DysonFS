@@ -31,6 +31,6 @@ func Open(cfg *config.Config) (*DB, error) {
 
 func (d *DB) AutoMigrate() error {
 	return d.DB.AutoMigrate(
-		&FilePool{}, &FileObject{}, &CloudFile{}, &FileReplica{}, &FilePermission{}, &PersistentTask{}, &QuotaRecord{},
+		&FilePool{}, &FileObject{}, &CloudFile{}, &FileReplica{}, &FilePermission{}, &PoolPermission{}, &PersistentTask{}, &QuotaRecord{},
 	)
 }

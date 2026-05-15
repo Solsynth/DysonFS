@@ -79,6 +79,16 @@ type FilePermission struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type PoolPermission struct {
+	ID          string    `gorm:"primaryKey;size:26" json:"id"`
+	PoolID      string    `gorm:"size:26;index" json:"pool_id"`
+	SubjectType string    `json:"subject_type"`
+	SubjectID   string    `json:"subject_id"`
+	Permission  string    `json:"permission"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type PersistentTask struct {
 	ID              string         `gorm:"primaryKey;size:26" json:"id"`
 	TaskID          string         `gorm:"size:26;index" json:"task_id"`
