@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	blurhash "github.com/bbrks/go-blurhash"
 	"github.com/davidbyttow/govips/v2/vips"
@@ -26,10 +27,11 @@ type Worker struct {
 	files *service.FileService
 	stor  storage.Backend
 	db    *database.DB
+	tempDir string
 }
 
-func New(bus *eventbus.Bus, files *service.FileService, stor storage.Backend, db *database.DB) *Worker {
-	return &Worker{bus: bus, files: files, stor: stor, db: db}
+func New(bus *eventbus.Bus, files *service.FileService, stor storage.Backend, db *database.DB, tempDir string) *Worker {
+	return &Worker{bus: bus, files: files, stor: stor, db: db, tempDir: tempDir}
 }
 
 func (w *Worker) Start(ctx context.Context) error {
@@ -40,9 +42,40 @@ func (w *Worker) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	go func() { <-ctx.Done() }()
+	go w.runMaintenance(ctx)
 	logging.Log.Info().Msg("worker loop started")
 	return nil
+}
+
+func (w *Worker) runMaintenance(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.cleanupTempArtifacts()
+		}
+	}
+}
+
+func (w *Worker) cleanupTempArtifacts() {
+	if w.tempDir == "" {
+		return
+	}
+	entries, err := os.ReadDir(w.tempDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-30 * time.Minute)
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(w.tempDir, entry.Name()))
+	}
 }
 
 func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploadedEvent) error {

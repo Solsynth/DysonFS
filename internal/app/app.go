@@ -132,7 +132,7 @@ func (a *App) startMaster(ctx context.Context) error {
 }
 
 func (a *App) startWorker(context.Context) error {
-	w := worker.New(a.bus, a.files, a.stor, a.db)
+	w := worker.New(a.bus, a.files, a.stor, a.db, a.cfg.Storage.TempDir)
 	go func() { _ = w.Start(context.Background()) }()
 	logging.Log.Info().Str("mode", a.mode).Msg("worker started")
 	return nil

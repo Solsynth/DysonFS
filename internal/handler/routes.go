@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
@@ -23,6 +24,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	f := r.Group("/api/files")
 	{
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
+		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
 		f.GET("/:id/e2ee", func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"code": "file.e2ee_not_found"}) })
 		f.GET("/root/children", func(c *gin.Context) { listRoot(c, files) })
@@ -77,6 +79,33 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 		return
 	}
 	c.JSON(http.StatusOK, file)
+}
+
+func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if file.StorageKey == nil && file.Object != nil && file.Object.StorageKey != nil {
+		file.StorageKey = file.Object.StorageKey
+	}
+	if file.StorageKey == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file storage key missing"})
+		return
+	}
+	download := c.Query("download") == "1" || strings.EqualFold(c.Query("download"), "true")
+	name := file.Name
+	if file.Object != nil && file.Object.MimeType != "" {
+		_ = file.Object.MimeType
+	}
+	url, err := files.Storage().SignedURL(c.Request.Context(), *file.StorageKey, 15*time.Minute, name, download)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	_ = cfg
+	c.Redirect(http.StatusTemporaryRedirect, url)
 }
 
 func listChildren(c *gin.Context, files *service.FileService) {

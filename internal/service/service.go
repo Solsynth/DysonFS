@@ -20,6 +20,41 @@ import (
 	"gorm.io/datatypes"
 )
 
+type PoolConfig struct {
+	RequirePrivilege int      `json:"require_privilege"`
+	PublicUsable     bool     `json:"public_usable"`
+	AllowEncryption  bool     `json:"allow_encryption"`
+	AcceptTypes      []string `json:"accept_types"`
+	MaxFileSize      *int64   `json:"max_file_size"`
+	NoOptimization   bool     `json:"no_optimization"`
+}
+
+type PoolBillingConfig struct {
+	CostMultiplier *float64 `json:"cost_multiplier"`
+}
+
+type PoolStorageConfig struct {
+	EnableSigned bool   `json:"enable_signed"`
+	EnableSsl    bool   `json:"enable_ssl"`
+	Endpoint     string `json:"endpoint"`
+	AccessEndpoint *string `json:"access_endpoint"`
+	Bucket       string `json:"bucket"`
+	ImageProxy   *string `json:"image_proxy"`
+	AccessProxy  *string `json:"access_proxy"`
+	SecretId     string `json:"secret_id"`
+	SecretKey    string `json:"secret_key"`
+}
+
+type Pool struct {
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	AccountID     uuid.UUID         `json:"account_id"`
+	StorageConfig PoolStorageConfig  `json:"storage_config"`
+	BillingConfig PoolBillingConfig  `json:"billing_config"`
+	PolicyConfig  PoolConfig        `json:"policy_config"`
+	IsHidden      bool              `json:"is_hidden"`
+}
+
 type FileService struct {
 	db   *database.DB
 	stor storage.Backend
@@ -47,6 +82,44 @@ func (s *FileService) GetChildren(parentID string) ([]database.CloudFile, error)
 		return nil, err
 	}
 	return files, nil
+}
+
+func (s *FileService) GetPool(id string) (*Pool, error) {
+	var pool database.FilePool
+	if err := s.db.First(&pool, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	var policy PoolConfig
+	var billing PoolBillingConfig
+	var storage PoolStorageConfig
+	_ = json.Unmarshal(pool.PolicyConfig, &policy)
+	_ = json.Unmarshal(pool.BillingConfig, &billing)
+	_ = json.Unmarshal(pool.StorageConfig, &storage)
+	return &Pool{ID: pool.ID, Name: pool.Name, AccountID: pool.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: pool.IsHidden}, nil
+}
+
+func (s *FileService) ListPools(accountID uuid.UUID) ([]Pool, error) {
+	var pools []database.FilePool
+	if err := s.db.Find(&pools).Error; err != nil {
+		return nil, err
+	}
+	out := make([]Pool, 0, len(pools))
+	for _, p := range pools {
+		var policy PoolConfig
+		var billing PoolBillingConfig
+		var storage PoolStorageConfig
+		_ = json.Unmarshal(p.PolicyConfig, &policy)
+		_ = json.Unmarshal(p.BillingConfig, &billing)
+		_ = json.Unmarshal(p.StorageConfig, &storage)
+		if !policy.PublicUsable && p.AccountID != accountID {
+			continue
+		}
+		if p.IsHidden && p.AccountID != accountID {
+			continue
+		}
+		out = append(out, Pool{ID: p.ID, Name: p.Name, AccountID: p.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: p.IsHidden})
+	}
+	return out, nil
 }
 
 func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error) {
