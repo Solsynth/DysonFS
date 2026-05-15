@@ -16,6 +16,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/server"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
+	"src.solsynth.dev/sosys/filesystem/internal/worker"
 
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
@@ -60,7 +61,11 @@ func New(cfg *config.Config, mode string) (*App, error) {
 
 	var stor storage.Backend = storage.NewLocalBackend(cfg.Storage.LocalDir)
 	if strings.EqualFold(cfg.Files.PreferredStorage, "s3") {
-		stor = storage.NewS3Backend()
+		s3Backend, err := storage.NewS3Backend(cfg.S3.Endpoint, cfg.S3.AccessKey, cfg.S3.SecretKey, cfg.S3.Bucket, cfg.S3.Secure)
+		if err != nil {
+			return nil, err
+		}
+		stor = s3Backend
 	}
 
 	var natsConn *nats.Conn
@@ -127,7 +132,8 @@ func (a *App) startMaster(ctx context.Context) error {
 }
 
 func (a *App) startWorker(context.Context) error {
-	go func() { _ = a.runWorker() }()
+	w := worker.New(a.bus, a.files, a.stor, a.db)
+	go func() { _ = w.Start(context.Background()) }()
 	logging.Log.Info().Str("mode", a.mode).Msg("worker started")
 	return nil
 }

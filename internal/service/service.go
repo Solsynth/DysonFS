@@ -88,7 +88,7 @@ func (s *FileService) MarkDerived(parentID string, kind string) error {
 		}
 		return s.db.Model(&database.FileObject{}).Where("id = ?", *parent.ObjectID).Update("has_thumbnail", count > 0).Error
 	}
-	if kind == "system.compression" {
+	if strings.HasPrefix(kind, "system.compression") {
 		if parent.ObjectID == nil {
 			return nil
 		}
@@ -124,7 +124,7 @@ func (s *FileService) TouchCompatibilityFlags(fileID string) error {
 	if err := s.db.Model(&database.CloudFile{}).Where("parent_id = ? and application_type = ?", fileID, "system.thumbnail").Count(&thumb).Error; err != nil {
 		return err
 	}
-	if err := s.db.Model(&database.CloudFile{}).Where("parent_id = ? and application_type = ?", fileID, "system.compression").Count(&comp).Error; err != nil {
+	if err := s.db.Model(&database.CloudFile{}).Where("parent_id = ? and application_type LIKE ?", fileID, "system.compression%").Count(&comp).Error; err != nil {
 		return err
 	}
 	if err := s.db.Model(&database.FileObject{}).Where("id = ?", *file.ObjectID).Updates(map[string]any{"has_thumbnail": thumb > 0, "has_compression": comp > 0}).Error; err != nil {
@@ -193,19 +193,19 @@ func (s *FileService) DetectAndCreateObject(path string) (*database.FileObject, 
 	return object, nil
 }
 
-func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objectID string, poolID *string, appType *string) (*database.CloudFile, error) {
+func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
 	_ = poolID
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageKey: storageKey, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
 	if err := s.db.Create(file).Error; err != nil {
 		return nil, err
 	}
 	return file, nil
 }
 
-func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, name string, objectID string, appType string) (*database.CloudFile, error) {
+func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, name string, objectID string, appType string, storageKey *string) (*database.CloudFile, error) {
 	pt := parentID
 	typeName := appType
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, StorageKey: storageKey, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
 	if err := s.db.Create(file).Error; err != nil {
 		return nil, err
 	}
@@ -304,6 +304,10 @@ func (s *TaskService) IsChunkUploaded(taskID string, idx int) (bool, error) {
 
 func (s *TaskService) ResetPending(taskID string) error {
 	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"status": "pending", "progress": 0.0, "updated_at": time.Now(), "last_activity": time.Now()}).Error
+}
+
+func (s *TaskService) MarkCompleted(taskID string) error {
+	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"status": "completed", "progress": 1.0, "updated_at": time.Now(), "last_activity": time.Now()}).Error
 }
 
 func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {

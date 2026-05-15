@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
@@ -143,8 +144,19 @@ func createUploadTask(c *gin.Context, cfg *config.Config, tasks *service.TaskSer
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if req.FileSize <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_size must be greater than zero"})
+		return
+	}
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
 	if req.ChunkSize <= 0 {
 		req.ChunkSize = 5 * 1024 * 1024
+	}
+	if strings.TrimSpace(req.ContentType) == "" {
+		req.ContentType = "application/octet-stream"
 	}
 	chunks := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), req.Name, req.FileSize, req.PoolID, req.FileName, req.ContentType, req.ChunkSize, chunks)
@@ -160,6 +172,10 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if cfg.Files.PreferredStorage == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "storage backend is not configured"})
 		return
 	}
 	fileHeader, err := c.FormFile("file")
@@ -196,7 +212,8 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, object.ID, nil, nil)
+	storageKey := &object.ID
+	createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, object.ID, nil, nil, storageKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -226,6 +243,10 @@ func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService)
 	taskID := c.Param("taskId")
 	idx, err := strconv.Atoi(c.Param("idx"))
 	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk index"})
+		return
+	}
+	if idx < 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk index"})
 		return
 	}
@@ -267,6 +288,10 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
+	if task.ChunksCount <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task has no chunks"})
+		return
+	}
 	chunkDir := filepath.Join(cfg.Storage.TempDir, taskID)
 	mergedPath := filepath.Join(cfg.Storage.TempDir, taskID+".merged")
 	if err := files.MergeChunks(taskID, chunkDir, mergedPath, task.ChunksCount, nil); err != nil {
@@ -278,7 +303,8 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), object.ID, task.PoolID, task.ApplicationType)
+	storageKey := &object.ID
+	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), object.ID, task.PoolID, task.ApplicationType, storageKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -298,7 +324,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	_ = tasks.ResetPending(task.TaskID)
+	_ = tasks.MarkCompleted(task.TaskID)
 	c.JSON(http.StatusOK, created)
 }
 
