@@ -86,22 +86,34 @@ func (m *Migrator) Run(ctx context.Context) (Summary, error) {
 	); err != nil {
 		return summary, err
 	}
-	if err := m.migratePools(&summary); err != nil {
+	if m.shouldSkip("pools", &database.FilePool{}) {
+		fmt.Println("pools: already migrated, skipping")
+	} else if err := m.migratePools(&summary); err != nil {
 		return summary, err
 	}
-	if err := m.migrateQuotaRecords(&summary); err != nil {
+	if m.shouldSkip("quota_records", &database.QuotaRecord{}) {
+		fmt.Println("quota_records: already migrated, skipping")
+	} else if err := m.migrateQuotaRecords(&summary); err != nil {
 		return summary, err
 	}
-	if err := m.migrateFileObjects(&summary); err != nil {
+	if m.shouldSkip("file_objects", &database.FileObject{}) {
+		fmt.Println("file_objects: already migrated, skipping")
+	} else if err := m.migrateFileObjects(&summary); err != nil {
 		return summary, err
 	}
-	if err := m.migrateFiles(&summary); err != nil {
+	if m.shouldSkip("files", &database.CloudFile{}) {
+		fmt.Println("files: already migrated, skipping")
+	} else if err := m.migrateFiles(&summary); err != nil {
 		return summary, err
 	}
-	if err := m.migrateFilePermissions(&summary); err != nil {
+	if m.shouldSkip("file_permissions", &database.FilePermission{}) {
+		fmt.Println("file_permissions: already migrated, skipping")
+	} else if err := m.migrateFilePermissions(&summary); err != nil {
 		return summary, err
 	}
-	if err := m.migrateFileReplicas(&summary); err != nil {
+	if m.shouldSkip("file_replicas", &database.FileReplica{}) {
+		fmt.Println("file_replicas: already migrated, skipping")
+	} else if err := m.migrateFileReplicas(&summary); err != nil {
 		return summary, err
 	}
 	if !m.op.SkipDerived {
@@ -110,6 +122,13 @@ func (m *Migrator) Run(ctx context.Context) (Summary, error) {
 		}
 	}
 	return summary, nil
+}
+
+func (m *Migrator) shouldSkip(srcTable string, dstModel any) bool {
+	var srcCount, dstCount int64
+	m.src.Table(srcTable).Count(&srcCount)
+	m.dst.Model(dstModel).Count(&dstCount)
+	return srcCount > 0 && dstCount >= srcCount
 }
 
 type legacyPool struct {
@@ -293,13 +312,20 @@ func (m *Migrator) migrateFiles(summary *Summary) error {
 	if err := m.src.Order("created_at asc").Find(&rows).Error; err != nil {
 		return err
 	}
+
+	type parentUpdate struct {
+		ID       string
+		ParentID *string
+	}
+	var parentUpdates []parentUpdate
+
 	for _, row := range rows {
 		var desc *string
 		if row.Description != nil {
 			v := strings.TrimSpace(*row.Description)
 			desc = &v
 		}
-		file := database.CloudFile{ID: row.ID, Name: row.Name, Description: desc, AccountID: parseUUID(row.AccountID), PoolID: nil, ObjectID: row.ObjectID, ParentID: row.ParentID, Indexed: row.Indexed, IsFolder: row.IsFolder, IsMarkedRecycle: row.IsMarkedRecycle, ExpiredAt: row.ExpiredAt, UploadedAt: row.UploadedAt, StorageID: row.StorageID, StorageURL: row.StorageURL, StorageKey: row.StorageID, FileMeta: row.FileMeta, UserMeta: row.UserMeta, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+		file := database.CloudFile{ID: row.ID, Name: row.Name, Description: desc, AccountID: parseUUID(row.AccountID), PoolID: nil, ObjectID: row.ObjectID, ParentID: nil, Indexed: row.Indexed, IsFolder: row.IsFolder, IsMarkedRecycle: row.IsMarkedRecycle, ExpiredAt: row.ExpiredAt, UploadedAt: row.UploadedAt, StorageID: row.StorageID, StorageURL: row.StorageURL, StorageKey: row.StorageID, FileMeta: row.FileMeta, UserMeta: row.UserMeta, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 		if row.DeletedAt != nil {
 			file.DeletedAt = gorm.DeletedAt{Time: *row.DeletedAt, Valid: true}
 		}
@@ -315,7 +341,21 @@ func (m *Migrator) migrateFiles(summary *Summary) error {
 			return err
 		}
 		summary.Files++
+		if row.ParentID != nil {
+			parentUpdates = append(parentUpdates, parentUpdate{ID: row.ID, ParentID: row.ParentID})
+		}
 	}
+
+	for _, u := range parentUpdates {
+		if err := m.dst.Model(&database.CloudFile{}).Where("id = ?", u.ID).Update("parent_id", u.ParentID).Error; err != nil {
+			if m.op.ContinueOnError {
+				summary.Failed++
+				continue
+			}
+			return err
+		}
+	}
+
 	return nil
 }
 
