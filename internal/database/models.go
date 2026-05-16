@@ -27,7 +27,7 @@ type FileObject struct {
 	Size           int64          `json:"size"`
 	MimeType       string         `json:"mime_type"`
 	Hash           string         `json:"hash"`
-	StorageKey     *string        `json:"storage_key"`
+	StorageKey     *string        `gorm:"size:36" json:"storage_key"`
 	Meta           datatypes.JSON `gorm:"type:jsonb" json:"meta"`
 	HasCompression bool           `json:"has_compression"`
 	HasThumbnail   bool           `json:"has_thumbnail"`
@@ -49,9 +49,9 @@ type CloudFile struct {
 	IsMarkedRecycle bool           `json:"is_marked_recycle"`
 	ExpiredAt       *time.Time     `json:"expired_at"`
 	UploadedAt      *time.Time     `json:"uploaded_at"`
-	StorageID       *string        `json:"storage_id"`
-	StorageURL      *string        `json:"storage_url"`
-	StorageKey      *string        `json:"storage_key"`
+	StorageID       *string        `gorm:"size:36" json:"storage_id"`
+	StorageURL      *string        `gorm:"size:255" json:"storage_url"`
+	StorageKey      *string        `gorm:"size:36" json:"storage_key"`
 	FileMeta        datatypes.JSON `gorm:"type:jsonb" json:"file_meta"`
 	UserMeta        datatypes.JSON `gorm:"type:jsonb" json:"user_meta"`
 	Usage           *string        `json:"usage"`
@@ -67,7 +67,7 @@ type FileReplica struct {
 	ID        string         `gorm:"primaryKey;size:36" json:"id"`
 	ObjectID  string         `gorm:"size:36;index" json:"object_id"`
 	PoolID    *string        `gorm:"size:36" json:"pool_id"`
-	StorageID *string        `json:"storage_id"`
+	StorageID *string        `gorm:"size:36" json:"storage_id"`
 	Status    string         `json:"status"`
 	IsPrimary bool           `json:"is_primary"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
@@ -79,7 +79,7 @@ type FilePermission struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
 	FileID      string         `gorm:"size:36;index" json:"file_id"`
 	SubjectType string         `json:"subject_type"`
-	SubjectID   string         `json:"subject_id"`
+	SubjectID   string         `gorm:"size:36" json:"subject_id"`
 	Permission  string         `json:"permission"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	CreatedAt   time.Time      `json:"created_at"`
@@ -90,7 +90,7 @@ type PoolPermission struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
 	PoolID      string         `gorm:"size:36;index" json:"pool_id"`
 	SubjectType string         `json:"subject_type"`
-	SubjectID   string         `json:"subject_id"`
+	SubjectID   string         `gorm:"size:36" json:"subject_id"`
 	Permission  string         `json:"permission"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	CreatedAt   time.Time      `json:"created_at"`
@@ -121,7 +121,7 @@ type PersistentTask struct {
 	PoolID          *string        `gorm:"size:36" json:"pool_id"`
 	ParentID        *string        `gorm:"size:36" json:"parent_id"`
 	ApplicationType *string        `json:"application_type"`
-	StorageKey      *string        `json:"storage_key"`
+	StorageKey      *string        `gorm:"size:36" json:"storage_key"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
