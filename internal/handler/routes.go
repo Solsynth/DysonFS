@@ -33,7 +33,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
 		f.GET("/:id/e2ee", func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"code": "file.e2ee_not_found"}) })
 		f.GET("/root/children", func(c *gin.Context) { listRoot(c, files) })
-		f.GET("/:parentId/children", func(c *gin.Context) { listChildren(c, files) })
+		f.GET("/children/:id", func(c *gin.Context) { listChildren(c, files) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
 		f.GET("/me", func(c *gin.Context) { listRoot(c, files) })
 		f.POST("/batches/delete", func(c *gin.Context) { batchRecycleFiles(c, files, bus) })
@@ -143,7 +143,7 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 }
 
 func listChildren(c *gin.Context, files *service.FileService) {
-	parent, err := files.GetFile(c.Param("parentId"))
+	parent, err := files.GetFile(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -153,7 +153,7 @@ func listChildren(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
-	items, err := files.GetChildren(c.Param("parentId"))
+	items, err := files.GetChildren(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
