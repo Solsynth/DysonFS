@@ -2,7 +2,6 @@ package migratelegacy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -448,66 +447,37 @@ func (m *Migrator) migrateFileReplicas(summary *Summary) error {
 }
 
 func (m *Migrator) migrateDerived(summary *Summary) error {
-	var files []database.CloudFile
-	if err := m.dst.Preload("Object").Where("object_id IS NOT NULL").Find(&files).Error; err != nil {
-		return err
+	updates := []struct {
+		appType string
+		suffix  string
+	}{
+		{appType: "system.thumbnail", suffix: ".thumbnail"},
+		{appType: "system.compression.low", suffix: ".compressed"},
 	}
-	for i := range files {
-		parent := &files[i]
-		if parent.Object == nil {
-			continue
+	for _, u := range updates {
+		res := m.dst.Exec(`
+			UPDATE cloud_files
+			SET storage_key = object_id || ?
+			WHERE application_type = ? AND object_id IS NOT NULL
+		`, u.suffix, u.appType)
+		if res.Error != nil {
+			return res.Error
 		}
-		if parent.Object.HasThumbnail {
-			if err := m.ensureDerived(parent, "thumbnail", "system.thumbnail", summary); err != nil {
-				if m.op.ContinueOnError {
-					summary.Failed++
-					continue
-				}
-				return err
-			}
-		}
-		if parent.Object.HasCompression {
-			if err := m.ensureDerived(parent, "compressed", "system.compression.low", summary); err != nil {
-				if m.op.ContinueOnError {
-					summary.Failed++
-					continue
-				}
-				return err
-			}
-		}
-	}
-	return nil
-}
+		summary.DerivedFiles += res.RowsAffected
 
-func (m *Migrator) ensureDerived(parent *database.CloudFile, suffix, appType string, summary *Summary) error {
-	key := parent.ID + "." + suffix
-	var existing database.CloudFile
-	err := m.dst.Where("parent_id = ? AND application_type = ?", parent.ID, appType).First(&existing).Error
-	if err == nil {
-		summary.Skipped++
-		return nil
+		res = m.dst.Exec(`
+			UPDATE file_objects fo
+			SET storage_key = cf.object_id || ?
+			FROM cloud_files cf
+			WHERE cf.object_id = fo.id
+			  AND cf.application_type = ?
+			  AND cf.object_id IS NOT NULL
+		`, u.suffix, u.appType)
+		if res.Error != nil {
+			return res.Error
+		}
+		summary.DerivedObjects += res.RowsAffected
 	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
-	obj := database.FileObject{ID: database.NewID(), Size: parent.Object.Size, MimeType: parent.Object.MimeType, Hash: parent.Object.Hash, StorageKey: &key, Meta: parent.Object.Meta}
-	if suffix == "thumbnail" {
-		obj.HasThumbnail = true
-	}
-	if strings.HasPrefix(suffix, "compressed") {
-		obj.HasCompression = true
-	}
-	if err := m.save(&obj).Error; err != nil {
-		return err
-	}
-	pt := parent.ID
-	t := appType
-	child := database.CloudFile{ID: database.NewID(), Name: parent.Name, AccountID: parent.AccountID, PoolID: parent.PoolID, ObjectID: &obj.ID, ParentID: &pt, Indexed: false, IsFolder: false, IsMarkedRecycle: false, StorageKey: &key, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`)), ApplicationType: &t, CreatedAt: parent.CreatedAt, UpdatedAt: parent.UpdatedAt}
-	if err := m.save(&child).Error; err != nil {
-		return err
-	}
-	summary.DerivedObjects++
-	summary.DerivedFiles++
 	return nil
 }
 
