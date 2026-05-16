@@ -123,32 +123,39 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 }
 
 func listChildren(c *gin.Context, files *service.FileService) {
-	items, err := files.GetChildren(c.Param("parentId"))
+	parent, err := files.GetFile(c.Param("parentId"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 	result, _, ok := auth.GetAuth(c)
-	if ok {
-		filtered := make([]database.CloudFile, 0, len(items))
-		for _, item := range items {
-			if files.CanAccessFile(result.Account, result.Session, &item, "read") {
-				filtered = append(filtered, item)
-			}
-		}
-		items = filtered
+	if !ok && !files.CanAccessFile(nil, nil, parent, "read") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
 	}
-	c.Header("X-Total", "0")
-	c.JSON(http.StatusOK, items)
+	items, err := files.GetChildren(c.Param("parentId"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	filtered := make([]database.CloudFile, 0, len(items))
+	for _, item := range items {
+		if !ok || files.CanAccessFile(result.Account, result.Session, &item, "read") {
+			filtered = append(filtered, item)
+		}
+	}
+	c.Header("X-Total", strconv.Itoa(len(filtered)))
+	c.JSON(http.StatusOK, filtered)
 }
 
 func listPools(c *gin.Context, files *service.FileService) {
 	result, _, ok := auth.GetAuth(c)
-	var accountID uuid.UUID
+	ctx := service.AccessContext{}
 	if ok {
-		accountID = uuid.MustParse(result.Account.GetId())
+		ctx.Account = result.Account
+		ctx.Session = result.Session
 	}
-	items, err := files.ListPools(accountID)
+	items, err := files.ListPools(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -168,7 +175,7 @@ func getPoolPermissions(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	if !files.CanAccessPool(result.Account, pool, "manage") {
+	if !files.CanUsePool(service.AccessContext{Account: result.Account, Session: result.Session}, pool, "manage") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
@@ -191,7 +198,7 @@ func updatePoolPermissions(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	if !files.CanAccessPool(result.Account, pool, "manage") {
+	if !files.CanUsePool(service.AccessContext{Account: result.Account, Session: result.Session}, pool, "manage") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}

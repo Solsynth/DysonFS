@@ -112,7 +112,7 @@ func (s *FileService) GetPool(id string) (*Pool, error) {
 	return &Pool{ID: pool.ID, Name: pool.Name, AccountID: pool.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: pool.IsHidden}, nil
 }
 
-func (s *FileService) ListPools(accountID uuid.UUID) ([]Pool, error) {
+func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
 	var pools []database.FilePool
 	if err := s.db.Find(&pools).Error; err != nil {
 		return nil, err
@@ -125,13 +125,10 @@ func (s *FileService) ListPools(accountID uuid.UUID) ([]Pool, error) {
 		_ = json.Unmarshal(p.PolicyConfig, &policy)
 		_ = json.Unmarshal(p.BillingConfig, &billing)
 		_ = json.Unmarshal(p.StorageConfig, &storage)
-		if !policy.PublicUsable && p.AccountID != accountID {
-			continue
+		pool := &Pool{ID: p.ID, Name: p.Name, AccountID: p.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: p.IsHidden}
+		if s.CanUsePool(ctx, pool, "read") {
+			out = append(out, *pool)
 		}
-		if p.IsHidden && p.AccountID != accountID {
-			continue
-		}
-		out = append(out, Pool{ID: p.ID, Name: p.Name, AccountID: p.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: p.IsHidden})
 	}
 	return out, nil
 }
@@ -196,6 +193,13 @@ func (s *FileService) CanAccessPool(account *gen.DyAccount, pool *Pool, permissi
 	}
 	if pool.PolicyConfig.PublicUsable {
 		return true
+	}
+	if permission == "read" {
+		var perms []database.PoolPermission
+		if err := s.db.Where("pool_id = ? AND permission = ?", pool.ID, permission).Find(&perms).Error; err != nil {
+			return false
+		}
+		return len(perms) == 0
 	}
 	return false
 }
