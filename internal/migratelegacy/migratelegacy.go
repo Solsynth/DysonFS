@@ -86,34 +86,25 @@ func (m *Migrator) Run(ctx context.Context) (Summary, error) {
 	); err != nil {
 		return summary, err
 	}
-	if m.shouldSkip("pools", &database.FilePool{}) {
-		fmt.Println("pools: already migrated, skipping")
-	} else if err := m.migratePools(&summary); err != nil {
+	if err := m.ensureStorageKeyColumns(); err != nil {
 		return summary, err
 	}
-	if m.shouldSkip("quota_records", &database.QuotaRecord{}) {
-		fmt.Println("quota_records: already migrated, skipping")
-	} else if err := m.migrateQuotaRecords(&summary); err != nil {
+	if err := m.migratePools(&summary); err != nil {
 		return summary, err
 	}
-	if m.shouldSkip("file_objects", &database.FileObject{}) {
-		fmt.Println("file_objects: already migrated, skipping")
-	} else if err := m.migrateFileObjects(&summary); err != nil {
+	if err := m.migrateQuotaRecords(&summary); err != nil {
 		return summary, err
 	}
-	if m.shouldSkip("files", &database.CloudFile{}) {
-		fmt.Println("files: already migrated, skipping")
-	} else if err := m.migrateFiles(&summary); err != nil {
+	if err := m.migrateFileObjects(&summary); err != nil {
 		return summary, err
 	}
-	if m.shouldSkip("file_permissions", &database.FilePermission{}) {
-		fmt.Println("file_permissions: already migrated, skipping")
-	} else if err := m.migrateFilePermissions(&summary); err != nil {
+	if err := m.migrateFiles(&summary); err != nil {
 		return summary, err
 	}
-	if m.shouldSkip("file_replicas", &database.FileReplica{}) {
-		fmt.Println("file_replicas: already migrated, skipping")
-	} else if err := m.migrateFileReplicas(&summary); err != nil {
+	if err := m.migrateFilePermissions(&summary); err != nil {
+		return summary, err
+	}
+	if err := m.migrateFileReplicas(&summary); err != nil {
 		return summary, err
 	}
 	if !m.op.SkipDerived {
@@ -124,11 +115,24 @@ func (m *Migrator) Run(ctx context.Context) (Summary, error) {
 	return summary, nil
 }
 
-func (m *Migrator) shouldSkip(srcTable string, dstModel any) bool {
-	var srcCount, dstCount int64
-	m.src.Table(srcTable).Count(&srcCount)
-	m.dst.Model(dstModel).Count(&dstCount)
-	return srcCount > 0 && dstCount >= srcCount
+func (m *Migrator) ensureStorageKeyColumns() error {
+	statements := []string{
+		`ALTER TABLE file_objects ALTER COLUMN storage_key TYPE varchar(64) USING storage_key::varchar(64)`,
+		`ALTER TABLE cloud_files ALTER COLUMN storage_key TYPE varchar(64) USING storage_key::varchar(64)`,
+		`ALTER TABLE persistent_tasks ALTER COLUMN storage_key TYPE varchar(64) USING storage_key::varchar(64)`,
+	}
+	for _, stmt := range statements {
+		if err := m.dst.Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Migrator) lastCreatedAt(model any) time.Time {
+	var t time.Time
+	m.dst.Model(model).Select("COALESCE(MAX(created_at), '1970-01-01')").Scan(&t)
+	return t
 }
 
 type legacyPool struct {
@@ -234,10 +238,16 @@ type legacyFileReplica struct {
 func (legacyFileReplica) TableName() string { return "file_replicas" }
 
 func (m *Migrator) migratePools(summary *Summary) error {
+	since := m.lastCreatedAt(&database.FilePool{})
 	var rows []legacyPool
-	if err := m.src.Order("created_at asc").Find(&rows).Error; err != nil {
+	if err := m.src.Where("created_at > ?", since).Order("created_at asc").Find(&rows).Error; err != nil {
 		return err
 	}
+	if len(rows) == 0 {
+		fmt.Println("pools: up to date")
+		return nil
+	}
+	fmt.Printf("pools: migrating %d new records\n", len(rows))
 	for _, row := range rows {
 		pool := database.FilePool{ID: row.ID, Name: row.Name, Description: row.Description, AccountID: parseUUID(ptrValue(row.AccountID)), StorageConfig: row.StorageConfig, BillingConfig: row.BillingConfig, PolicyConfig: row.PolicyConfig, IsHidden: row.IsHidden, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 		if row.DeletedAt != nil {
@@ -256,10 +266,16 @@ func (m *Migrator) migratePools(summary *Summary) error {
 }
 
 func (m *Migrator) migrateQuotaRecords(summary *Summary) error {
+	since := m.lastCreatedAt(&database.QuotaRecord{})
 	var rows []legacyQuotaRecord
-	if err := m.src.Order("created_at asc").Find(&rows).Error; err != nil {
+	if err := m.src.Where("created_at > ?", since).Order("created_at asc").Find(&rows).Error; err != nil {
 		return err
 	}
+	if len(rows) == 0 {
+		fmt.Println("quota_records: up to date")
+		return nil
+	}
+	fmt.Printf("quota_records: migrating %d new records\n", len(rows))
 	for _, row := range rows {
 		rec := database.QuotaRecord{ID: row.ID, AccountID: parseUUID(row.AccountID), Description: row.Description, Name: row.Name, Quota: row.Quota, ExpiredAt: row.ExpiredAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 		if row.DeletedAt != nil {
@@ -278,10 +294,16 @@ func (m *Migrator) migrateQuotaRecords(summary *Summary) error {
 }
 
 func (m *Migrator) migrateFileObjects(summary *Summary) error {
+	since := m.lastCreatedAt(&database.FileObject{})
 	var rows []legacyFileObject
-	if err := m.src.Order("created_at asc").Find(&rows).Error; err != nil {
+	if err := m.src.Where("created_at > ?", since).Order("created_at asc").Find(&rows).Error; err != nil {
 		return err
 	}
+	if len(rows) == 0 {
+		fmt.Println("file_objects: up to date")
+		return nil
+	}
+	fmt.Printf("file_objects: migrating %d new records\n", len(rows))
 	for _, row := range rows {
 		mime := "application/octet-stream"
 		if row.MimeType != nil && strings.TrimSpace(*row.MimeType) != "" {
@@ -308,10 +330,16 @@ func (m *Migrator) migrateFileObjects(summary *Summary) error {
 }
 
 func (m *Migrator) migrateFiles(summary *Summary) error {
+	since := m.lastCreatedAt(&database.CloudFile{})
 	var rows []legacyFile
-	if err := m.src.Order("created_at asc").Find(&rows).Error; err != nil {
+	if err := m.src.Where("created_at > ?", since).Order("created_at asc").Find(&rows).Error; err != nil {
 		return err
 	}
+	if len(rows) == 0 {
+		fmt.Println("files: up to date")
+		return nil
+	}
+	fmt.Printf("files: migrating %d new records\n", len(rows))
 
 	type parentUpdate struct {
 		ID       string
@@ -360,10 +388,16 @@ func (m *Migrator) migrateFiles(summary *Summary) error {
 }
 
 func (m *Migrator) migrateFilePermissions(summary *Summary) error {
+	since := m.lastCreatedAt(&database.FilePermission{})
 	var rows []legacyFilePermission
-	if err := m.src.Order("created_at asc").Find(&rows).Error; err != nil {
+	if err := m.src.Where("created_at > ?", since).Order("created_at asc").Find(&rows).Error; err != nil {
 		return err
 	}
+	if len(rows) == 0 {
+		fmt.Println("file_permissions: up to date")
+		return nil
+	}
+	fmt.Printf("file_permissions: migrating %d new records\n", len(rows))
 	for _, row := range rows {
 		perm, err := m.mapFilePermission(row)
 		if err != nil {
@@ -386,10 +420,16 @@ func (m *Migrator) migrateFilePermissions(summary *Summary) error {
 }
 
 func (m *Migrator) migrateFileReplicas(summary *Summary) error {
+	since := m.lastCreatedAt(&database.FileReplica{})
 	var rows []legacyFileReplica
-	if err := m.src.Order("created_at asc").Find(&rows).Error; err != nil {
+	if err := m.src.Where("created_at > ?", since).Order("created_at asc").Find(&rows).Error; err != nil {
 		return err
 	}
+	if len(rows) == 0 {
+		fmt.Println("file_replicas: up to date")
+		return nil
+	}
+	fmt.Printf("file_replicas: migrating %d new records\n", len(rows))
 	for _, row := range rows {
 		rep := database.FileReplica{ID: row.ID, ObjectID: row.ObjectID, PoolID: row.PoolID, StorageID: &row.StorageID, Status: m.mapReplicaStatus(row), IsPrimary: row.IsPrimary, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 		if row.DeletedAt != nil {

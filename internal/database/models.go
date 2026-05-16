@@ -27,7 +27,7 @@ type FileObject struct {
 	Size           int64          `json:"size"`
 	MimeType       string         `json:"mime_type"`
 	Hash           string         `json:"hash"`
-	StorageKey     *string        `gorm:"size:36" json:"storage_key"`
+	StorageKey     *string        `gorm:"size:64" json:"storage_key"`
 	Meta           datatypes.JSON `gorm:"type:jsonb" json:"meta"`
 	HasCompression bool           `json:"has_compression"`
 	HasThumbnail   bool           `json:"has_thumbnail"`
@@ -51,7 +51,7 @@ type CloudFile struct {
 	UploadedAt      *time.Time     `json:"uploaded_at"`
 	StorageID       *string        `gorm:"size:36" json:"storage_id"`
 	StorageURL      *string        `gorm:"size:255" json:"storage_url"`
-	StorageKey      *string        `gorm:"size:36" json:"storage_key"`
+	StorageKey      *string        `gorm:"size:64" json:"storage_key"`
 	FileMeta        datatypes.JSON `gorm:"type:jsonb" json:"file_meta"`
 	UserMeta        datatypes.JSON `gorm:"type:jsonb" json:"user_meta"`
 	Usage           *string        `json:"usage"`
