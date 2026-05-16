@@ -709,6 +709,17 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if strings.HasPrefix(object.MimeType, "image/") {
+		if analysis, err := files.AnalyzeImage(tempPath); err == nil {
+			if updated, err := files.StoreImageAnalysis(createdFile.ID, analysis); err == nil {
+				createdFile = updated
+			} else {
+				logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to persist image analysis")
+			}
+		} else {
+			logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to analyze image")
+		}
+	}
 	stage, err := os.Open(tempPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -822,6 +833,17 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if strings.HasPrefix(object.MimeType, "image/") {
+		if analysis, err := files.AnalyzeImage(mergedPath); err == nil {
+			if updated, err := files.StoreImageAnalysis(created.ID, analysis); err == nil {
+				created = updated
+			} else {
+				logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to persist image analysis")
+			}
+		} else {
+			logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to analyze image")
+		}
 	}
 	stage, err := os.Open(mergedPath)
 	if err != nil {

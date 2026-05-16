@@ -18,6 +18,47 @@ import (
 	"gorm.io/gorm"
 )
 
+func extractImageMeta(file *database.CloudFile) (width, height int, blurhash string) {
+	if file == nil {
+		return 0, 0, ""
+	}
+	if len(file.FileMeta) > 0 {
+		var meta map[string]any
+		if err := json.Unmarshal(file.FileMeta, &meta); err == nil {
+			if v, ok := meta["width"].(float64); ok {
+				width = int(v)
+			}
+			if v, ok := meta["height"].(float64); ok {
+				height = int(v)
+			}
+			if v, ok := meta["blurhash"].(string); ok {
+				blurhash = v
+			}
+		}
+	}
+	if (width == 0 || height == 0 || blurhash == "") && file.Object != nil && len(file.Object.Meta) > 0 {
+		var meta map[string]any
+		if err := json.Unmarshal(file.Object.Meta, &meta); err == nil {
+			if width == 0 {
+				if v, ok := meta["width"].(float64); ok {
+					width = int(v)
+				}
+			}
+			if height == 0 {
+				if v, ok := meta["height"].(float64); ok {
+					height = int(v)
+				}
+			}
+			if blurhash == "" {
+				if v, ok := meta["blurhash"].(string); ok {
+					blurhash = v
+				}
+			}
+		}
+	}
+	return width, height, blurhash
+}
+
 type fileServiceServer struct {
 	gen.UnimplementedDyFileServiceServer
 	files *service.FileService
@@ -199,12 +240,16 @@ func toProtoCloudFile(file *database.CloudFile) *gen.DyCloudFile {
 	if file.UploadedAt != nil {
 		resp.UploadedAt = timestamppb.New(*file.UploadedAt)
 	}
-	if len(file.Object.Meta) > 0 {
-		var meta map[string]any
-		_ = json.Unmarshal(file.Object.Meta, &meta)
-		if v, ok := meta["blurhash"].(string); ok && v != "" {
-			resp.Blurhash = &v
+	if width, height, blurhash := extractImageMeta(file); width > 0 {
+		w := int32(width)
+		h := int32(height)
+		resp.Width = &w
+		resp.Height = &h
+		if blurhash != "" {
+			resp.Blurhash = &blurhash
 		}
+	} else if blurhash != "" {
+		resp.Blurhash = &blurhash
 	}
 	return resp
 }

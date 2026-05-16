@@ -174,12 +174,16 @@ func (w *Worker) processImage(evt eventbus.FileUploadedEvent, parent *database.C
 	if err := img.RemoveMetadata(); err != nil {
 		return err
 	}
+	width, height := img.Width(), img.Height()
 
 	blurHash, err := w.computeBlurHash(evt.ProcessingFilePath)
 	if err != nil {
 		return err
 	}
 	if err := w.storeBlurHash(parent, blurHash); err != nil {
+		return err
+	}
+	if err := w.storeImageDimensions(parent, width, height); err != nil {
 		return err
 	}
 
@@ -297,6 +301,24 @@ func (w *Worker) storeBlurHash(parent *database.CloudFile, hash string) error {
 		_ = json.Unmarshal(object.Meta, &meta)
 	}
 	meta["blurhash"] = hash
+	raw, _ := json.Marshal(meta)
+	return w.db.Model(&database.FileObject{}).Where("id = ?", object.ID).Update("meta", datatypes.JSON(raw)).Error
+}
+
+func (w *Worker) storeImageDimensions(parent *database.CloudFile, width, height int) error {
+	if w.db == nil || parent.Object == nil {
+		return nil
+	}
+	var object database.FileObject
+	if err := w.db.First(&object, "id = ?", *parent.ObjectID).Error; err != nil {
+		return err
+	}
+	meta := map[string]any{}
+	if len(object.Meta) > 0 {
+		_ = json.Unmarshal(object.Meta, &meta)
+	}
+	meta["width"] = width
+	meta["height"] = height
 	raw, _ := json.Marshal(meta)
 	return w.db.Model(&database.FileObject{}).Where("id = ?", object.ID).Update("meta", datatypes.JSON(raw)).Error
 }

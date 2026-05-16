@@ -2,15 +2,19 @@ package service
 
 import (
 	"context"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	blurhash "github.com/bbrks/go-blurhash"
+	"github.com/davidbyttow/govips/v2/vips"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
@@ -638,6 +642,114 @@ func (s *FileService) DetectAndCreateObject(path string) (*database.FileObject, 
 		return nil, err
 	}
 	return object, nil
+}
+
+type ImageAnalysis struct {
+	Width    int
+	Height   int
+	Blurhash string
+}
+
+func (s *FileService) AnalyzeImage(path string) (*ImageAnalysis, error) {
+	img, err := vips.NewImageFromFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer img.Close()
+
+	if err := img.AutoRotate(); err != nil {
+		return nil, err
+	}
+	if err := img.RemoveMetadata(); err != nil {
+		return nil, err
+	}
+
+	blur, err := analyzeBlurhash(path)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ImageAnalysis{Width: img.Width(), Height: img.Height(), Blurhash: blur}, nil
+}
+
+func analyzeBlurhash(path string) (string, error) {
+	img, err := vips.NewImageFromFile(path)
+	if err != nil {
+		return "", err
+	}
+	defer img.Close()
+
+	buf, _, err := img.ExportPng(&vips.PngExportParams{StripMetadata: true})
+	if err != nil {
+		return "", err
+	}
+	decoded, err := png.Decode(bytes.NewReader(buf))
+	if err != nil {
+		return "", err
+	}
+	hash, err := blurhash.Encode(4, 3, decoded)
+	if err != nil {
+		return "", err
+	}
+	return hash, nil
+}
+
+func mergeJSONMeta(raw datatypes.JSON, updates map[string]any) (datatypes.JSON, error) {
+	meta := map[string]any{}
+	if len(bytes.TrimSpace(raw)) > 0 && string(bytes.TrimSpace(raw)) != "null" {
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			return nil, err
+		}
+	}
+	for k, v := range updates {
+		meta[k] = v
+	}
+	merged, err := json.Marshal(meta)
+	if err != nil {
+		return nil, err
+	}
+	return datatypes.JSON(merged), nil
+}
+
+func (s *FileService) StoreImageAnalysis(fileID string, analysis *ImageAnalysis) (*database.CloudFile, error) {
+	if analysis == nil {
+		return s.GetFile(fileID)
+	}
+	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
+		var file database.CloudFile
+		if err := tx.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
+			return err
+		}
+		updates := map[string]any{
+			"width":      analysis.Width,
+			"height":     analysis.Height,
+			"blurhash":   analysis.Blurhash,
+		}
+		mergedFileMeta, err := mergeJSONMeta(file.FileMeta, updates)
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&database.CloudFile{}).Where("id = ?", fileID).Update("file_meta", mergedFileMeta).Error; err != nil {
+			return err
+		}
+		if file.ObjectID != nil {
+			var object database.FileObject
+			if err := tx.First(&object, "id = ?", *file.ObjectID).Error; err != nil {
+				return err
+			}
+			mergedObjectMeta, err := mergeJSONMeta(object.Meta, updates)
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&database.FileObject{}).Where("id = ?", object.ID).Update("meta", mergedObjectMeta).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return s.GetFile(fileID)
 }
 
 func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
