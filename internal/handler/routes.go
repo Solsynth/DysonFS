@@ -583,10 +583,6 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	if cfg.Files.PreferredStorage == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "storage backend is not configured"})
-		return
-	}
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})

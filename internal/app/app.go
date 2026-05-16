@@ -60,14 +60,7 @@ func New(cfg *config.Config, mode string) (*App, error) {
 		redisClient = redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
 	}
 
-	var stor storage.Backend = storage.NewLocalBackend(cfg.Storage.LocalDir)
-	if strings.EqualFold(cfg.Files.PreferredStorage, "s3") {
-		s3Backend, err := storage.NewS3Backend(cfg.S3.Endpoint, cfg.S3.AccessKey, cfg.S3.SecretKey, cfg.S3.Bucket, cfg.S3.Secure)
-		if err != nil {
-			return nil, err
-		}
-		stor = s3Backend
-	}
+	stor := storage.NewLocalBackend(cfg.Storage.LocalDir)
 
 	var natsConn *nats.Conn
 	if cfg.NATS.URL != "" {
@@ -79,6 +72,15 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	}
 
 	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: service.NewFileService(db, stor), tasks: service.NewTaskService(db), quota: service.NewQuotaService(db), natsConn: natsConn, logger: logging.Log}
+	if err := app.files.SeedSystemPool(cfg); err != nil {
+		return nil, err
+	}
+	if systemPool, err := app.files.GetPool(service.SystemPoolID()); err == nil {
+		if backend, err := app.files.BackendForPoolID(&systemPool.ID); err == nil {
+			app.stor = backend
+			app.files.SetStorage(backend)
+		}
+	}
 	if natsConn != nil {
 		app.bus = eventbus.New(natsConn)
 	}

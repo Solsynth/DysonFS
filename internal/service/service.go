@@ -13,6 +13,7 @@ import (
 
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
+	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	gen "src.solsynth.dev/sosys/go/proto"
 
@@ -74,6 +75,8 @@ type FileService struct {
 	stor storage.Backend
 }
 
+const systemPoolName = "system"
+
 func NewFileService(db *database.DB, stor storage.Backend) *FileService {
 	return &FileService{db: db, stor: stor}
 }
@@ -81,6 +84,90 @@ func NewFileService(db *database.DB, stor storage.Backend) *FileService {
 func (s *FileService) DB() *database.DB { return s.db }
 
 func (s *FileService) Storage() storage.Backend { return s.stor }
+
+func (s *FileService) SetStorage(stor storage.Backend) { s.stor = stor }
+
+func (s *FileService) SeedSystemPool(cfg *config.Config) error {
+	storageCfg := PoolStorageConfig{}
+	if strings.EqualFold(cfg.Files.PreferredStorage, "s3") {
+		storageCfg = PoolStorageConfig{
+			EnableSigned:   true,
+			EnableSsl:      cfg.S3.Secure,
+			Endpoint:       cfg.S3.Endpoint,
+			Bucket:         cfg.S3.Bucket,
+			SecretId:       cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			AccessEndpoint: nil,
+			ImageProxy:     nil,
+			AccessProxy:    nil,
+		}
+	} else {
+		storageCfg = PoolStorageConfig{
+			EnableSigned: true,
+			EnableSsl:    false,
+			Endpoint:     cfg.Storage.LocalDir,
+			Bucket:       "local",
+		}
+	}
+	policyCfg := PoolConfig{PublicUsable: true, AllowEncryption: false, AcceptTypes: []string{}, MaxFileSize: nil, NoOptimization: false}
+	billingCfg := PoolBillingConfig{CostMultiplier: nil}
+	pool := database.FilePool{ID: systemPoolID(), Name: systemPoolName, AccountID: uuid.Nil, StorageConfig: mustJSON(storageCfg), BillingConfig: mustJSON(billingCfg), PolicyConfig: mustJSON(policyCfg), IsHidden: true}
+	return s.db.DB.Transaction(func(tx *gorm.DB) error {
+		var existing database.FilePool
+		if err := tx.Where("account_id = ? AND name = ?", uuid.Nil, systemPoolName).First(&existing).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			return tx.Create(&pool).Error
+		}
+		return tx.Model(&database.FilePool{}).Where("id = ?", existing.ID).Updates(map[string]any{
+			"storage_config": pool.StorageConfig,
+			"billing_config": pool.BillingConfig,
+			"policy_config":  pool.PolicyConfig,
+			"is_hidden":      true,
+		}).Error
+	})
+}
+
+func (s *FileService) BackendForPoolID(poolID *string) (storage.Backend, error) {
+	if poolID == nil || strings.TrimSpace(*poolID) == "" {
+		return s.stor, nil
+	}
+	pool, err := s.GetPool(*poolID)
+	if err != nil {
+		return nil, err
+	}
+	return backendFromPoolStorage(pool.StorageConfig, s.stor)
+}
+
+func (s *FileService) BackendForFile(file *database.CloudFile) (storage.Backend, error) {
+	if file == nil || file.StorageID == nil || strings.TrimSpace(*file.StorageID) == "" {
+		return s.stor, nil
+	}
+	return s.BackendForPoolID(file.StorageID)
+}
+
+func backendFromPoolStorage(cfg PoolStorageConfig, fallback storage.Backend) (storage.Backend, error) {
+	if strings.TrimSpace(cfg.Endpoint) == "" {
+		if fallback != nil {
+			return fallback, nil
+		}
+		return nil, fmt.Errorf("storage backend not configured")
+	}
+	if strings.TrimSpace(cfg.SecretId) == "" && strings.TrimSpace(cfg.SecretKey) == "" && filepath.IsAbs(cfg.Endpoint) {
+		return storage.NewLocalBackend(cfg.Endpoint), nil
+	}
+	return storage.NewS3Backend(cfg.Endpoint, cfg.SecretId, cfg.SecretKey, cfg.Bucket, cfg.EnableSsl)
+}
+
+func mustJSON(v any) datatypes.JSON {
+	raw, _ := json.Marshal(v)
+	return datatypes.JSON(raw)
+}
+
+func systemPoolID() string { return "01SYSTEMPOOLID00000000000000" }
+
+func SystemPoolID() string { return systemPoolID() }
 
 func (s *FileService) GetFile(id string) (*database.CloudFile, error) {
 	var file database.CloudFile
