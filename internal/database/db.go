@@ -37,6 +37,8 @@ func (d *DB) AutoMigrate() error {
 	}
 	return d.DB.Exec(`
 		alter table if exists file_pools alter column id type varchar(36);
+		alter table if exists file_pools alter column account_id type uuid using account_id::uuid;
+		alter table if exists file_pools add column if not exists description text default '';
 		alter table if exists file_replicas alter column pool_id type varchar(36);
 		alter table if exists file_permissions alter column file_id type varchar(36);
 		alter table if exists pool_permissions alter column id type varchar(36);
@@ -45,5 +47,10 @@ func (d *DB) AutoMigrate() error {
 		alter table if exists persistent_tasks alter column parent_id type varchar(36);
 		alter table if exists cloud_files alter column object_id type varchar(36);
 		alter table if exists cloud_files alter column parent_id type varchar(36);
+		alter table if exists cloud_files add column if not exists pool_id varchar(36);
+		alter table if exists cloud_files add column if not exists description text;
+		alter table if exists file_objects add column if not exists storage_key varchar(256);
+		alter table if exists file_objects add column if not exists deleted_at timestamptz;
+		alter table if exists cloud_files add column if not exists deleted_at timestamptz;
 	`).Error
 }

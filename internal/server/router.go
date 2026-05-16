@@ -3,8 +3,8 @@ package server
 import (
 	"net/http"
 
-	"src.solsynth.dev/sosys/filesystem/internal/config"
 	docs "src.solsynth.dev/sosys/filesystem/docs"
+	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/handler"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
@@ -12,9 +12,9 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	ginSwagger "github.com/swaggo/gin-swagger"
-	swaggerfiles "github.com/swaggo/files"
 	"github.com/rs/zerolog/log"
+	swaggerfiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
 func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus) *gin.Engine {
@@ -27,7 +27,7 @@ func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.Ta
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to init authenticator")
 		}
-		r.Use(dyauth.OptionalAuthMiddleware(authenticator))
+		r.Use(dyauth.OptionalAuthMiddleware(authenticator, nil, nil))
 	}
 
 	docs.SwaggerInfo.BasePath = "/"
