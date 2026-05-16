@@ -81,6 +81,13 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}) })
 }
 
+// @Summary Get file info
+// @Tags files
+// @Produce json
+// @Param id path string true "File ID"
+// @Success 200 {object} database.CloudFile
+// @Failure 404 {object} map[string]any
+// @Router /api/files/{id}/info [get]
 func fileInfo(c *gin.Context, files *service.FileService) {
 	file, err := files.GetFile(c.Param("id"))
 	if err != nil {
@@ -95,6 +102,14 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, file)
 }
 
+// @Summary Open file
+// @Tags files
+// @Produce json
+// @Param id path string true "File ID"
+// @Param download query bool false "Download"
+// @Success 307
+// @Failure 404 {object} map[string]any
+// @Router /api/files/{id}/open [get]
 func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 	file, err := files.GetFile(c.Param("id"))
 	if err != nil {
@@ -169,6 +184,11 @@ func listPools(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+// @Summary Get quota summary
+// @Tags billing
+// @Produce json
+// @Success 200 {object} service.QuotaSummary
+// @Router /api/billing/quota [get]
 func getQuota(c *gin.Context, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -183,6 +203,11 @@ func getQuota(c *gin.Context, quota *service.QuotaService) {
 	c.JSON(http.StatusOK, summary)
 }
 
+// @Summary List quota records
+// @Tags billing
+// @Produce json
+// @Success 200 {array} database.QuotaRecord
+// @Router /api/billing/quota/records [get]
 func listQuotaRecords(c *gin.Context, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -198,6 +223,11 @@ func listQuotaRecords(c *gin.Context, quota *service.QuotaService) {
 	c.JSON(http.StatusOK, records)
 }
 
+// @Summary Get quota usage
+// @Tags billing
+// @Produce json
+// @Success 200 {object} service.QuotaSummary
+// @Router /api/billing/usage [get]
 func getUsage(c *gin.Context, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -212,6 +242,12 @@ func getUsage(c *gin.Context, quota *service.QuotaService) {
 	c.JSON(http.StatusOK, summary)
 }
 
+// @Summary Get pool usage
+// @Tags billing
+// @Produce json
+// @Param poolId path string true "Pool ID"
+// @Success 200 {object} map[string]any
+// @Router /api/billing/usage/{poolId} [get]
 func getPoolUsage(c *gin.Context, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -483,6 +519,12 @@ func purgeMyRecycleBin(c *gin.Context, files *service.FileService, bus *eventbus
 	c.JSON(http.StatusOK, gin.H{"count": count})
 }
 
+// @Summary Create upload task
+// @Tags uploads
+// @Accept json
+// @Produce json
+// @Success 200 {object} map[string]any
+// @Router /api/files/upload/create [post]
 func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -530,6 +572,11 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	c.JSON(http.StatusOK, gin.H{"task_id": task.TaskID, "chunk_size": task.ChunkSize, "chunks_count": task.ChunksCount})
 }
 
+// @Summary Direct upload
+// @Tags uploads
+// @Produce json
+// @Success 200 {object} database.CloudFile
+// @Router /api/files/upload/direct [post]
 func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -634,6 +681,12 @@ func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// @Summary Complete upload
+// @Tags uploads
+// @Produce json
+// @Param taskId path string true "Task ID"
+// @Success 200 {object} database.CloudFile
+// @Router /api/files/upload/complete/{taskId} [post]
 func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {

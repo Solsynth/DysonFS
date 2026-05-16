@@ -1,0 +1,267 @@
+definitions:
+  gorm.DeletedAt:
+    properties:
+      time:
+        type: string
+      valid:
+        description: Valid is true if Time is not NULL
+        type: boolean
+    type: object
+  src_solsynth_dev_sosys_filesystem_internal_database.CloudFile:
+    properties:
+      account_id:
+        type: string
+      application_type:
+        type: string
+      children:
+        items:
+          $ref: '#/definitions/src_solsynth_dev_sosys_filesystem_internal_database.CloudFile'
+        type: array
+      created_at:
+        type: string
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      expired_at:
+        type: string
+      file_meta:
+        items:
+          type: integer
+        type: array
+      id:
+        type: string
+      indexed:
+        type: boolean
+      is_folder:
+        type: boolean
+      is_marked_recycle:
+        type: boolean
+      name:
+        type: string
+      object:
+        $ref: '#/definitions/src_solsynth_dev_sosys_filesystem_internal_database.FileObject'
+      object_id:
+        type: string
+      parent_id:
+        type: string
+      storage_id:
+        type: string
+      storage_key:
+        type: string
+      storage_url:
+        type: string
+      updated_at:
+        type: string
+      uploaded_at:
+        type: string
+      usage:
+        type: string
+      user_meta:
+        items:
+          type: integer
+        type: array
+    type: object
+  src_solsynth_dev_sosys_filesystem_internal_database.FileObject:
+    properties:
+      created_at:
+        type: string
+      has_compression:
+        type: boolean
+      has_thumbnail:
+        type: boolean
+      hash:
+        type: string
+      id:
+        type: string
+      meta:
+        items:
+          type: integer
+        type: array
+      mime_type:
+        type: string
+      size:
+        type: integer
+      storage_key:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  src_solsynth_dev_sosys_filesystem_internal_database.QuotaRecord:
+    properties:
+      account_id:
+        type: string
+      created_at:
+        type: string
+      expired_at:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      quota:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  src_solsynth_dev_sosys_filesystem_internal_service.QuotaSummary:
+    properties:
+      based_quota:
+        type: integer
+      extra_quota:
+        type: integer
+      total_quota:
+        type: integer
+    type: object
+info:
+  contact: {}
+paths:
+  /api/billing/quota:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/src_solsynth_dev_sosys_filesystem_internal_service.QuotaSummary'
+      summary: Get quota summary
+      tags:
+      - billing
+  /api/billing/quota/records:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/src_solsynth_dev_sosys_filesystem_internal_database.QuotaRecord'
+            type: array
+      summary: List quota records
+      tags:
+      - billing
+  /api/billing/usage:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/src_solsynth_dev_sosys_filesystem_internal_service.QuotaSummary'
+      summary: Get quota usage
+      tags:
+      - billing
+  /api/billing/usage/{poolId}:
+    get:
+      parameters:
+      - description: Pool ID
+        in: path
+        name: poolId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get pool usage
+      tags:
+      - billing
+  /api/files/{id}/info:
+    get:
+      parameters:
+      - description: File ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/src_solsynth_dev_sosys_filesystem_internal_database.CloudFile'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get file info
+      tags:
+      - files
+  /api/files/{id}/open:
+    get:
+      parameters:
+      - description: File ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Download
+        in: query
+        name: download
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "307":
+          description: Temporary Redirect
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Open file
+      tags:
+      - files
+  /api/files/upload/complete/{taskId}:
+    post:
+      parameters:
+      - description: Task ID
+        in: path
+        name: taskId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/src_solsynth_dev_sosys_filesystem_internal_database.CloudFile'
+      summary: Complete upload
+      tags:
+      - uploads
+  /api/files/upload/create:
+    post:
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create upload task
+      tags:
+      - uploads
+  /api/files/upload/direct:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/src_solsynth_dev_sosys_filesystem_internal_database.CloudFile'
+      summary: Direct upload
+      tags:
+      - uploads
+swagger: "2.0"

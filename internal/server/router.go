@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"src.solsynth.dev/sosys/filesystem/internal/config"
+	docs "src.solsynth.dev/sosys/filesystem/docs"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/handler"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	ginSwagger "github.com/swaggo/gin-swagger"
+	swaggerfiles "github.com/swaggo/files"
 	"github.com/rs/zerolog/log"
 )
 
@@ -26,6 +29,10 @@ func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.Ta
 		}
 		r.Use(dyauth.OptionalAuthMiddleware(authenticator))
 	}
+
+	docs.SwaggerInfo.BasePath = "/"
+	docs.SwaggerInfo.Schemes = []string{"http"}
+	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 
 	handler.RegisterRoutes(r, cfg, files, tasks, quota, bus)
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true, "mode": "master"}) })

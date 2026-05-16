@@ -1,0 +1,41 @@
+app = { name = "DysonFileSystem" }
+
+[http]
+port = "8080"
+
+[grpc]
+port = "9090"
+
+[database]
+dsn = "host=postgres port=5432 user=dyson password=dyson dbname=dyson_drive sslmode=disable"
+
+[redis]
+addr = "redis:6379"
+
+[nats]
+url = "nats://nats:4222"
+
+[storage]
+tempDir = "/var/lib/dyson-drive/tmp"
+localDir = "/var/lib/dyson-drive/data"
+
+[auth]
+target = ""
+useTLS = false
+
+[mode]
+master = true
+worker = true
+storage = false
+
+[files]
+preferredStorage = "local"
+gatewayUrl = "http://localhost:8080"
+accessSecret = "change-me"
+
+[s3]
+endpoint = ""
+bucket = ""
+accessKey = ""
+secretKey = ""
+secure = true

@@ -1,0 +1,46 @@
+services:
+  app:
+    image: ghcr.io/YOUR_OWNER/dyson-filesystem:latest
+    command: ["--mode", "master", "--config", "/etc/dyson/config.toml"]
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment:
+      CONFIG_PATH: /etc/dyson/config.toml
+    volumes:
+      - ./config.example.toml:/etc/dyson/config.toml:ro
+      - dyson-data:/var/lib/dyson-drive
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      nats:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: dyson_drive
+      POSTGRES_USER: dyson
+      POSTGRES_PASSWORD: dyson
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  nats:
+    image: nats:2-alpine
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+volumes:
+  pg-data:
+  dyson-data:
