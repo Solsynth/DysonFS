@@ -33,9 +33,18 @@ preferredStorage = "local"
 gatewayUrl = "http://localhost:8080"
 accessSecret = "change-me"
 
-[s3]
-endpoint = ""
-bucket = ""
-accessKey = ""
-secretKey = ""
-secure = true
+[[pools]]
+id = "01SYSTEMPOOLID00000000000000"
+name = "system"
+default = true
+hidden = true
+
+[pools.storage]
+enableSigned = true
+endpoint = "/var/lib/dyson-drive/data"
+bucket = "local"
+
+[pools.billing]
+
+[pools.policy]
+publicUsable = true

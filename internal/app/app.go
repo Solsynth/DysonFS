@@ -72,15 +72,16 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	}
 
 	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: service.NewFileService(db, stor), tasks: service.NewTaskService(db), quota: service.NewQuotaService(db), natsConn: natsConn, logger: logging.Log}
-	if err := app.files.SeedSystemPool(cfg); err != nil {
+	defaultPoolID, err := app.files.SeedPools(cfg)
+	if err != nil {
 		return nil, err
 	}
-	if systemPool, err := app.files.GetPool(service.SystemPoolID()); err == nil {
-		if backend, err := app.files.BackendForPoolID(&systemPool.ID); err == nil {
-			app.stor = backend
-			app.files.SetStorage(backend)
-		}
+	backend, err := app.files.BackendForPoolID(&defaultPoolID)
+	if err != nil {
+		return nil, err
 	}
+	app.stor = backend
+	app.files.SetStorage(backend)
 	if natsConn != nil {
 		app.bus = eventbus.New(natsConn)
 	}

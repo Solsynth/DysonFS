@@ -18,6 +18,7 @@ type Config struct {
 	Auth     AuthConfig     `mapstructure:"auth"`
 	Mode     ModeConfig     `mapstructure:"mode"`
 	Files    FileConfig     `mapstructure:"files"`
+	Pools    []PoolConfig   `mapstructure:"pools"`
 	S3       S3Config       `mapstructure:"s3"`
 }
 
@@ -65,6 +66,41 @@ type FileConfig struct {
 	PreferredStorage string `mapstructure:"preferredStorage"`
 	GatewayURL       string `mapstructure:"gatewayUrl"`
 	AccessSecret     string `mapstructure:"accessSecret"`
+}
+
+type PoolConfig struct {
+	ID            string   `mapstructure:"id"`
+	Name          string   `mapstructure:"name"`
+	Default       bool     `mapstructure:"default"`
+	Hidden        bool     `mapstructure:"hidden"`
+	Storage       StoragePoolConfig  `mapstructure:"storage"`
+	Billing       BillingPoolConfig  `mapstructure:"billing"`
+	Policy        PolicyPoolConfig    `mapstructure:"policy"`
+}
+
+type StoragePoolConfig struct {
+	EnableSigned   bool    `mapstructure:"enableSigned"`
+	EnableSsl      bool    `mapstructure:"enableSsl"`
+	Endpoint       string  `mapstructure:"endpoint"`
+	AccessEndpoint *string `mapstructure:"accessEndpoint"`
+	Bucket         string  `mapstructure:"bucket"`
+	ImageProxy     *string `mapstructure:"imageProxy"`
+	AccessProxy    *string `mapstructure:"accessProxy"`
+	SecretId       string  `mapstructure:"secretId"`
+	SecretKey      string  `mapstructure:"secretKey"`
+}
+
+type BillingPoolConfig struct {
+	CostMultiplier *float64 `mapstructure:"costMultiplier"`
+}
+
+type PolicyPoolConfig struct {
+	RequirePrivilege int      `mapstructure:"requirePrivilege"`
+	PublicUsable     bool     `mapstructure:"publicUsable"`
+	AllowEncryption  bool     `mapstructure:"allowEncryption"`
+	AcceptTypes      []string `mapstructure:"acceptTypes"`
+	MaxFileSize      *int64   `mapstructure:"maxFileSize"`
+	NoOptimization   bool     `mapstructure:"noOptimization"`
 }
 
 type S3Config struct {

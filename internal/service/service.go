@@ -87,46 +87,63 @@ func (s *FileService) Storage() storage.Backend { return s.stor }
 
 func (s *FileService) SetStorage(stor storage.Backend) { s.stor = stor }
 
-func (s *FileService) SeedSystemPool(cfg *config.Config) error {
-	storageCfg := PoolStorageConfig{}
-	if strings.EqualFold(cfg.Files.PreferredStorage, "s3") {
-		storageCfg = PoolStorageConfig{
-			EnableSigned:   true,
-			EnableSsl:      cfg.S3.Secure,
-			Endpoint:       cfg.S3.Endpoint,
-			Bucket:         cfg.S3.Bucket,
-			SecretId:       cfg.S3.AccessKey,
-			SecretKey:      cfg.S3.SecretKey,
-			AccessEndpoint: nil,
-			ImageProxy:     nil,
-			AccessProxy:    nil,
-		}
-	} else {
-		storageCfg = PoolStorageConfig{
-			EnableSigned: true,
-			EnableSsl:    false,
-			Endpoint:     cfg.Storage.LocalDir,
-			Bucket:       "local",
-		}
+func (s *FileService) SeedPools(cfg *config.Config) (string, error) {
+	if len(cfg.Pools) == 0 {
+		return "", fmt.Errorf("at least one pool must be configured")
 	}
-	policyCfg := PoolConfig{PublicUsable: true, AllowEncryption: false, AcceptTypes: []string{}, MaxFileSize: nil, NoOptimization: false}
-	billingCfg := PoolBillingConfig{CostMultiplier: nil}
-	pool := database.FilePool{ID: systemPoolID(), Name: systemPoolName, AccountID: uuid.Nil, StorageConfig: mustJSON(storageCfg), BillingConfig: mustJSON(billingCfg), PolicyConfig: mustJSON(policyCfg), IsHidden: true}
-	return s.db.DB.Transaction(func(tx *gorm.DB) error {
-		var existing database.FilePool
-		if err := tx.Where("account_id = ? AND name = ?", uuid.Nil, systemPoolName).First(&existing).Error; err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return err
+	defaultCount := 0
+	defaultPoolID := ""
+	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
+		for _, poolCfg := range cfg.Pools {
+			poolID := strings.TrimSpace(poolCfg.ID)
+			if poolID == "" {
+				poolID = database.NewID()
 			}
-			return tx.Create(&pool).Error
+			name := strings.TrimSpace(poolCfg.Name)
+			if name == "" {
+				name = poolID
+			}
+			pool := database.FilePool{
+				ID:            poolID,
+				Name:          name,
+				AccountID:     uuid.Nil,
+				StorageConfig: mustJSON(mapPoolStorageConfig(poolCfg.Storage)),
+				BillingConfig: mustJSON(PoolBillingConfig{CostMultiplier: poolCfg.Billing.CostMultiplier}),
+				PolicyConfig:  mustJSON(PoolConfig{RequirePrivilege: poolCfg.Policy.RequirePrivilege, PublicUsable: poolCfg.Policy.PublicUsable, AllowEncryption: poolCfg.Policy.AllowEncryption, AcceptTypes: poolCfg.Policy.AcceptTypes, MaxFileSize: poolCfg.Policy.MaxFileSize, NoOptimization: poolCfg.Policy.NoOptimization}),
+				IsHidden:      poolCfg.Hidden,
+			}
+			var existing database.FilePool
+			if err := tx.Where("id = ?", poolID).First(&existing).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+				if err := tx.Create(&pool).Error; err != nil {
+					return err
+				}
+			} else {
+				if err := tx.Model(&database.FilePool{}).Where("id = ?", existing.ID).Updates(map[string]any{
+					"name":           pool.Name,
+					"storage_config": pool.StorageConfig,
+					"billing_config": pool.BillingConfig,
+					"policy_config":  pool.PolicyConfig,
+					"is_hidden":      pool.IsHidden,
+				}).Error; err != nil {
+					return err
+				}
+			}
+			if poolCfg.Default {
+				defaultCount++
+				defaultPoolID = poolID
+			}
 		}
-		return tx.Model(&database.FilePool{}).Where("id = ?", existing.ID).Updates(map[string]any{
-			"storage_config": pool.StorageConfig,
-			"billing_config": pool.BillingConfig,
-			"policy_config":  pool.PolicyConfig,
-			"is_hidden":      true,
-		}).Error
-	})
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	if defaultCount != 1 {
+		return "", fmt.Errorf("exactly one pool must be marked default")
+	}
+	return defaultPoolID, nil
 }
 
 func (s *FileService) BackendForPoolID(poolID *string) (storage.Backend, error) {
@@ -149,15 +166,26 @@ func (s *FileService) BackendForFile(file *database.CloudFile) (storage.Backend,
 
 func backendFromPoolStorage(cfg PoolStorageConfig, fallback storage.Backend) (storage.Backend, error) {
 	if strings.TrimSpace(cfg.Endpoint) == "" {
-		if fallback != nil {
-			return fallback, nil
-		}
 		return nil, fmt.Errorf("storage backend not configured")
 	}
 	if strings.TrimSpace(cfg.SecretId) == "" && strings.TrimSpace(cfg.SecretKey) == "" && filepath.IsAbs(cfg.Endpoint) {
 		return storage.NewLocalBackend(cfg.Endpoint), nil
 	}
 	return storage.NewS3Backend(cfg.Endpoint, cfg.SecretId, cfg.SecretKey, cfg.Bucket, cfg.EnableSsl)
+}
+
+func mapPoolStorageConfig(cfg config.StoragePoolConfig) PoolStorageConfig {
+	return PoolStorageConfig{
+		EnableSigned:   cfg.EnableSigned,
+		EnableSsl:      cfg.EnableSsl,
+		Endpoint:       cfg.Endpoint,
+		AccessEndpoint: cfg.AccessEndpoint,
+		Bucket:         cfg.Bucket,
+		ImageProxy:     cfg.ImageProxy,
+		AccessProxy:    cfg.AccessProxy,
+		SecretId:       cfg.SecretId,
+		SecretKey:      cfg.SecretKey,
+	}
 }
 
 func mustJSON(v any) datatypes.JSON {
