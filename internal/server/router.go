@@ -24,7 +24,7 @@ func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.Ta
 
 	if cfg.Auth.Target != "" {
 		log.Info().Str("target", cfg.Auth.Target).Bool("useTLS", cfg.Auth.UseTLS).Msg("auth client enabled")
-		authenticator, err := dyauth.NewGrpcTokenAuthenticator(dyauth.GrpcAuthDialConfig{Target: cfg.Auth.Target, UseTLS: cfg.Auth.UseTLS})
+		authenticator, err := dyauth.NewGrpcTokenAuthenticator(dyauth.GrpcAuthDialConfig{Target: cfg.Auth.Target, UseTLS: cfg.Auth.UseTLS, TLSSkipVerify: cfg.Auth.TLSSkipVerify})
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to init authenticator")
 		}

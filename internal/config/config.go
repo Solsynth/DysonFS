@@ -52,8 +52,9 @@ type StorageConfig struct {
 }
 
 type AuthConfig struct {
-	Target string `mapstructure:"target"`
-	UseTLS bool   `mapstructure:"useTLS"`
+	Target        string `mapstructure:"target"`
+	UseTLS        bool   `mapstructure:"useTLS"`
+	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
 }
 
 type ModeConfig struct {
@@ -128,6 +129,7 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("storage.localDir", "/tmp/dyson-drive/data")
 	viper.SetDefault("auth.target", "padlock:7003")
 	viper.SetDefault("auth.useTLS", false)
+	viper.SetDefault("auth.tlsSkipVerify", false)
 	viper.SetDefault("mode.master", true)
 	viper.SetDefault("mode.worker", false)
 	viper.SetDefault("mode.storage", false)

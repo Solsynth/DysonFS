@@ -22,6 +22,7 @@ localDir = "/var/lib/dyson-drive/data"
 [auth]
 target = ""
 useTLS = false
+tlsSkipVerify = false
 
 [mode]
 master = true
