@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ vars.PACKAGE_OWNER }}/dyson-filesystem
+  IMAGE_NAME: ${{ vars.PACKAGE_OWNER }}/dfs
 
 jobs:
   build:
