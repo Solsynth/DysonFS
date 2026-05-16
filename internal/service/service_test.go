@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/driver/sqlite"
@@ -95,7 +97,7 @@ func TestListRootOwnedExcludesChildren(t *testing.T) {
 		t.Fatalf("create child file: %v", err)
 	}
 
-	files, err := svc.ListRootOwned(accountID)
+	files, err := svc.ListRootOwned(accountID, 20)
 	if err != nil {
 		t.Fatalf("ListRootOwned() error = %v", err)
 	}
@@ -106,6 +108,39 @@ func TestListRootOwnedExcludesChildren(t *testing.T) {
 		if f.ParentID != nil {
 			t.Fatalf("expected only root files, got child %q", f.Name)
 		}
+	}
+}
+
+func TestListRootOwnedDefaultsToRecentFirst(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	for i := 0; i < 25; i++ {
+		createdAt := time.Unix(int64(i), 0)
+		if err := db.Create(&database.CloudFile{ID: fmt.Sprintf("file-%02d", i), Name: fmt.Sprintf("file-%02d", i), AccountID: accountID, Indexed: true, CreatedAt: createdAt, UpdatedAt: createdAt}).Error; err != nil {
+			t.Fatalf("create file %d: %v", i, err)
+		}
+	}
+
+	files, err := svc.ListRootOwned(accountID, 20)
+	if err != nil {
+		t.Fatalf("ListRootOwned() error = %v", err)
+	}
+	if got := len(files); got != 20 {
+		t.Fatalf("len(ListRootOwned()) = %d, want 20", got)
+	}
+	if files[0].Name != "file-24" {
+		t.Fatalf("first file = %q, want newest first", files[0].Name)
+	}
+	if files[len(files)-1].Name != "file-05" {
+		t.Fatalf("last returned file = %q, want 20 newest only", files[len(files)-1].Name)
 	}
 }
 

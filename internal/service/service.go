@@ -445,9 +445,13 @@ func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error
 	return files, nil
 }
 
-func (s *FileService) ListRootOwned(accountID uuid.UUID) ([]database.CloudFile, error) {
+func (s *FileService) ListRootOwned(accountID uuid.UUID, take int) ([]database.CloudFile, error) {
 	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ? AND parent_id IS NULL", accountID).Find(&files).Error; err != nil {
+	query := s.db.Preload("Object").Where("account_id = ? AND parent_id IS NULL", accountID).Order("created_at desc")
+	if take > 0 {
+		query = query.Limit(take)
+	}
+	if err := query.Find(&files).Error; err != nil {
 		return nil, err
 	}
 	return files, nil

@@ -13,6 +13,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
+	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/go/pkg/auth"
 
@@ -213,7 +214,7 @@ func listPools(c *gin.Context, files *service.FileService) {
 		return
 	}
 	c.Header("X-Total", strconv.Itoa(len(items)))
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, items)
 }
 
 // @Summary Get quota summary
@@ -419,7 +420,13 @@ func listRootOwned(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	items, err := files.ListRootOwned(uuid.MustParse(result.Account.GetId()))
+	take := 20
+	if v := strings.TrimSpace(c.Query("take")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			take = n
+		}
+	}
+	items, err := files.ListRootOwned(uuid.MustParse(result.Account.GetId()), take)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -625,6 +632,14 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		return
 	}
 	chunks := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
+	logging.Log.Info().
+		Str("accountId", result.Account.GetId()).
+		Str("name", req.Name).
+		Int64("fileSize", req.FileSize).
+		Int64("chunkSize", req.ChunkSize).
+		Int("chunks", chunks).
+		Str("contentType", req.ContentType).
+		Msg("creating upload task")
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), req.Name, req.FileSize, req.PoolID, req.FileName, req.ContentType, req.ChunkSize, chunks)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -661,6 +676,11 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	logging.Log.Info().
+		Str("accountId", result.Account.GetId()).
+		Str("fileName", fileHeader.Filename).
+		Int64("size", fileHeader.Size).
+		Msg("starting direct upload")
 	tempPath := filepath.Join(tempDir, database.NewID()+".upload")
 	out, err := os.Create(tempPath)
 	if err != nil {
@@ -673,6 +693,10 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	_ = out.Close()
+	logging.Log.Info().
+		Str("accountId", result.Account.GetId()).
+		Str("tempPath", tempPath).
+		Msg("direct upload staged to disk")
 	defer os.Remove(tempPath)
 	object, err := files.DetectAndCreateObject(tempPath)
 	if err != nil {
@@ -696,6 +720,11 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	_ = stage.Close()
+	logging.Log.Info().
+		Str("accountId", result.Account.GetId()).
+		Str("fileId", createdFile.ID).
+		Str("objectId", object.ID).
+		Msg("direct upload stored")
 	_ = tasks
 	c.JSON(http.StatusOK, createdFile)
 }
@@ -732,6 +761,11 @@ func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	logging.Log.Debug().
+		Str("taskId", taskID).
+		Int("chunkIndex", idx).
+		Int64("chunkSize", fileHeader.Size).
+		Msg("upload chunk staged")
 	if err := tasks.UpdateUploadedChunk(taskID, idx); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -771,6 +805,11 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	logging.Log.Info().
+		Str("taskId", taskID).
+		Int("chunks", task.ChunksCount).
+		Str("mergedPath", mergedPath).
+		Msg("upload chunks merged")
 	object, err := files.DetectAndCreateObject(mergedPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -795,10 +834,19 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		return
 	}
 	_ = stage.Close()
+	logging.Log.Info().
+		Str("taskId", taskID).
+		Str("fileId", created.ID).
+		Str("objectId", object.ID).
+		Msg("upload stored")
 	if err := bus.PublishFileUploaded(c.Request.Context(), eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: object.MimeType, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	logging.Log.Info().
+		Str("taskId", taskID).
+		Str("fileId", created.ID).
+		Msg("upload event published")
 	_ = tasks.MarkCompleted(task.TaskID)
 	c.JSON(http.StatusOK, created)
 }

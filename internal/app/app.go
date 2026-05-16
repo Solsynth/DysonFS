@@ -22,6 +22,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -125,7 +126,18 @@ func (a *App) startMaster(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	a.grpcSrv = grpc.NewServer()
+	grpcOpts := []grpc.ServerOption{}
+	if a.cfg.GRPC.UseTLS {
+		if a.cfg.GRPC.CertFile == "" || a.cfg.GRPC.KeyFile == "" {
+			return fmt.Errorf("grpc tls requires grpc.certFile and grpc.keyFile")
+		}
+		creds, err := credentials.NewServerTLSFromFile(a.cfg.GRPC.CertFile, a.cfg.GRPC.KeyFile)
+		if err != nil {
+			return fmt.Errorf("load grpc tls credentials: %w", err)
+		}
+		grpcOpts = append(grpcOpts, grpc.Creds(creds))
+	}
+	a.grpcSrv = grpc.NewServer(grpcOpts...)
 	grpcsvc.Register(a.grpcSrv, a.files)
 	reflection.Register(a.grpcSrv)
 

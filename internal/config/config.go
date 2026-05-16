@@ -31,7 +31,10 @@ type HTTPConfig struct {
 }
 
 type GRPCConfig struct {
-	Port string `mapstructure:"port"`
+	Port      string `mapstructure:"port"`
+	UseTLS    bool   `mapstructure:"useTLS"`
+	CertFile  string `mapstructure:"certFile"`
+	KeyFile   string `mapstructure:"keyFile"`
 }
 
 type DatabaseConfig struct {
@@ -122,6 +125,9 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("app.name", "DysonFileSystem")
 	viper.SetDefault("http.port", "8080")
 	viper.SetDefault("grpc.port", "9090")
+	viper.SetDefault("grpc.useTLS", false)
+	viper.SetDefault("grpc.certFile", "")
+	viper.SetDefault("grpc.keyFile", "")
 	viper.SetDefault("database.dsn", "")
 	viper.SetDefault("redis.addr", "")
 	viper.SetDefault("nats.url", "")

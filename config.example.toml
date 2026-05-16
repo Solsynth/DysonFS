@@ -5,6 +5,9 @@ port = "8080"
 
 [grpc]
 port = "9090"
+useTLS = false
+certFile = ""
+keyFile = ""
 
 [database]
 dsn = "host=postgres port=5432 user=dyson password=dyson dbname=dyson_drive sslmode=disable"

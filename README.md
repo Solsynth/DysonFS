@@ -46,6 +46,9 @@ Key settings:
 - `database.dsn`
 - `http.port`
 - `grpc.port`
+- `grpc.useTLS`
+- `grpc.certFile`
+- `grpc.keyFile`
 - `storage.tempDir`
 - `storage.localDir`
 - `auth.target`
