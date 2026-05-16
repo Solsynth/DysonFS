@@ -1,6 +1,8 @@
 package database
 
 import (
+	"bytes"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,6 +63,155 @@ type CloudFile struct {
 	UpdatedAt       time.Time      `json:"updated_at"`
 	Object          *FileObject    `gorm:"foreignKey:ObjectID;references:ID" json:"object,omitempty"`
 	Children        []CloudFile    `gorm:"foreignKey:ParentID;references:ID" json:"children,omitempty"`
+}
+
+func (f *FileObject) LegacyMeta() datatypes.JSON {
+	if f == nil {
+		return nil
+	}
+	return f.Meta
+}
+
+func (f *FileObject) MarshalJSON() ([]byte, error) {
+	if f == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(map[string]any{
+		"id":              f.ID,
+		"size":            f.Size,
+		"meta":            f.LegacyMeta(),
+		"mime_type":       f.MimeType,
+		"hash":            f.Hash,
+		"has_compression": f.HasCompression,
+		"has_thumbnail":   f.HasThumbnail,
+		"file_replicas":   []any{},
+		"created_at":      f.CreatedAt,
+		"updated_at":      f.UpdatedAt,
+		"deleted_at":      nullableDeletedAt(f.DeletedAt),
+	})
+}
+
+func (f *CloudFile) LegacyFileMeta() datatypes.JSON {
+	if f == nil {
+		return nil
+	}
+	if len(bytes.TrimSpace(f.FileMeta)) > 0 && string(bytes.TrimSpace(f.FileMeta)) != "null" {
+		return f.FileMeta
+	}
+	if f.Object != nil {
+		return f.Object.LegacyMeta()
+	}
+	return nil
+}
+
+func (f *CloudFile) LegacySensitiveMarks() []any {
+	return []any{}
+}
+
+func (f *CloudFile) ResourceIdentifier() string {
+	if f == nil || f.ID == "" {
+		return ""
+	}
+	return "file:" + f.ID
+}
+
+func (f *CloudFile) MarshalJSON() ([]byte, error) {
+	if f == nil {
+		return []byte("null"), nil
+	}
+	objectID := f.ObjectID
+	var object any
+	if f.Object != nil {
+		object = f.Object
+	}
+	return json.Marshal(map[string]any{
+		"id":                  f.ID,
+		"name":                f.Name,
+		"description":         f.Description,
+		"user_meta":           f.UserMeta,
+		"sensitive_marks":     f.LegacySensitiveMarks(),
+		"file_meta":           f.LegacyFileMeta(),
+		"mime_type":           f.legacyMimeType(),
+		"hash":                f.legacyHash(),
+		"expired_at":          f.ExpiredAt,
+		"size":                f.legacySize(),
+		"uploaded_at":         f.UploadedAt,
+		"has_compression":     f.legacyHasCompression(),
+		"has_thumbnail":       f.legacyHasThumbnail(),
+		"object_id":           objectID,
+		"object":              object,
+		"parent_id":           f.ParentID,
+		"indexed":             f.Indexed,
+		"is_folder":           f.IsFolder,
+		"usage":               f.Usage,
+		"application_type":    f.ApplicationType,
+		"bundle_id":           nil,
+		"is_marked_recycle":   f.IsMarkedRecycle,
+		"storage_id":          f.StorageID,
+		"storage_url":         f.StorageURL,
+		"account_id":          f.AccountID,
+		"resource_identifier": f.ResourceIdentifier(),
+		"created_at":          f.CreatedAt,
+		"updated_at":          f.UpdatedAt,
+		"deleted_at":          nullableDeletedAt(f.DeletedAt),
+	})
+}
+
+func (f *CloudFile) legacyMimeType() string {
+	if f == nil {
+		return ""
+	}
+	if f.Object != nil && f.Object.MimeType != "" {
+		return f.Object.MimeType
+	}
+	return ""
+}
+
+func (f *CloudFile) legacyHash() string {
+	if f == nil {
+		return ""
+	}
+	if f.Object != nil && f.Object.Hash != "" {
+		return f.Object.Hash
+	}
+	return ""
+}
+
+func (f *CloudFile) legacySize() int64 {
+	if f == nil {
+		return 0
+	}
+	if f.Object != nil && f.Object.Size != 0 {
+		return f.Object.Size
+	}
+	return 0
+}
+
+func (f *CloudFile) legacyHasCompression() bool {
+	if f == nil {
+		return false
+	}
+	if f.Object != nil {
+		return f.Object.HasCompression
+	}
+	return false
+}
+
+func (f *CloudFile) legacyHasThumbnail() bool {
+	if f == nil {
+		return false
+	}
+	if f.Object != nil {
+		return f.Object.HasThumbnail
+	}
+	return false
+}
+
+func nullableDeletedAt(v gorm.DeletedAt) any {
+	if !v.Valid {
+		return nil
+	}
+	return v.Time
 }
 
 type FileReplica struct {
