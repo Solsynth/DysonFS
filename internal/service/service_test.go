@@ -7,6 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 )
 
@@ -37,3 +42,71 @@ func TestBackendFromPoolStorageMissingEndpoint(t *testing.T) {
 		t.Fatal("backendFromPoolStorage() error = nil, want error")
 	}
 }
+
+func TestListOwnedReturnsAllUserFiles(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	otherID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root", AccountID: accountID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create root file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "nested", AccountID: accountID, ParentID: ptr("parent"), Indexed: false}).Error; err != nil {
+		t.Fatalf("create nested file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "other", AccountID: otherID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create other file: %v", err)
+	}
+
+	files, err := svc.ListOwned(accountID)
+	if err != nil {
+		t.Fatalf("ListOwned() error = %v", err)
+	}
+	if got := len(files); got != 2 {
+		t.Fatalf("len(ListOwned()) = %d, want 2", got)
+	}
+}
+
+func TestListRootOwnedExcludesChildren(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root-indexed", AccountID: accountID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create root file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root-unindexed", AccountID: accountID, Indexed: false}).Error; err != nil {
+		t.Fatalf("create root unindexed file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "child", AccountID: accountID, ParentID: ptr("parent"), Indexed: true}).Error; err != nil {
+		t.Fatalf("create child file: %v", err)
+	}
+
+	files, err := svc.ListRootOwned(accountID)
+	if err != nil {
+		t.Fatalf("ListRootOwned() error = %v", err)
+	}
+	if got := len(files); got != 2 {
+		t.Fatalf("len(ListRootOwned()) = %d, want 2", got)
+	}
+	for _, f := range files {
+		if f.ParentID != nil {
+			t.Fatalf("expected only root files, got child %q", f.Name)
+		}
+	}
+}
+
+func ptr(v string) *string { return &v }

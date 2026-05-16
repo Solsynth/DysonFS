@@ -34,10 +34,11 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
 		f.GET("/:id/e2ee", func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"code": "file.e2ee_not_found"}) })
-		f.GET("/root/children", func(c *gin.Context) { listRoot(c, files) })
+		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files) })
 		f.GET("/children/:id", func(c *gin.Context) { listChildren(c, files) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
-		f.GET("/me", func(c *gin.Context) { listRoot(c, files) })
+		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
+		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
 		f.POST("/batches/delete", func(c *gin.Context) { batchRecycleFiles(c, files, bus) })
 		f.DELETE("/:id", func(c *gin.Context) { deleteFile(c, files, bus) })
 		f.DELETE("/me/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus) })
@@ -397,13 +398,43 @@ func updateFilePermissions(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func listRoot(c *gin.Context, files *service.FileService) {
+func listRootIndexed(c *gin.Context, files *service.FileService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 	items, err := files.ListRoot(uuid.MustParse(result.Account.GetId()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("X-Total", strconv.Itoa(len(items)))
+	c.JSON(http.StatusOK, items)
+}
+
+func listRootOwned(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	items, err := files.ListRootOwned(uuid.MustParse(result.Account.GetId()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("X-Total", strconv.Itoa(len(items)))
+	c.JSON(http.StatusOK, items)
+}
+
+func listUnindexed(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	items, err := files.ListUnindexed(uuid.MustParse(result.Account.GetId()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

@@ -445,6 +445,30 @@ func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error
 	return files, nil
 }
 
+func (s *FileService) ListRootOwned(accountID uuid.UUID) ([]database.CloudFile, error) {
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("account_id = ? AND parent_id IS NULL", accountID).Find(&files).Error; err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func (s *FileService) ListOwned(accountID uuid.UUID) ([]database.CloudFile, error) {
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("account_id = ?", accountID).Find(&files).Error; err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, error) {
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("account_id = ? AND indexed = false", accountID).Find(&files).Error; err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
 func (s *FileService) CreateFolder(accountID uuid.UUID, name string, parentID *string) (*database.CloudFile, error) {
 	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, Indexed: true, IsFolder: true, ParentID: parentID}
 	if err := s.db.Create(file).Error; err != nil {
