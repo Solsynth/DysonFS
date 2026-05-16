@@ -14,7 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus) *gin.Engine {
+func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(cors.New(cors.Config{AllowAllOrigins: true, AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Origin", "Content-Type", "Authorization", "X-Forwarded-Authorization", "X-Original-Authorization"}, ExposeHeaders: []string{"X-Total"}}))
@@ -27,7 +27,7 @@ func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.Ta
 		r.Use(dyauth.OptionalAuthMiddleware(authenticator))
 	}
 
-	handler.RegisterRoutes(r, cfg, files, tasks, bus)
+	handler.RegisterRoutes(r, cfg, files, tasks, quota, bus)
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true, "mode": "master"}) })
 	return r
 }

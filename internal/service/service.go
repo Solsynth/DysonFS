@@ -374,6 +374,37 @@ func (s *FileService) DeleteFile(id string) error {
 	return s.db.Delete(&database.CloudFile{}, "id = ?", id).Error
 }
 
+func (s *FileService) RecycleFile(id string) error {
+	return s.db.Model(&database.CloudFile{}).Where("id = ?", id).Update("is_marked_recycle", true).Error
+}
+
+func (s *FileService) RecycleBatch(ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx := s.db.Model(&database.CloudFile{}).Where("id IN ?", ids).Update("is_marked_recycle", true)
+	return tx.RowsAffected, tx.Error
+}
+
+func (s *FileService) RestoreFile(id string) error {
+	return s.db.Model(&database.CloudFile{}).Where("id = ?", id).Update("is_marked_recycle", false).Error
+}
+
+func (s *FileService) PurgeFile(id string) error {
+	if err := s.db.Unscoped().Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
+		return err
+	}
+	if err := s.db.Where("file_id = ?", id).Delete(&database.FilePermission{}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *FileService) PurgeRecycleBin(accountID uuid.UUID) (int64, error) {
+	tx := s.db.Where("account_id = ? AND is_marked_recycle = true", accountID).Delete(&database.CloudFile{})
+	return tx.RowsAffected, tx.Error
+}
+
 func (s *FileService) EnsureDerivedChildren(accountID uuid.UUID, parentID, baseName string) error {
 	_ = accountID
 	_ = parentID
@@ -586,6 +617,49 @@ func (s *TaskService) MarkCompleted(taskID string) error {
 func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {
 	tx := s.db.Where("account_id = ? and status in ?", accountID, []string{"completed", "failed", "cancelled", "expired"}).Delete(&database.PersistentTask{})
 	return tx.RowsAffected, tx.Error
+}
+
+type QuotaService struct{ db *database.DB }
+
+func NewQuotaService(db *database.DB) *QuotaService { return &QuotaService{db: db} }
+
+type QuotaSummary struct {
+	BasedQuota int64 `json:"based_quota"`
+	ExtraQuota  int64 `json:"extra_quota"`
+	TotalQuota  int64 `json:"total_quota"`
+}
+
+func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord, error) {
+	var records []database.QuotaRecord
+	if err := s.db.Where("account_id = ?", accountID).Order("created_at desc").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func (s *QuotaService) GetSummary(accountID uuid.UUID) (QuotaSummary, error) {
+	var records []database.QuotaRecord
+	if err := s.db.Where("account_id = ?", accountID).Find(&records).Error; err != nil {
+		return QuotaSummary{}, err
+	}
+	var total int64
+	for _, record := range records {
+		total += record.Quota
+	}
+	return QuotaSummary{BasedQuota: total, ExtraQuota: 0, TotalQuota: total}, nil
+}
+
+func (s *QuotaService) GetUsage(accountID uuid.UUID) (QuotaSummary, error) {
+	return s.GetSummary(accountID)
+}
+
+func (s *QuotaService) GetPoolUsage(accountID uuid.UUID, poolID string) (map[string]any, error) {
+	_ = accountID
+	var total int64
+	if err := s.db.Model(&database.CloudFile{}).Where("pool_id = ?", poolID).Count(&total).Error; err != nil {
+		return nil, err
+	}
+	return map[string]any{"pool_id": poolID, "total_quota": total}, nil
 }
 
 func ErrNotImplemented() error { return errors.New("not implemented") }

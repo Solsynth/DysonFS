@@ -9,3 +9,10 @@ type FileUploadedEvent struct {
 	ProcessingFilePath string `json:"processing_file_path"`
 	IsTempFile         bool   `json:"is_temp_file"`
 }
+
+type FileActionEvent struct {
+	Action   string `json:"action"`
+	FileID   string `json:"file_id"`
+	AccountID string `json:"account_id"`
+	Name     string `json:"name,omitempty"`
+}

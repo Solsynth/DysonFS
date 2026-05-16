@@ -34,6 +34,7 @@ type App struct {
 	stor     storage.Backend
 	files    *service.FileService
 	tasks    *service.TaskService
+	quota    *service.QuotaService
 	httpSrv  *http.Server
 	grpcSrv  *grpc.Server
 	natsConn *nats.Conn
@@ -77,7 +78,7 @@ func New(cfg *config.Config, mode string) (*App, error) {
 		natsConn = conn
 	}
 
-	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: service.NewFileService(db, stor), tasks: service.NewTaskService(db), natsConn: natsConn, logger: logging.Log}
+	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: service.NewFileService(db, stor), tasks: service.NewTaskService(db), quota: service.NewQuotaService(db), natsConn: natsConn, logger: logging.Log}
 	if natsConn != nil {
 		app.bus = eventbus.New(natsConn)
 	}
@@ -114,7 +115,7 @@ func (a *App) Stop(ctx context.Context) error {
 }
 
 func (a *App) startMaster(ctx context.Context) error {
-	r := server.NewRouter(a.cfg, a.files, a.tasks, a.bus)
+	r := server.NewRouter(a.cfg, a.files, a.tasks, a.quota, a.bus)
 	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
 
 	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)

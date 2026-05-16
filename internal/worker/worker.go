@@ -41,6 +41,11 @@ func (w *Worker) Start(ctx context.Context) error {
 		}); err != nil {
 			return err
 		}
+		if _, err := w.bus.SubscribeFileAction(func(evt eventbus.FileActionEvent) error {
+			return w.handleFileAction(evt)
+		}); err != nil {
+			return err
+		}
 	}
 	go w.runMaintenance(ctx)
 	logging.Log.Info().Msg("worker loop started")
@@ -56,6 +61,7 @@ func (w *Worker) runMaintenance(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.cleanupTempArtifacts()
+			w.cleanupStaleTasks()
 		}
 	}
 }
@@ -76,6 +82,28 @@ func (w *Worker) cleanupTempArtifacts() {
 		}
 		_ = os.RemoveAll(filepath.Join(w.tempDir, entry.Name()))
 	}
+}
+
+func (w *Worker) cleanupStaleTasks() {
+	if w.files == nil {
+		return
+	}
+	_ = w.files.DB().Where("status IN ? AND last_activity < now() - interval '30 days'", []string{"completed", "failed", "cancelled", "expired"}).Delete(&database.PersistentTask{}).Error
+}
+
+func (w *Worker) handleFileAction(evt eventbus.FileActionEvent) error {
+	if evt.FileID == "" {
+		return nil
+	}
+	switch evt.Action {
+	case "delete", "purge":
+		_ = w.files.PurgeFile(evt.FileID)
+	case "recycle":
+		_ = w.files.RecycleFile(evt.FileID)
+	case "restore":
+		_ = w.files.RestoreFile(evt.FileID)
+	}
+	return nil
 }
 
 func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploadedEvent) error {

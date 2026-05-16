@@ -28,12 +28,31 @@ func (b *Bus) PublishFileUploaded(_ context.Context, evt FileUploadedEvent) erro
 	return b.PublishJSON("file_uploaded", evt)
 }
 
+func (b *Bus) PublishFileAction(_ context.Context, evt FileActionEvent) error {
+	return b.PublishJSON("file_action", evt)
+}
+
 func (b *Bus) SubscribeFileUploaded(handler func(FileUploadedEvent) error) (*nats.Subscription, error) {
 	if b == nil || b.Conn == nil {
 		return nil, nil
 	}
 	return b.Conn.Subscribe("file_uploaded", func(msg *nats.Msg) {
 		var evt FileUploadedEvent
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			return
+		}
+		if handler != nil {
+			_ = handler(evt)
+		}
+	})
+}
+
+func (b *Bus) SubscribeFileAction(handler func(FileActionEvent) error) (*nats.Subscription, error) {
+	if b == nil || b.Conn == nil {
+		return nil, nil
+	}
+	return b.Conn.Subscribe("file_action", func(msg *nats.Msg) {
+		var evt FileActionEvent
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {
 			return
 		}

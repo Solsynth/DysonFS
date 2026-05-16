@@ -19,8 +19,13 @@ import (
 	"github.com/google/uuid"
 )
 
-func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus) {
-	_ = bus
+func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus) {
+	if bus != nil {
+		r.Use(func(c *gin.Context) {
+			c.Set("bus", bus)
+			c.Next()
+		})
+	}
 	f := r.Group("/api/files")
 	{
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
@@ -31,10 +36,12 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:parentId/children", func(c *gin.Context) { listChildren(c, files) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
 		f.GET("/me", func(c *gin.Context) { listRoot(c, files) })
-		f.POST("/batches/delete", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
-		f.DELETE("/:id", func(c *gin.Context) { deleteFile(c, files) })
-		f.DELETE("/me/recycle", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
-		f.DELETE("/recycle", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
+		f.POST("/batches/delete", func(c *gin.Context) { batchRecycleFiles(c, files, bus) })
+		f.DELETE("/:id", func(c *gin.Context) { deleteFile(c, files, bus) })
+		f.DELETE("/me/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus) })
+		f.DELETE("/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus) })
+		f.POST("/:id/recycle", func(c *gin.Context) { recycleFile(c, files, bus) })
+		f.POST("/:id/restore", func(c *gin.Context) { restoreFile(c, files, bus) })
 		f.GET("/:id/permissions", func(c *gin.Context) { getFilePermissions(c, files) })
 		f.PUT("/:id/permissions", func(c *gin.Context) { updateFilePermissions(c, files) })
 	}
@@ -65,12 +72,10 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 
 	b := r.Group("/api/billing")
 	{
-		b.GET("quota", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"based_quota": 0, "extra_quota": 0, "total_quota": 0})
-		})
-		b.GET("quota/records", func(c *gin.Context) { c.Header("X-Total", "0"); c.JSON(http.StatusOK, []any{}) })
-		b.GET("usage", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"total_quota": 0}) })
-		b.GET("usage/:poolId", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"pool_id": c.Param("poolId")}) })
+		b.GET("quota", func(c *gin.Context) { getQuota(c, quota) })
+		b.GET("quota/records", func(c *gin.Context) { listQuotaRecords(c, quota) })
+		b.GET("usage", func(c *gin.Context) { getUsage(c, quota) })
+		b.GET("usage/:poolId", func(c *gin.Context) { getPoolUsage(c, quota) })
 	}
 
 	r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}) })
@@ -162,6 +167,63 @@ func listPools(c *gin.Context, files *service.FileService) {
 	}
 	c.Header("X-Total", strconv.Itoa(len(items)))
 	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func getQuota(c *gin.Context, quota *service.QuotaService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	summary, err := quota.GetSummary(uuid.MustParse(result.Account.GetId()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, summary)
+}
+
+func listQuotaRecords(c *gin.Context, quota *service.QuotaService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	records, err := quota.ListRecords(uuid.MustParse(result.Account.GetId()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("X-Total", strconv.Itoa(len(records)))
+	c.JSON(http.StatusOK, records)
+}
+
+func getUsage(c *gin.Context, quota *service.QuotaService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	summary, err := quota.GetUsage(uuid.MustParse(result.Account.GetId()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, summary)
+}
+
+func getPoolUsage(c *gin.Context, quota *service.QuotaService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	usage, err := quota.GetPoolUsage(uuid.MustParse(result.Account.GetId()), c.Param("poolId"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, usage)
 }
 
 func getPoolPermissions(c *gin.Context, files *service.FileService) {
@@ -305,7 +367,7 @@ func createFolder(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, folder)
 }
 
-func deleteFile(c *gin.Context, files *service.FileService) {
+func deleteFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -324,7 +386,101 @@ func deleteFile(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if bus != nil {
+		_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "delete", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func recycleFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if file.AccountID.String() != result.Account.GetId() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if err := files.RecycleFile(file.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if bus != nil {
+		_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "recycle", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func restoreFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if file.AccountID.String() != result.Account.GetId() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if err := files.RestoreFile(file.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if bus != nil {
+		_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "restore", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func batchRecycleFiles(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req struct { IDs []string `json:"ids"` }
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	count, err := files.RecycleBatch(req.IDs)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if bus != nil {
+		for _, id := range req.IDs {
+			_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "recycle", FileID: id, AccountID: result.Account.GetId()})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+func purgeMyRecycleBin(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	count, err := files.PurgeRecycleBin(uuid.MustParse(result.Account.GetId()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if bus != nil {
+		_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "purge", AccountID: result.Account.GetId()})
+	}
+	c.JSON(http.StatusOK, gin.H{"count": count})
 }
 
 func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService) {
