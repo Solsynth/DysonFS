@@ -9,7 +9,7 @@ import (
 )
 
 type FilePool struct {
-	ID            string         `gorm:"primaryKey;size:26" json:"id"`
+	ID            string         `gorm:"primaryKey;size:36" json:"id"`
 	Name          string         `json:"name"`
 	AccountID     uuid.UUID      `json:"account_id"`
 	StorageConfig datatypes.JSON `gorm:"type:jsonb" json:"storage_config"`
@@ -21,7 +21,7 @@ type FilePool struct {
 }
 
 type FileObject struct {
-	ID             string         `gorm:"primaryKey;size:26" json:"id"`
+	ID             string         `gorm:"primaryKey;size:36" json:"id"`
 	Size           int64          `json:"size"`
 	MimeType       string         `json:"mime_type"`
 	Hash           string         `json:"hash"`
@@ -34,11 +34,11 @@ type FileObject struct {
 }
 
 type CloudFile struct {
-	ID              string         `gorm:"primaryKey;size:26" json:"id"`
+	ID              string         `gorm:"primaryKey;size:36" json:"id"`
 	Name            string         `json:"name"`
 	AccountID       uuid.UUID      `json:"account_id"`
-	ObjectID        *string        `gorm:"size:26" json:"object_id"`
-	ParentID        *string        `gorm:"size:26" json:"parent_id"`
+	ObjectID        *string        `gorm:"size:36" json:"object_id"`
+	ParentID        *string        `gorm:"size:36" json:"parent_id"`
 	Indexed         bool           `json:"indexed"`
 	IsFolder        bool           `json:"is_folder"`
 	IsMarkedRecycle bool           `json:"is_marked_recycle"`
@@ -59,9 +59,9 @@ type CloudFile struct {
 }
 
 type FileReplica struct {
-	ID        string    `gorm:"primaryKey;size:26" json:"id"`
-	ObjectID  string    `gorm:"size:26;index" json:"object_id"`
-	PoolID    *string   `gorm:"size:26" json:"pool_id"`
+	ID        string    `gorm:"primaryKey;size:36" json:"id"`
+	ObjectID  string    `gorm:"size:36;index" json:"object_id"`
+	PoolID    *string   `gorm:"size:36" json:"pool_id"`
 	StorageID *string   `json:"storage_id"`
 	Status    string    `json:"status"`
 	IsPrimary bool      `json:"is_primary"`
@@ -70,8 +70,8 @@ type FileReplica struct {
 }
 
 type FilePermission struct {
-	ID          string    `gorm:"primaryKey;size:26" json:"id"`
-	FileID      string    `gorm:"size:26;index" json:"file_id"`
+	ID          string    `gorm:"primaryKey;size:36" json:"id"`
+	FileID      string    `gorm:"size:36;index" json:"file_id"`
 	SubjectType string    `json:"subject_type"`
 	SubjectID   string    `json:"subject_id"`
 	Permission  string    `json:"permission"`
@@ -80,8 +80,8 @@ type FilePermission struct {
 }
 
 type PoolPermission struct {
-	ID          string    `gorm:"primaryKey;size:26" json:"id"`
-	PoolID      string    `gorm:"size:26;index" json:"pool_id"`
+	ID          string    `gorm:"primaryKey;size:36" json:"id"`
+	PoolID      string    `gorm:"size:36;index" json:"pool_id"`
 	SubjectType string    `json:"subject_type"`
 	SubjectID   string    `json:"subject_id"`
 	Permission  string    `json:"permission"`
@@ -90,8 +90,8 @@ type PoolPermission struct {
 }
 
 type PersistentTask struct {
-	ID              string         `gorm:"primaryKey;size:26" json:"id"`
-	TaskID          string         `gorm:"size:26;index" json:"task_id"`
+	ID              string         `gorm:"primaryKey;size:36" json:"id"`
+	TaskID          string         `gorm:"size:36;index" json:"task_id"`
 	Name            string         `json:"name"`
 	Type            string         `json:"type"`
 	Status          string         `json:"status"`
@@ -110,8 +110,8 @@ type PersistentTask struct {
 	UpdatedAt       time.Time      `json:"updated_at"`
 	FileName        *string        `json:"file_name"`
 	FileSize        *int64         `json:"file_size"`
-	PoolID          *string        `gorm:"size:26" json:"pool_id"`
-	ParentID        *string        `gorm:"size:26" json:"parent_id"`
+	PoolID          *string        `gorm:"size:36" json:"pool_id"`
+	ParentID        *string        `gorm:"size:36" json:"parent_id"`
 	ApplicationType *string        `json:"application_type"`
 	StorageKey      *string        `json:"storage_key"`
 }

@@ -30,7 +30,20 @@ func Open(cfg *config.Config) (*DB, error) {
 }
 
 func (d *DB) AutoMigrate() error {
-	return d.DB.AutoMigrate(
+	if err := d.DB.AutoMigrate(
 		&FilePool{}, &FileObject{}, &CloudFile{}, &FileReplica{}, &FilePermission{}, &PoolPermission{}, &PersistentTask{}, &QuotaRecord{},
-	)
+	); err != nil {
+		return err
+	}
+	return d.DB.Exec(`
+		alter table if exists file_pools alter column id type varchar(36);
+		alter table if exists file_replicas alter column pool_id type varchar(36);
+		alter table if exists file_permissions alter column file_id type varchar(36);
+		alter table if exists pool_permissions alter column id type varchar(36);
+		alter table if exists pool_permissions alter column pool_id type varchar(36);
+		alter table if exists persistent_tasks alter column pool_id type varchar(36);
+		alter table if exists persistent_tasks alter column parent_id type varchar(36);
+		alter table if exists cloud_files alter column object_id type varchar(36);
+		alter table if exists cloud_files alter column parent_id type varchar(36);
+	`).Error
 }
