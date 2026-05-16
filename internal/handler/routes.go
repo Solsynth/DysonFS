@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -28,6 +29,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	}
 	f := r.Group("/api/files")
 	{
+		f.GET("/:id", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
@@ -107,14 +109,29 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 // @Produce json
 // @Param id path string true "File ID"
 // @Param download query bool false "Download"
+// @Param original query bool false "Prefer original variant"
+// @Param thumbnail query bool false "Prefer thumbnail variant"
 // @Success 307
 // @Failure 404 {object} map[string]any
+// @Router /api/files/{id} [get]
 // @Router /api/files/{id}/open [get]
 func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 	file, err := files.GetFile(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
+	}
+	if variant := c.Query("thumbnail"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
+		if thumb, err := resolveDerivedFile(files, file.ID, "system.thumbnail"); err == nil {
+			file = thumb
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "thumbnail not available"})
+			return
+		}
+	} else if variant := c.Query("original"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
+		if original, err := resolveDerivedFile(files, file.ID, "system.original"); err == nil {
+			file = original
+		}
 	}
 	result, _, ok := auth.GetAuth(c)
 	if ok && !files.CanAccessFile(result.Account, result.Session, file, "read") {
@@ -140,6 +157,20 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 	}
 	_ = cfg
 	c.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+func resolveDerivedFile(files *service.FileService, parentID, kind string) (*database.CloudFile, error) {
+	children, err := files.GetChildren(parentID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range children {
+		child := &children[i]
+		if child.ApplicationType != nil && *child.ApplicationType == kind {
+			return child, nil
+		}
+	}
+	return nil, fmt.Errorf("derived file %s not found", kind)
 }
 
 func listChildren(c *gin.Context, files *service.FileService) {
