@@ -23,11 +23,49 @@ func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.Ta
 	r.Use(cors.New(cors.Config{AllowAllOrigins: true, AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Origin", "Content-Type", "Authorization", "X-Forwarded-Authorization", "X-Original-Authorization"}, ExposeHeaders: []string{"X-Total"}}))
 
 	if cfg.Auth.Target != "" {
+		log.Info().Str("target", cfg.Auth.Target).Bool("useTLS", cfg.Auth.UseTLS).Msg("auth client enabled")
 		authenticator, err := dyauth.NewGrpcTokenAuthenticator(dyauth.GrpcAuthDialConfig{Target: cfg.Auth.Target, UseTLS: cfg.Auth.UseTLS})
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to init authenticator")
 		}
+		r.Use(func(c *gin.Context) {
+			tokenInfo, ok := dyauth.ExtractToken(c.Request)
+			if ok {
+				log.Debug().
+					Str("method", c.Request.Method).
+					Str("path", c.Request.URL.Path).
+					Str("tokenType", string(tokenInfo.Type)).
+					Msg("auth token extracted")
+			} else {
+				log.Debug().
+					Str("method", c.Request.Method).
+					Str("path", c.Request.URL.Path).
+					Msg("no auth token extracted")
+			}
+			c.Next()
+		})
 		r.Use(dyauth.OptionalAuthMiddleware(authenticator, nil, nil))
+		r.Use(func(c *gin.Context) {
+			if result, token, ok := dyauth.GetAuth(c); ok {
+				log.Debug().
+					Str("method", c.Request.Method).
+					Str("path", c.Request.URL.Path).
+					Str("accountId", result.Account.GetId()).
+					Str("sessionId", result.Session.GetId()).
+					Str("tokenType", string(token.Type)).
+					Msg("request authenticated")
+			} else {
+				tokenInfo, ok := dyauth.ExtractToken(c.Request)
+				if ok {
+					log.Warn().
+						Str("method", c.Request.Method).
+						Str("path", c.Request.URL.Path).
+						Str("tokenType", string(tokenInfo.Type)).
+						Msg("auth token present but request was not authenticated")
+				}
+			}
+			c.Next()
+		})
 	}
 
 	docs.SwaggerInfo.BasePath = "/"
