@@ -42,28 +42,30 @@ func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.Ta
 					Str("path", c.Request.URL.Path).
 					Msg("no auth token extracted")
 			}
-			c.Next()
-		})
-		r.Use(dyauth.OptionalAuthMiddleware(authenticator, nil, nil))
-		r.Use(func(c *gin.Context) {
-			if result, token, ok := dyauth.GetAuth(c); ok {
-				log.Debug().
-					Str("method", c.Request.Method).
-					Str("path", c.Request.URL.Path).
-					Str("accountId", result.Account.GetId()).
-					Str("sessionId", result.Session.GetId()).
-					Str("tokenType", string(token.Type)).
-					Msg("request authenticated")
-			} else {
-				tokenInfo, ok := dyauth.ExtractToken(c.Request)
+
+			result, err := dyauth.AuthenticateRequest(c.Request.Context(), authenticator, c.Request)
+			if err != nil {
 				if ok {
 					log.Warn().
+						Err(err).
 						Str("method", c.Request.Method).
 						Str("path", c.Request.URL.Path).
 						Str("tokenType", string(tokenInfo.Type)).
 						Msg("auth token present but request was not authenticated")
 				}
+				c.Next()
+				return
 			}
+
+			dyauth.WithAuth(c, result, tokenInfo)
+			log.Debug().
+				Str("method", c.Request.Method).
+				Str("path", c.Request.URL.Path).
+				Str("accountId", result.Account.GetId()).
+				Str("sessionId", result.Session.GetId()).
+				Str("tokenType", string(tokenInfo.Type)).
+				Msg("request authenticated")
+			_ = dyauth.HydrateAndTouch(c.Request.Context(), nil, nil, result)
 			c.Next()
 		})
 	}
