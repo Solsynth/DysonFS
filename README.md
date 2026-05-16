@@ -1,4 +1,6 @@
-# Dyson FileSystem
+# DysonFS
+
+aka. Dyson Network File System
 
 Go implementation of the Dyson Network file service.
 
@@ -18,6 +20,21 @@ Go implementation of the Dyson Network file service.
 ```bash
 go run ./cmd --mode master
 ```
+
+### Legacy migration
+
+Use the one-shot migrator to import data from the old C# database into the new schema:
+
+```bash
+go run ./cmd --mode migrate-legacy --config ./config.toml --legacy-dsn "$LEGACY_DATABASE_DSN"
+```
+
+Flags:
+
+- `--dry-run` to simulate without writing
+- `--skip-derived` to skip thumbnail/compression child reconstruction
+- `--batch-size` to tune import batch size
+- `--continue-on-error` to keep going after row-level failures
 
 ## Config
 

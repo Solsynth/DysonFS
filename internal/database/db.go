@@ -39,6 +39,7 @@ func (d *DB) AutoMigrate() error {
 		alter table if exists file_pools alter column id type varchar(36);
 		alter table if exists file_pools alter column account_id type uuid using account_id::uuid;
 		alter table if exists file_pools add column if not exists description text default '';
+		alter table if exists quota_records alter column id type varchar(36);
 		alter table if exists file_replicas alter column pool_id type varchar(36);
 		alter table if exists file_permissions alter column file_id type varchar(36);
 		alter table if exists pool_permissions alter column id type varchar(36);
