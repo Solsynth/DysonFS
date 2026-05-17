@@ -23,10 +23,10 @@ import (
 )
 
 type Worker struct {
-	bus   *eventbus.Bus
-	files *service.FileService
-	stor  storage.Backend
-	db    *database.DB
+	bus     *eventbus.Bus
+	files   *service.FileService
+	stor    storage.Backend
+	db      *database.DB
 	tempDir string
 }
 
@@ -104,6 +104,10 @@ func (w *Worker) handleFileAction(evt eventbus.FileActionEvent) error {
 		_ = w.files.RestoreFile(evt.FileID)
 	}
 	return nil
+}
+
+func (w *Worker) HandleFileAction(evt eventbus.FileActionEvent) error {
+	return w.handleFileAction(evt)
 }
 
 func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploadedEvent) error {

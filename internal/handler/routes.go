@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"src.solsynth.dev/sosys/filesystem/internal/config"
+	"src.solsynth.dev/sosys/filesystem/internal/dispatch"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
@@ -21,7 +23,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus) {
+func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	if bus != nil {
 		r.Use(func(c *gin.Context) {
 			c.Set("bus", bus)
@@ -40,12 +42,12 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
 		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
 		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
-		f.POST("/batches/delete", func(c *gin.Context) { batchRecycleFiles(c, files, bus) })
-		f.DELETE("/:id", func(c *gin.Context) { deleteFile(c, files, bus) })
-		f.DELETE("/me/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus) })
-		f.DELETE("/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus) })
-		f.POST("/:id/recycle", func(c *gin.Context) { recycleFile(c, files, bus) })
-		f.POST("/:id/restore", func(c *gin.Context) { restoreFile(c, files, bus) })
+		f.POST("/batches/delete", func(c *gin.Context) { batchRecycleFiles(c, files, bus, dispatcher) })
+		f.DELETE("/:id", func(c *gin.Context) { deleteFile(c, files, bus, dispatcher) })
+		f.DELETE("/me/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus, dispatcher) })
+		f.DELETE("/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus, dispatcher) })
+		f.POST("/:id/recycle", func(c *gin.Context) { recycleFile(c, files, bus, dispatcher) })
+		f.POST("/:id/restore", func(c *gin.Context) { restoreFile(c, files, bus, dispatcher) })
 		f.GET("/:id/permissions", func(c *gin.Context) { getFilePermissions(c, files) })
 		f.PUT("/:id/permissions", func(c *gin.Context) { updateFilePermissions(c, files) })
 	}
@@ -55,7 +57,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks) })
 		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks) })
 		u.POST("/chunk/:taskId/:idx", func(c *gin.Context) { uploadChunk(c, cfg, tasks) })
-		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, bus) })
+		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, bus, dispatcher) })
 		u.GET("/tasks", func(c *gin.Context) { listUploadTasks(c, tasks) })
 		u.GET("/progress/:taskId", func(c *gin.Context) { uploadProgress(c, tasks) })
 		u.GET("/resume/:taskId", func(c *gin.Context) { uploadResume(c, tasks) })
@@ -472,7 +474,7 @@ func createFolder(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, folder)
 }
 
-func deleteFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+func deleteFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -491,13 +493,11 @@ func deleteFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if bus != nil {
-		_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "delete", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
-	}
+	publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "delete", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func recycleFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+func recycleFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -516,13 +516,11 @@ func recycleFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if bus != nil {
-		_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "recycle", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
-	}
+	publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "recycle", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func restoreFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+func restoreFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -541,13 +539,11 @@ func restoreFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus) 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if bus != nil {
-		_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "restore", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
-	}
+	publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "restore", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func batchRecycleFiles(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+func batchRecycleFiles(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -563,15 +559,13 @@ func batchRecycleFiles(c *gin.Context, files *service.FileService, bus *eventbus
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if bus != nil {
-		for _, id := range req.IDs {
-			_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "recycle", FileID: id, AccountID: result.Account.GetId()})
-		}
+	for _, id := range req.IDs {
+		publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "recycle", FileID: id, AccountID: result.Account.GetId()})
 	}
 	c.JSON(http.StatusOK, gin.H{"count": count})
 }
 
-func purgeMyRecycleBin(c *gin.Context, files *service.FileService, bus *eventbus.Bus) {
+func purgeMyRecycleBin(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -582,9 +576,7 @@ func purgeMyRecycleBin(c *gin.Context, files *service.FileService, bus *eventbus
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if bus != nil {
-		_ = bus.PublishFileAction(c.Request.Context(), eventbus.FileActionEvent{Action: "purge", AccountID: result.Account.GetId()})
-	}
+	publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "purge", AccountID: result.Account.GetId()})
 	c.JSON(http.StatusOK, gin.H{"count": count})
 }
 
@@ -790,7 +782,7 @@ func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService)
 // @Param taskId path string true "Task ID"
 // @Success 200 {object} database.CloudFile
 // @Router /api/files/upload/complete/{taskId} [post]
-func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus) {
+func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -861,7 +853,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		Str("fileId", created.ID).
 		Str("objectId", object.ID).
 		Msg("upload stored")
-	if err := bus.PublishFileUploaded(c.Request.Context(), eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: object.MimeType, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
+	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: object.MimeType, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -871,6 +863,26 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		Msg("upload event published")
 	_ = tasks.MarkCompleted(task.TaskID)
 	c.JSON(http.StatusOK, created)
+}
+
+func publishFileUploaded(ctx context.Context, bus *eventbus.Bus, dispatcher dispatch.Dispatcher, evt eventbus.FileUploadedEvent) error {
+	if dispatcher != nil {
+		return dispatcher.PublishFileUploaded(ctx, evt)
+	}
+	if bus != nil {
+		return bus.PublishFileUploaded(ctx, evt)
+	}
+	return nil
+}
+
+func publishFileAction(ctx context.Context, bus *eventbus.Bus, dispatcher dispatch.Dispatcher, evt eventbus.FileActionEvent) {
+	if dispatcher != nil {
+		_ = dispatcher.PublishFileAction(ctx, evt)
+		return
+	}
+	if bus != nil {
+		_ = bus.PublishFileAction(ctx, evt)
+	}
 }
 
 func listUploadTasks(c *gin.Context, tasks *service.TaskService) {

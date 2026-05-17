@@ -22,6 +22,10 @@ url = "nats://nats:4222"
 tempDir = "/var/lib/dyson-drive/tmp"
 localDir = "/var/lib/dyson-drive/data"
 
+[bundled]
+enable = false
+worker_num = 1
+
 [auth]
 target = ""
 useTLS = false

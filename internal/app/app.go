@@ -10,6 +10,7 @@ import (
 
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
+	"src.solsynth.dev/sosys/filesystem/internal/dispatch"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/grpcsvc"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
@@ -36,6 +37,8 @@ type App struct {
 	files    *service.FileService
 	tasks    *service.TaskService
 	quota    *service.QuotaService
+	worker   *worker.Worker
+	dispatcher dispatch.Dispatcher
 	httpSrv  *http.Server
 	grpcSrv  *grpc.Server
 	natsConn *nats.Conn
@@ -46,6 +49,9 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
 		mode = "master"
+	}
+	if cfg.Bundled.Enable && mode == "master" {
+		mode = "bundled"
 	}
 
 	db, err := database.Open(cfg)
@@ -86,6 +92,18 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	if natsConn != nil {
 		app.bus = eventbus.New(natsConn)
 	}
+	app.worker = worker.New(app.bus, app.files, app.stor, app.db, app.cfg.Storage.TempDir)
+	if cfg.Bundled.Enable {
+		count := cfg.Bundled.WorkerNum
+		if count < 1 {
+			count = 1
+		}
+		workers := make([]*worker.Worker, 0, count)
+		for i := 0; i < count; i++ {
+			workers = append(workers, worker.New(nil, app.files, app.stor, app.db, app.cfg.Storage.TempDir))
+		}
+		app.dispatcher = dispatch.NewBundled(workers)
+	}
 	return app, nil
 }
 
@@ -93,6 +111,8 @@ func (a *App) Start(ctx context.Context) error {
 	switch a.mode {
 	case "master":
 		return a.startMaster(ctx)
+	case "bundled":
+		return a.startBundled(ctx)
 	case "worker":
 		return a.startWorker(ctx)
 	case "storage":
@@ -119,7 +139,7 @@ func (a *App) Stop(ctx context.Context) error {
 }
 
 func (a *App) startMaster(ctx context.Context) error {
-	r := server.NewRouter(a.cfg, a.files, a.tasks, a.quota, a.bus)
+	r := server.NewRouter(a.cfg, a.files, a.tasks, a.quota, a.bus, nil)
 	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
 
 	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
@@ -148,9 +168,36 @@ func (a *App) startMaster(ctx context.Context) error {
 }
 
 func (a *App) startWorker(context.Context) error {
-	w := worker.New(a.bus, a.files, a.stor, a.db, a.cfg.Storage.TempDir)
-	go func() { _ = w.Start(context.Background()) }()
+	go func() { _ = a.worker.Start(context.Background()) }()
 	logging.Log.Info().Str("mode", a.mode).Msg("worker started")
+	return nil
+}
+
+func (a *App) startBundled(ctx context.Context) error {
+	go func() { _ = a.worker.Start(ctx) }()
+	r := server.NewRouter(a.cfg, a.files, a.tasks, a.quota, nil, a.dispatcher)
+	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
+	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
+	if err != nil {
+		return err
+	}
+	grpcOpts := []grpc.ServerOption{}
+	if a.cfg.GRPC.UseTLS {
+		if a.cfg.GRPC.CertFile == "" || a.cfg.GRPC.KeyFile == "" {
+			return fmt.Errorf("grpc tls requires grpc.certFile and grpc.keyFile")
+		}
+		creds, err := credentials.NewServerTLSFromFile(a.cfg.GRPC.CertFile, a.cfg.GRPC.KeyFile)
+		if err != nil {
+			return fmt.Errorf("load grpc tls credentials: %w", err)
+		}
+		grpcOpts = append(grpcOpts, grpc.Creds(creds))
+	}
+	a.grpcSrv = grpc.NewServer(grpcOpts...)
+	grpcsvc.Register(a.grpcSrv, a.files)
+	reflection.Register(a.grpcSrv)
+	go func() { _ = a.grpcSrv.Serve(lis) }()
+	go func() { _ = a.httpSrv.ListenAndServe() }()
+	logging.Log.Info().Str("mode", a.mode).Msg("bundled started")
 	return nil
 }
 

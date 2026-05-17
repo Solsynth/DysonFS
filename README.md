@@ -78,18 +78,6 @@ secretId = "minio"
 secretKey = "minio123"
 ```
 
-## API
-
-- `GET /api/files/:id/info`
-- `GET /api/files/:id/open`
-- `GET /api/files/:id/children`
-- `GET /api/files/:id/permissions`
-- `PUT /api/files/:id/permissions`
-- `GET /api/pools`
-- `GET /api/pools/:id/permissions`
-- `PUT /api/pools/:id/permissions`
-- `GET /health`
-
 ## Notes
 
 - Public read is the default.

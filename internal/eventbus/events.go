@@ -11,8 +11,8 @@ type FileUploadedEvent struct {
 }
 
 type FileActionEvent struct {
-	Action   string `json:"action"`
-	FileID   string `json:"file_id"`
+	Action    string `json:"action"`
+	FileID    string `json:"file_id"`
 	AccountID string `json:"account_id"`
-	Name     string `json:"name,omitempty"`
+	Name      string `json:"name,omitempty"`
 }

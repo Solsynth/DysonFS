@@ -24,5 +24,5 @@ func TestRegisterRoutesNoPanic(t *testing.T) {
 		}
 	}()
 
-	RegisterRoutes(r, &config.Config{}, files, tasks, quota, (*eventbus.Bus)(nil))
+	RegisterRoutes(r, &config.Config{}, files, tasks, quota, (*eventbus.Bus)(nil), nil)
 }

@@ -15,6 +15,7 @@ type Config struct {
 	Redis    RedisConfig    `mapstructure:"redis"`
 	NATS     NATSConfig     `mapstructure:"nats"`
 	Storage  StorageConfig  `mapstructure:"storage"`
+	Bundled  BundledConfig  `mapstructure:"bundled"`
 	Auth     AuthConfig     `mapstructure:"auth"`
 	Mode     ModeConfig     `mapstructure:"mode"`
 	Files    FileConfig     `mapstructure:"files"`
@@ -52,6 +53,11 @@ type NATSConfig struct {
 type StorageConfig struct {
 	TempDir  string `mapstructure:"tempDir"`
 	LocalDir string `mapstructure:"localDir"`
+}
+
+type BundledConfig struct {
+	Enable    bool `mapstructure:"enable"`
+	WorkerNum int  `mapstructure:"worker_num"`
 }
 
 type AuthConfig struct {
@@ -133,6 +139,8 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("nats.url", "")
 	viper.SetDefault("storage.tempDir", "/tmp/dyson-drive")
 	viper.SetDefault("storage.localDir", "/tmp/dyson-drive/data")
+	viper.SetDefault("bundled.enable", false)
+	viper.SetDefault("bundled.worker_num", 1)
 	viper.SetDefault("auth.target", "padlock:7003")
 	viper.SetDefault("auth.useTLS", false)
 	viper.SetDefault("auth.tlsSkipVerify", false)
@@ -176,6 +184,8 @@ func applyEnvAliases() {
 			viper.Set("mode.master", false)
 			viper.Set("mode.worker", false)
 			viper.Set("mode.storage", true)
+		case "bundled":
+			viper.Set("bundled.enable", true)
 		}
 	}
 }
