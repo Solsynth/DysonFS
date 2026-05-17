@@ -244,7 +244,7 @@ func (w *Worker) processImage(path string, evt eventbus.FileUploadedEvent, paren
 	if err != nil {
 		return err
 	}
-	thumbKey := storageKey(parent.ID, "thumbnail.webp")
+	thumbKey := storageKey(parent.ID, ".thumbnail")
 	if err := w.stor.Put(context.Background(), thumbKey, bytes.NewReader(thumbBuf), "image/webp"); err != nil {
 		return err
 	}
@@ -265,7 +265,7 @@ func (w *Worker) processImage(path string, evt eventbus.FileUploadedEvent, paren
 		if err != nil {
 			return err
 		}
-		compKey := storageKey(parent.ID, "compression.low.webp")
+		compKey := storageKey(parent.ID, ".compressed")
 		if err := w.stor.Put(context.Background(), compKey, bytes.NewReader(compBuf), "image/webp"); err != nil {
 			return err
 		}
@@ -286,7 +286,7 @@ func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, paren
 		return nil
 	}
 
-	thumbKey := storageKey(parent.ID, "thumbnail.jpg")
+	thumbKey := storageKey(parent.ID, ".thumbnail")
 	thumbPath := filepath.Join(os.TempDir(), parent.ID+".thumb.jpg")
 	stream := ffmpeg.Input(path).
 		Output(thumbPath, ffmpeg.KwArgs{"vframes": 1, "q:v": 2}).
@@ -339,5 +339,5 @@ func (w *Worker) upsertChild(parent *database.CloudFile, evt eventbus.FileUpload
 }
 
 func storageKey(parentID, suffix string) string {
-	return parentID + "/" + suffix
+	return parentID + suffix
 }

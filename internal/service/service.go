@@ -1281,7 +1281,7 @@ func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.C
 		if err != nil {
 			return err
 		}
-		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", "compression.low.webp"); err != nil {
+		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
 			return err
 		}
 	}
@@ -1376,7 +1376,7 @@ func (s *FileService) rebuildImageVariantsFromPath(ctx context.Context, file *da
 		if err != nil {
 			return err
 		}
-		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", "compression.low.webp"); err != nil {
+		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
 			return err
 		}
 	}
@@ -1399,7 +1399,7 @@ func (s *FileService) rebuildVideoThumbnailFromPath(ctx context.Context, file *d
 	if err != nil {
 		return err
 	}
-	return s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBytes, "image/jpeg", "thumbnail.jpg")
+	return s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBytes, "image/jpeg", ".thumbnail")
 }
 
 func (s *FileService) persistReanalysisVariant(ctx context.Context, parent *database.CloudFile, appType string, body []byte, mimeType string, suffix string) error {
@@ -1414,7 +1414,7 @@ func (s *FileService) persistReanalysisVariant(ctx context.Context, parent *data
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	key := parent.ID + "/" + suffix
+	key := parent.ID + suffix
 	if err := backend.Put(ctx, key, bytes.NewReader(body), mimeType); err != nil {
 		return err
 	}

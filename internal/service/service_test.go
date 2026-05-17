@@ -73,7 +73,7 @@ func TestCreateDerivedFileCreatesReplicaUsingParentPool(t *testing.T) {
 	if err := db.Create(&database.FileObject{ID: derivedObjectID, Size: 8, MimeType: "image/webp", Hash: "hash2", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
 		t.Fatalf("create derived object: %v", err)
 	}
-	storageKey := parentID + "/thumbnail.webp"
+	storageKey := parentID + ".thumbnail"
 	file, err := svc.CreateDerivedFile(uuid.New(), parentID, "parent", derivedObjectID, "system.thumbnail", &storageKey)
 	if err != nil {
 		t.Fatalf("CreateDerivedFile() error = %v", err)
