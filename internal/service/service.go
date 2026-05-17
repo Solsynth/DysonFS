@@ -1322,7 +1322,7 @@ func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.C
 	if err != nil {
 		return err
 	}
-	if err := s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBuf, "image/webp", "thumbnail.webp"); err != nil {
+	if err := s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBuf, "image/webp", ".thumbnail"); err != nil {
 		return err
 	}
 	if img.Width() >= 1024 || img.Height() >= 1024 {
