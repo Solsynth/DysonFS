@@ -294,7 +294,7 @@ func (w *Worker) upsertChild(parent *database.CloudFile, evt eventbus.FileUpload
 	if w.db == nil {
 		return fmt.Errorf("database not configured")
 	}
-	obj := &database.FileObject{ID: database.NewID(), MimeType: mimeType, Hash: "", StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false, HasThumbnail: false}
+	obj := &database.FileObject{ID: database.NewID(), MimeType: mimeType, Hash: service.ComputeHash(body), StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false, HasThumbnail: false}
 	obj.Size = int64(len(body))
 	if err := w.db.Create(obj).Error; err != nil {
 		return err

@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -776,11 +778,19 @@ func (s *FileService) DetectAndCreateObject(path string) (*database.FileObject, 
 	if len(data) > 0 {
 		mimeType = mimetype.Detect(data).String()
 	}
-	object := &database.FileObject{ID: database.NewID(), Size: int64(len(data)), MimeType: mimeType, Hash: "", Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false, HasThumbnail: false}
+	object := &database.FileObject{ID: database.NewID(), Size: int64(len(data)), MimeType: mimeType, Hash: ComputeHash(data), Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false, HasThumbnail: false}
 	if err := s.db.Create(object).Error; err != nil {
 		return nil, err
 	}
 	return object, nil
+}
+
+func ComputeHash(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 type ImageAnalysis struct {
@@ -941,6 +951,7 @@ func (s *FileService) StoreSourceAnalysis(fileID string, analysis *SourceAnalysi
 			updates["width"] = analysis.Image.Width
 			updates["height"] = analysis.Image.Height
 			updates["blurhash"] = analysis.Image.Blurhash
+			updates["exif_version"] = 2
 			if len(analysis.Image.Exif) > 0 {
 				updates["exif"] = analysis.Image.Exif
 			}
@@ -1005,6 +1016,9 @@ func (s *FileService) ListImageReanalysisCandidates(ctx context.Context, limit i
 		}
 		reason := repairReason(file)
 		if reason == "" {
+			reason = s.imageVariantRepairReason(file)
+		}
+		if reason == "" {
 			continue
 		}
 		candidate := ReanalysisCandidate{FileID: file.ID, Name: file.Name, MimeType: file.Object.MimeType, Size: file.Object.Size, UpdatedAt: file.UpdatedAt, Reason: reason}
@@ -1042,6 +1056,9 @@ func (s *FileService) RepairImageMetadataCandidate(ctx context.Context, fileID s
 	if storageKey == nil || strings.TrimSpace(*storageKey) == "" {
 		return fmt.Errorf("storage key missing")
 	}
+	if err := s.rebuildImageVariants(ctx, &file, *storageKey); err != nil {
+		return err
+	}
 	info, err := s.stor.Stat(ctx, *storageKey)
 	if err != nil {
 		return err
@@ -1071,6 +1088,121 @@ func (s *FileService) RepairImageMetadataCandidate(ctx context.Context, fileID s
 	}
 	if file.Object.StorageKey == nil && storageKey != nil {
 		_ = s.db.Model(&database.FileObject{}).Where("id = ?", file.Object.ID).Update("storage_key", *storageKey).Error
+	}
+	return nil
+}
+
+func (s *FileService) imageVariantRepairReason(file *database.CloudFile) string {
+	if file == nil || file.Object == nil || !strings.HasPrefix(file.Object.MimeType, "image/") {
+		return ""
+	}
+	var reasons []string
+	if child, err := s.getDerivedChild(file.ID, "system.original"); err != nil || child == nil {
+		reasons = append(reasons, "missing original variant")
+	}
+	if child, err := s.getDerivedChild(file.ID, "system.thumbnail"); err != nil || child == nil {
+		reasons = append(reasons, "missing thumbnail variant")
+	}
+	if len(reasons) == 0 {
+		return ""
+	}
+	return strings.Join(reasons, ", ")
+}
+
+func (s *FileService) getDerivedChild(parentID, kind string) (*database.CloudFile, error) {
+	var child database.CloudFile
+	if err := s.db.Preload("Object").First(&child, "parent_id = ? and application_type = ? and deleted_at IS NULL", parentID, kind).Error; err != nil {
+		return nil, err
+	}
+	return &child, nil
+}
+
+func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.CloudFile, storageKey string) error {
+	if s == nil || s.stor == nil || file == nil || file.Object == nil {
+		return nil
+	}
+	rc, _, err := s.stor.Get(ctx, storageKey)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	path, cleanup, err := writeTempObject(rc)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	img, err := vips.NewImageFromFile(path)
+	if err != nil {
+		return err
+	}
+	defer img.Close()
+	if err := img.AutoRotate(); err != nil {
+		return err
+	}
+	if err := img.RemoveMetadata(); err != nil {
+		return err
+	}
+	origBuf, _, err := img.ExportWebp(&vips.WebpExportParams{Lossless: true, StripMetadata: true})
+	if err != nil {
+		return err
+	}
+	if err := s.persistReanalysisVariant(ctx, file, "system.original", origBuf, "image/webp", "original.webp"); err != nil {
+		return err
+	}
+	thumb, err := vips.NewThumbnailFromFile(path, 512, 512, vips.InterestingAttention)
+	if err != nil {
+		return err
+	}
+	defer thumb.Close()
+	thumbBuf, _, err := thumb.ExportWebp(&vips.WebpExportParams{Quality: 82, StripMetadata: true})
+	if err != nil {
+		return err
+	}
+	if err := s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBuf, "image/webp", "thumbnail.webp"); err != nil {
+		return err
+	}
+	if img.Width() >= 1024 || img.Height() >= 1024 {
+		compressed, err := vips.NewImageFromFile(path)
+		if err != nil {
+			return err
+		}
+		defer compressed.Close()
+		if err := compressed.Resize(0.5, vips.KernelLanczos3); err != nil {
+			return err
+		}
+		compBuf, _, err := compressed.ExportWebp(&vips.WebpExportParams{Quality: 80, StripMetadata: true})
+		if err != nil {
+			return err
+		}
+		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", "compression.low.webp"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *FileService) persistReanalysisVariant(ctx context.Context, parent *database.CloudFile, appType string, body []byte, mimeType string, suffix string) error {
+	if s == nil || parent == nil || parent.Object == nil {
+		return nil
+	}
+	derived, err := s.getDerivedChild(parent.ID, appType)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	key := parent.ID + "/" + suffix
+	if err := s.stor.Put(ctx, key, bytes.NewReader(body), mimeType); err != nil {
+		return err
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		obj := &database.FileObject{ID: database.NewID(), Size: int64(len(body)), MimeType: mimeType, Hash: ComputeHash(body), StorageKey: &key, Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false, HasThumbnail: false}
+		if err := s.db.Create(obj).Error; err != nil {
+			return err
+		}
+		_, err = s.CreateDerivedFile(parent.AccountID, parent.ID, parent.Name, obj.ID, appType, &key)
+		return err
+	}
+	if derived != nil && derived.ObjectID != nil {
+		return s.db.Model(&database.FileObject{}).Where("id = ?", *derived.ObjectID).Updates(map[string]any{"hash": ComputeHash(body), "size": int64(len(body)), "mime_type": mimeType, "updated_at": time.Now()}).Error
 	}
 	return nil
 }
@@ -1125,6 +1257,9 @@ func repairReason(file *database.CloudFile) string {
 		if _, ok := meta["blurhash"]; !ok {
 			reasons = append(reasons, "missing blurhash")
 		}
+		if _, ok := meta["exif_version"]; !ok {
+			reasons = append(reasons, "missing exif_version")
+		}
 		if _, ok := meta["exif"]; !ok {
 			reasons = append(reasons, "missing exif")
 		}
@@ -1142,6 +1277,9 @@ func repairReason(file *database.CloudFile) string {
 		if len(bytes.TrimSpace(file.Object.Meta)) > 0 && string(bytes.TrimSpace(file.Object.Meta)) != "{}" {
 			var om map[string]any
 			if err := json.Unmarshal(file.Object.Meta, &om); err == nil {
+				if _, ok := om["exif_version"]; !ok {
+					reasons = append(reasons, "missing object exif_version")
+				}
 				if _, ok := om["exif"]; !ok {
 					reasons = append(reasons, "missing object exif")
 				}
