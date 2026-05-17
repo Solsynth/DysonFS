@@ -1406,12 +1406,16 @@ func (s *FileService) persistReanalysisVariant(ctx context.Context, parent *data
 	if s == nil || parent == nil || parent.Object == nil {
 		return nil
 	}
+	backend, err := s.BackendForFile(parent)
+	if err != nil {
+		return err
+	}
 	derived, err := s.getDerivedChild(parent.ID, appType)
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
 	key := parent.ID + "/" + suffix
-	if err := s.stor.Put(ctx, key, bytes.NewReader(body), mimeType); err != nil {
+	if err := backend.Put(ctx, key, bytes.NewReader(body), mimeType); err != nil {
 		return err
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
