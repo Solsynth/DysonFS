@@ -352,7 +352,7 @@ func (m *Migrator) migrateFiles(summary *Summary) error {
 			v := strings.TrimSpace(*row.Description)
 			desc = &v
 		}
-		file := database.CloudFile{ID: row.ID, Name: row.Name, Description: desc, AccountID: parseUUID(row.AccountID), PoolID: nil, ObjectID: row.ObjectID, ParentID: nil, Indexed: row.Indexed, IsFolder: row.IsFolder, IsMarkedRecycle: row.IsMarkedRecycle, ExpiredAt: row.ExpiredAt, UploadedAt: row.UploadedAt, StorageID: row.StorageID, StorageURL: row.StorageURL, StorageKey: row.StorageID, FileMeta: row.FileMeta, UserMeta: row.UserMeta, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+		file := database.CloudFile{ID: row.ID, Name: row.Name, Description: desc, AccountID: parseUUID(row.AccountID), PoolID: nil, ObjectID: row.ObjectID, ParentID: nil, Indexed: row.Indexed, IsFolder: row.IsFolder, IsMarkedRecycle: row.IsMarkedRecycle, ExpiredAt: row.ExpiredAt, StorageID: row.StorageID, StorageURL: row.StorageURL, StorageKey: row.StorageID, FileMeta: row.FileMeta, UserMeta: row.UserMeta, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 		if row.DeletedAt != nil {
 			file.DeletedAt = gorm.DeletedAt{Time: *row.DeletedAt, Valid: true}
 		}
