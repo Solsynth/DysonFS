@@ -367,3 +367,5 @@ nullprogram.com/x/optparse v1.0.0/go.mod h1:KdyPE+Igbe0jQUrVfMqDMeJQIJZEuyV7pjYm
 sigs.k8s.io/yaml v1.2.0/go.mod h1:yfXDCHCao9+ENCvLSE62v9VSji2MKu5jeNfTrofGhJc=
 src.solsynth.dev/sosys/go v0.2.1-0.20260516165412-62ed09498942 h1:sjrYHnuVv6/tR70+gAPlYXq8Y//cT3OCUHO4BXHJBGs=
 src.solsynth.dev/sosys/go v0.2.1-0.20260516165412-62ed09498942/go.mod h1:obFYNjrUVgYLSHG30YlXUqFKvC+EejGTTuc7Aix8ugY=
+src.solsynth.dev/sosys/go v0.2.1-0.20260517060917-e78fb28b4a68 h1:hYn7dExgY7FL1CtqoG69TCvTz/t9XMsoNuuz8dWQVSU=
+src.solsynth.dev/sosys/go v0.2.1-0.20260517060917-e78fb28b4a68/go.mod h1:obFYNjrUVgYLSHG30YlXUqFKvC+EejGTTuc7Aix8ugY=
