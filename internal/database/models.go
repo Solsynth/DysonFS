@@ -63,7 +63,15 @@ type CloudFile struct {
 	Object          *FileObject    `gorm:"foreignKey:ObjectID;references:ID" json:"object,omitempty"`
 	Children        []CloudFile    `gorm:"foreignKey:ParentID;references:ID" json:"children,omitempty"`
 	ChildrenCount   int            `gorm:"-" json:"children_count"`
-	PermissionStatus string        `gorm:"-" json:"permission_status"`
+	PermissionStatus PermissionStatus `gorm:"-" json:"permission_status"`
+}
+
+type PermissionStatus struct {
+	Readable      bool    `json:"readable"`
+	Writable      bool    `json:"writable"`
+	Manageable    bool    `json:"manageable"`
+	Visibility    string  `json:"visibility"`
+	InheritedFrom *string `json:"inherited_from,omitempty"`
 }
 
 func (f *FileObject) LegacyMeta() datatypes.JSON {

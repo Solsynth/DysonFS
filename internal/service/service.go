@@ -709,25 +709,37 @@ func (s *FileService) countChildren(parentID string) int {
 	return int(count)
 }
 
-func (s *FileService) permissionStatus(file *database.CloudFile) string {
+func (s *FileService) permissionStatus(file *database.CloudFile) database.PermissionStatus {
 	if file == nil {
-		return "public"
+		return database.PermissionStatus{Readable: true, Visibility: "public"}
 	}
-	perms, err := s.ListFilePermissions(file.ID)
-	if err != nil || len(perms) == 0 {
-		return "public"
+	lookup, err := s.resolveInheritedFilePermissions(context.Background(), file.ID, "read")
+	if err != nil || !lookup.HasSource {
+		return database.PermissionStatus{Readable: true, Visibility: "public"}
 	}
-	for _, perm := range perms {
+	visibility := "restricted"
+	readable := false
+	for _, perm := range lookup.Perms {
 		switch perm.SubjectType {
 		case "public":
-			return "public"
+			visibility = "public"
+			readable = true
 		case "private":
-			return "private"
-		default:
-			return "restricted"
+			visibility = "private"
+		case "account", "scope":
+			readable = true
 		}
 	}
-	return "restricted"
+	status := database.PermissionStatus{
+		Readable:      readable || visibility == "public",
+		Writable:      false,
+		Manageable:    false,
+		Visibility:    visibility,
+	}
+	if strings.TrimSpace(lookup.SourceID) != "" {
+		status.InheritedFrom = &lookup.SourceID
+	}
+	return status
 }
 
 func (s *FileService) CreateFile(accountID uuid.UUID, name string, objectID string, parentID *string, appType *string) (*database.CloudFile, error) {

@@ -112,13 +112,53 @@ Files expose read/write/manage permissions through `GET /files/:id/permissions` 
 - No file permission rows means the file is public
 - A `private` permission row with `read` makes a file private by default
 - Permission checks inherit from ancestor folders
+- `PUT /files/:id/permissions` replaces the full permission set in one batch
+
+Request body:
+
+```json
+{
+  "items": [
+    {
+      "id": "...",
+      "file_id": "...",
+      "subject_type": "account",
+      "subject_id": "...",
+      "permission": "read"
+    },
+    {
+      "id": "...",
+      "file_id": "...",
+      "subject_type": "scope",
+      "subject_id": "files.manage",
+      "permission": "manage"
+    }
+  ]
+}
+```
+
+- `subject_type` can be `public`, `private`, `account`, or `scope`
+- `permission` is typically `read`, `write`, or `manage`
+- Send the full desired list; omitted rows are removed
 
 ### File Listings
 
 List responses include extra metadata for navigation and access UI:
 
 - `children_count` for immediate child count
-- `permission_status` for the current visibility state
+- `permission_status` for current access state
+
+Example:
+
+```json
+"permission_status": {
+  "readable": true,
+  "writable": false,
+  "manageable": false,
+  "visibility": "private",
+  "inherited_from": "..."
+}
+```
 
 ### Storage validation
 
