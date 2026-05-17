@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/datatypes"
 
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
@@ -142,6 +145,75 @@ func TestListRootOwnedDefaultsToRecentFirst(t *testing.T) {
 	if files[len(files)-1].Name != "file-05" {
 		t.Fatalf("last returned file = %q, want 20 newest only", files[len(files)-1].Name)
 	}
+}
+
+func TestReanalyzeMissingImageMetadata(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+
+	tmp := t.TempDir()
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+
+	imgPath := filepath.Join(tmp, "sample.png")
+	f, err := os.Create(imgPath)
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	if err := png.Encode(f, blankImage(2, 3)); err != nil {
+		_ = f.Close()
+		t.Fatalf("encode image: %v", err)
+	}
+	_ = f.Close()
+
+	object, err := svc.DetectAndCreateObject(imgPath)
+	if err != nil {
+		t.Fatalf("DetectAndCreateObject() error = %v", err)
+	}
+	imgFile, err := os.Open(imgPath)
+	if err != nil {
+		t.Fatalf("open image: %v", err)
+	}
+	if err := stor.Put(context.Background(), object.ID, imgFile, object.MimeType); err != nil {
+		_ = imgFile.Close()
+		t.Fatalf("stor.Put() error = %v", err)
+	}
+	_ = imgFile.Close()
+	file := &database.CloudFile{ID: database.NewID(), Name: "sample.png", AccountID: uuid.New(), ObjectID: &object.ID, Indexed: true, FileMeta: nil, UserMeta: nil}
+	if err := db.Create(file).Error; err != nil {
+		t.Fatalf("create cloud file: %v", err)
+	}
+	if err := db.Model(&database.FileObject{}).Where("id = ?", object.ID).Updates(map[string]any{"meta": datatypes.JSON([]byte(`{}`)), "size": 0}).Error; err != nil {
+		t.Fatalf("seed object: %v", err)
+	}
+
+	res, err := svc.ReanalyzeMissingImageMetadata(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ReanalyzeMissingImageMetadata() error = %v", err)
+	}
+	if res.Updated != 1 {
+		t.Fatalf("Updated = %d, want 1", res.Updated)
+	}
+	updated, err := svc.GetFile(file.ID)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if updated.Object == nil || updated.Object.Meta == nil {
+		t.Fatalf("expected object meta to be populated")
+	}
+	if updated.FileMeta == nil {
+		t.Fatalf("expected file meta to be populated")
+	}
+}
+
+func blankImage(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	return img
 }
 
 func ptr(v string) *string { return &v }

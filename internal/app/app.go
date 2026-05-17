@@ -45,6 +45,8 @@ type App struct {
 	logger   zerolog.Logger
 }
 
+func (a *App) Files() *service.FileService { return a.files }
+
 func New(cfg *config.Config, mode string) (*App, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {

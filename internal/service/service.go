@@ -752,6 +752,191 @@ func (s *FileService) StoreImageAnalysis(fileID string, analysis *ImageAnalysis)
 	return s.GetFile(fileID)
 }
 
+type ReanalysisResult struct {
+	Scanned int `json:"scanned"`
+	Updated int `json:"updated"`
+	Skipped int `json:"skipped"`
+	Failed  int `json:"failed"`
+}
+
+type ReanalysisCandidate struct {
+	FileID     string    `json:"file_id"`
+	Name       string    `json:"name"`
+	MimeType   string    `json:"mime_type"`
+	Size       int64     `json:"size"`
+	StorageKey string    `json:"storage_key,omitempty"`
+	ObjectID   string    `json:"object_id,omitempty"`
+	Reason     string    `json:"reason"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (s *FileService) ListImageReanalysisCandidates(ctx context.Context, limit int) ([]ReanalysisCandidate, error) {
+	if s.stor == nil {
+		return nil, fmt.Errorf("storage backend not configured")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("deleted_at IS NULL").Where("is_folder = false").Order("updated_at desc").Limit(limit).Find(&files).Error; err != nil {
+		return nil, err
+	}
+	candidates := make([]ReanalysisCandidate, 0, len(files))
+	for i := range files {
+		file := &files[i]
+		if file.Object == nil || !strings.HasPrefix(file.Object.MimeType, "image/") {
+			continue
+		}
+		reason := repairReason(file)
+		if reason == "" {
+			continue
+		}
+		candidate := ReanalysisCandidate{FileID: file.ID, Name: file.Name, MimeType: file.Object.MimeType, Size: file.Object.Size, UpdatedAt: file.UpdatedAt, Reason: reason}
+		if file.ObjectID != nil {
+			candidate.ObjectID = *file.ObjectID
+		}
+		if file.StorageKey != nil {
+			candidate.StorageKey = *file.StorageKey
+		} else if file.Object != nil && file.Object.StorageKey != nil {
+			candidate.StorageKey = *file.Object.StorageKey
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func (s *FileService) RepairImageMetadataCandidate(ctx context.Context, fileID string) error {
+	if s.stor == nil {
+		return fmt.Errorf("storage backend not configured")
+	}
+	var file database.CloudFile
+	if err := s.db.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
+		return err
+	}
+	if file.Object == nil || !strings.HasPrefix(file.Object.MimeType, "image/") {
+		return nil
+	}
+	storageKey := file.StorageKey
+	if storageKey == nil && file.Object.StorageKey != nil {
+		storageKey = file.Object.StorageKey
+	}
+	if storageKey == nil && file.ObjectID != nil {
+		storageKey = file.ObjectID
+	}
+	if storageKey == nil || strings.TrimSpace(*storageKey) == "" {
+		return fmt.Errorf("storage key missing")
+	}
+	info, err := s.stor.Stat(ctx, *storageKey)
+	if err != nil {
+		return err
+	}
+	rc, _, err := s.stor.Get(ctx, *storageKey)
+	if err != nil {
+		return err
+	}
+	path, cleanup, err := writeTempObject(rc)
+	_ = rc.Close()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	analysis, err := s.AnalyzeImage(path)
+	if err != nil {
+		return err
+	}
+	if _, err := s.StoreImageAnalysis(file.ID, analysis); err != nil {
+		return err
+	}
+	if err := s.db.Model(&database.FileObject{}).Where("id = ?", file.Object.ID).Update("size", info.Size).Error; err != nil {
+		return err
+	}
+	if file.StorageKey == nil && storageKey != nil {
+		_ = s.db.Model(&database.CloudFile{}).Where("id = ?", file.ID).Update("storage_key", *storageKey).Error
+	}
+	if file.Object.StorageKey == nil && storageKey != nil {
+		_ = s.db.Model(&database.FileObject{}).Where("id = ?", file.Object.ID).Update("storage_key", *storageKey).Error
+	}
+	return nil
+}
+
+func (s *FileService) ReanalyzeMissingImageMetadata(ctx context.Context, limit int) (ReanalysisResult, error) {
+	if s.stor == nil {
+		return ReanalysisResult{}, fmt.Errorf("storage backend not configured")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	candidates, err := s.ListImageReanalysisCandidates(ctx, limit)
+	if err != nil {
+		return ReanalysisResult{}, err
+	}
+	result := ReanalysisResult{Scanned: len(candidates)}
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if err := s.RepairImageMetadataCandidate(ctx, candidate.FileID); err != nil {
+			result.Failed++
+			continue
+		}
+		result.Updated++
+	}
+	return result, nil
+}
+
+func repairReason(file *database.CloudFile) string {
+	if file == nil {
+		return ""
+	}
+	reasons := make([]string, 0, 4)
+	if len(bytes.TrimSpace(file.FileMeta)) == 0 || string(bytes.TrimSpace(file.FileMeta)) == "null" || string(bytes.TrimSpace(file.FileMeta)) == "{}" {
+		reasons = append(reasons, "missing file_meta")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(file.FileMeta, &meta); err != nil {
+		reasons = append(reasons, "invalid file_meta")
+	} else {
+		if _, ok := meta["width"]; !ok {
+			reasons = append(reasons, "missing width")
+		}
+		if _, ok := meta["height"]; !ok {
+			reasons = append(reasons, "missing height")
+		}
+		if _, ok := meta["blurhash"]; !ok {
+			reasons = append(reasons, "missing blurhash")
+		}
+	}
+	if file.Object != nil {
+		if len(bytes.TrimSpace(file.Object.Meta)) == 0 || string(bytes.TrimSpace(file.Object.Meta)) == "null" || string(bytes.TrimSpace(file.Object.Meta)) == "{}" {
+			reasons = append(reasons, "missing object meta")
+		}
+		if file.Object.Size == 0 {
+			reasons = append(reasons, "zero object size")
+		}
+		if file.StorageKey == nil && file.Object.StorageKey == nil && file.ObjectID != nil {
+			reasons = append(reasons, "missing storage key")
+		}
+	}
+	return strings.Join(reasons, ", ")
+}
+
+func writeTempObject(r io.Reader) (string, func(), error) {
+	file, err := os.CreateTemp("", "dysonfs-reanalyze-*")
+	if err != nil {
+		return "", func() {}, err
+	}
+	if _, err := io.Copy(file, r); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return "", func() {}, err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", func() {}, err
+	}
+	return file.Name(), func() { _ = os.Remove(file.Name()) }, nil
+}
+
 func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
 	_ = poolID
 	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageKey: storageKey, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
