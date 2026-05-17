@@ -103,6 +103,22 @@ Request body:
 - A folder is stored as a `cloud_files` row with `is_folder = true` and `indexed = true`
 - `parent_id` is optional
 - The current implementation does not yet validate that the parent exists or is a folder
+- Root folders automatically get a private read permission record
+
+### Permission Management
+
+Files expose read/write/manage permissions through `GET /files/:id/permissions` and `PUT /files/:id/permissions`.
+
+- No file permission rows means the file is public
+- A `private` permission row with `read` makes a file private by default
+- Permission checks inherit from ancestor folders
+
+### File Listings
+
+List responses include extra metadata for navigation and access UI:
+
+- `children_count` for immediate child count
+- `permission_status` for the current visibility state
 
 ### Storage validation
 

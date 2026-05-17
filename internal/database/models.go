@@ -62,6 +62,8 @@ type CloudFile struct {
 	UpdatedAt       time.Time      `json:"updated_at"`
 	Object          *FileObject    `gorm:"foreignKey:ObjectID;references:ID" json:"object,omitempty"`
 	Children        []CloudFile    `gorm:"foreignKey:ParentID;references:ID" json:"children,omitempty"`
+	ChildrenCount   int            `gorm:"-" json:"children_count"`
+	PermissionStatus string        `gorm:"-" json:"permission_status"`
 }
 
 func (f *FileObject) LegacyMeta() datatypes.JSON {
@@ -148,6 +150,8 @@ func (f *CloudFile) MarshalJSON() ([]byte, error) {
 		"storage_url":         f.StorageURL,
 		"account_id":          f.AccountID,
 		"resource_identifier": f.ResourceIdentifier(),
+		"children_count":      f.ChildrenCount,
+		"permission_status":   f.PermissionStatus,
 		"created_at":          f.CreatedAt,
 		"updated_at":          f.UpdatedAt,
 		"deleted_at":          nullableDeletedAt(f.DeletedAt),

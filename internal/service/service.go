@@ -268,6 +268,8 @@ func (s *FileService) GetFile(id string) (*database.CloudFile, error) {
 	if err := s.db.Preload("Object").First(&file, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
+	file.ChildrenCount = s.countChildren(file.ID)
+	file.PermissionStatus = s.permissionStatus(&file)
 	return &file, nil
 }
 
@@ -275,6 +277,10 @@ func (s *FileService) GetChildren(parentID string) ([]database.CloudFile, error)
 	var files []database.CloudFile
 	if err := s.db.Preload("Object").Where("parent_id = ?", parentID).Where("deleted_at IS NULL").Find(&files).Error; err != nil {
 		return nil, err
+	}
+	for i := range files {
+		files[i].ChildrenCount = s.countChildren(files[i].ID)
+		files[i].PermissionStatus = s.permissionStatus(&files[i])
 	}
 	return files, nil
 }
@@ -633,6 +639,10 @@ func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error
 	if err := s.db.Preload("Object").Where("account_id = ? AND parent_id IS NULL AND indexed = true", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
+	for i := range files {
+		files[i].ChildrenCount = s.countChildren(files[i].ID)
+		files[i].PermissionStatus = s.permissionStatus(&files[i])
+	}
 	return files, nil
 }
 
@@ -645,6 +655,10 @@ func (s *FileService) ListRootOwned(accountID uuid.UUID, take int) ([]database.C
 	if err := query.Find(&files).Error; err != nil {
 		return nil, err
 	}
+	for i := range files {
+		files[i].ChildrenCount = s.countChildren(files[i].ID)
+		files[i].PermissionStatus = s.permissionStatus(&files[i])
+	}
 	return files, nil
 }
 
@@ -653,6 +667,10 @@ func (s *FileService) ListOwned(accountID uuid.UUID) ([]database.CloudFile, erro
 	if err := s.db.Preload("Object").Where("account_id = ?", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
+	for i := range files {
+		files[i].ChildrenCount = s.countChildren(files[i].ID)
+		files[i].PermissionStatus = s.permissionStatus(&files[i])
+	}
 	return files, nil
 }
 
@@ -660,6 +678,10 @@ func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, 
 	var files []database.CloudFile
 	if err := s.db.Preload("Object").Where("account_id = ? AND indexed = false", accountID).Find(&files).Error; err != nil {
 		return nil, err
+	}
+	for i := range files {
+		files[i].ChildrenCount = s.countChildren(files[i].ID)
+		files[i].PermissionStatus = s.permissionStatus(&files[i])
 	}
 	return files, nil
 }
@@ -679,6 +701,33 @@ func (s *FileService) CreateFolder(accountID uuid.UUID, name string, parentID *s
 		return nil, err
 	}
 	return file, nil
+}
+
+func (s *FileService) countChildren(parentID string) int {
+	var count int64
+	_ = s.db.Model(&database.CloudFile{}).Where("parent_id = ? AND deleted_at IS NULL", parentID).Count(&count).Error
+	return int(count)
+}
+
+func (s *FileService) permissionStatus(file *database.CloudFile) string {
+	if file == nil {
+		return "public"
+	}
+	perms, err := s.ListFilePermissions(file.ID)
+	if err != nil || len(perms) == 0 {
+		return "public"
+	}
+	for _, perm := range perms {
+		switch perm.SubjectType {
+		case "public":
+			return "public"
+		case "private":
+			return "private"
+		default:
+			return "restricted"
+		}
+	}
+	return "restricted"
 }
 
 func (s *FileService) CreateFile(accountID uuid.UUID, name string, objectID string, parentID *string, appType *string) (*database.CloudFile, error) {
