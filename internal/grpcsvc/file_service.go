@@ -14,7 +14,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func extractImageMeta(file *database.CloudFile) (width, height int, blurhash string) {
@@ -222,9 +221,6 @@ func toProtoCloudFile(file *database.CloudFile) *gen.DyCloudFile {
 	}
 	if file.ParentID != nil {
 		resp.ParentId = file.ParentID
-	}
-	if file.UploadedAt != nil {
-		resp.UploadedAt = timestamppb.New(*file.UploadedAt)
 	}
 	if width, height, blurhash := extractImageMeta(file); width > 0 {
 		w := int32(width)

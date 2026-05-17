@@ -50,7 +50,6 @@ type CloudFile struct {
 	IsFolder        bool           `json:"is_folder"`
 	IsMarkedRecycle bool           `json:"is_marked_recycle"`
 	ExpiredAt       *time.Time     `json:"expired_at"`
-	UploadedAt      *time.Time     `json:"uploaded_at"`
 	StorageID       *string        `gorm:"size:36" json:"storage_id"`
 	StorageURL      *string        `gorm:"size:255" json:"storage_url"`
 	StorageKey      *string        `gorm:"size:64" json:"storage_key"`
@@ -135,7 +134,6 @@ func (f *CloudFile) MarshalJSON() ([]byte, error) {
 		"hash":                f.legacyHash(),
 		"expired_at":          f.ExpiredAt,
 		"size":                f.legacySize(),
-		"uploaded_at":         f.UploadedAt,
 		"has_compression":     f.legacyHasCompression(),
 		"has_thumbnail":       f.legacyHasThumbnail(),
 		"object_id":           objectID,
@@ -261,6 +259,7 @@ type PersistentTask struct {
 	UploadedChunks  datatypes.JSON `gorm:"type:jsonb" json:"uploaded_chunks"`
 	Parameters      datatypes.JSON `gorm:"type:jsonb" json:"parameters"`
 	Results         datatypes.JSON `gorm:"type:jsonb" json:"results"`
+	Indexed         bool           `json:"indexed"`
 	ErrorMessage    *string        `json:"error_message"`
 	Priority        int            `json:"priority"`
 	LastActivity    time.Time      `json:"last_activity"`

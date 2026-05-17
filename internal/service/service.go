@@ -751,10 +751,6 @@ func (s *FileService) EnsureDerivedChildren(accountID uuid.UUID, parentID, baseN
 	return nil
 }
 
-func (s *FileService) UpdateUploadedAt(fileID string) error {
-	return s.db.Model(&database.CloudFile{}).Where("id = ?", fileID).Update("uploaded_at", time.Now()).Error
-}
-
 func (s *FileService) TouchCompatibilityFlags(fileID string) error {
 	var file database.CloudFile
 	if err := s.db.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
@@ -1645,9 +1641,16 @@ func writeTempObject(r io.Reader) (string, func(), error) {
 	return file.Name(), func() { _ = os.Remove(file.Name()) }, nil
 }
 
-func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, description *string, hash *string, expiredAt *time.Time, usage *string, parentID *string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
+func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, description *string, hash *string, expiredAt *time.Time, usage *string, parentID *string, objectID string, poolID *string, appType *string, storageKey *string, indexed bool) (*database.CloudFile, error) {
 	resolvedPoolID := s.resolvedPoolID(poolID)
-	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: true, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage}
+	finalIndexed := indexed
+	if !finalIndexed && parentID != nil && strings.TrimSpace(*parentID) != "" {
+		var parent database.CloudFile
+		if err := s.db.Select("indexed").First(&parent, "id = ? AND deleted_at IS NULL", strings.TrimSpace(*parentID)).Error; err == nil && parent.Indexed {
+			finalIndexed = true
+		}
+	}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: finalIndexed, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage}
 	if hash != nil && strings.TrimSpace(*hash) != "" {
 		file.FileMeta = datatypes.JSON([]byte(fmt.Sprintf(`{"hash":%q}`, strings.TrimSpace(*hash))))
 	}
@@ -1872,6 +1875,7 @@ func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload
 			task.Usage = payload.Usage
 		task.ApplicationType = payload.ApplicationType
 		task.ParentID = payload.ParentID
+			task.Indexed = payload.Indexed
 	}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err

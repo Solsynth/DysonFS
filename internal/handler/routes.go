@@ -596,6 +596,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		Hash        *string `json:"hash"`
 		FileName    string  `json:"file_name"`
 		Description *string `json:"description"`
+		Index       bool    `json:"index"`
 		FileSize    int64   `json:"file_size"`
 		PoolID      *string `json:"pool_id"`
 		ExpiredAt   *string `json:"expired_at"`
@@ -643,7 +644,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		Int("chunks", chunks).
 		Str("contentType", req.ContentType).
 		Msg("creating upload task")
-	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, ApplicationType: req.ApplicationType}
+	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, ApplicationType: req.ApplicationType, Indexed: req.Index}
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, req.PoolID, name, req.ContentType, req.ChunkSize, chunks)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -674,6 +675,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		parentID := optionalStringPtr(c.PostForm("parent_id"))
 		usage := optionalStringPtr(c.PostForm("usage"))
 		appType := optionalStringPtr(c.PostForm("application_type"))
+		indexed := optionalBool(c.PostForm("index"))
 		expiredAt, err := parseRFC3339Ptr(optionalStringPtr(c.PostForm("expired_at")))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -718,7 +720,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	storageKey := &object.ID
-		createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey)
+		createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -842,7 +844,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	_ = ctx
 	storageKey := &object.ID
-	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey)
+		created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -992,6 +994,15 @@ func optionalStringPtr(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+func optionalBool(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	parsed, err := strconv.ParseBool(v)
+	return err == nil && parsed
 }
 
 func parseRFC3339Ptr(v *string) (*time.Time, error) {

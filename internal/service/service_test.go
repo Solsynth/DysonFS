@@ -33,7 +33,7 @@ func TestCreateUploadedFileCreatesReplica(t *testing.T) {
 		t.Fatalf("create object: %v", err)
 	}
 	storageKey := objectID
-	file, err := svc.CreateUploadedFile(uuid.New(), "sample.txt", nil, nil, nil, nil, nil, objectID, nil, nil, &storageKey)
+	file, err := svc.CreateUploadedFile(uuid.New(), "sample.txt", nil, nil, nil, nil, nil, objectID, nil, nil, &storageKey, false)
 	if err != nil {
 		t.Fatalf("CreateUploadedFile() error = %v", err)
 	}
@@ -102,7 +102,7 @@ func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 	}
 	description := "uploaded from phone"
 	storageKey := objectID
-	file, err := svc.CreateUploadedFile(uuid.New(), "sample.txt", &description, nil, nil, nil, nil, objectID, nil, nil, &storageKey)
+	file, err := svc.CreateUploadedFile(uuid.New(), "sample.txt", &description, nil, nil, nil, nil, objectID, nil, nil, &storageKey, false)
 	if err != nil {
 		t.Fatalf("CreateUploadedFile() error = %v", err)
 	}
