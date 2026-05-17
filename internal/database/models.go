@@ -145,7 +145,6 @@ func (f *CloudFile) MarshalJSON() ([]byte, error) {
 		"is_folder":           f.IsFolder,
 		"usage":               f.Usage,
 		"application_type":    f.ApplicationType,
-		"bundle_id":           nil,
 		"is_marked_recycle":   f.IsMarkedRecycle,
 		"storage_id":          f.StorageID,
 		"storage_url":         f.StorageURL,
@@ -272,6 +271,9 @@ type PersistentTask struct {
 	PoolID          *string        `gorm:"size:36" json:"pool_id"`
 	ParentID        *string        `gorm:"size:36" json:"parent_id"`
 	Description     *string        `json:"description"`
+	Hash            *string        `json:"hash"`
+	ExpiredAt       *time.Time     `json:"expired_at"`
+	Usage           *string        `json:"usage"`
 	ApplicationType *string        `json:"application_type"`
 	StorageKey      *string        `gorm:"size:36" json:"storage_key"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`

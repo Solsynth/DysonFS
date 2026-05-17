@@ -36,7 +36,6 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
-		f.GET("/:id/e2ee", func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"code": "file.e2ee_not_found"}) })
 		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files) })
 		f.GET("/children/:id", func(c *gin.Context) { listChildren(c, files) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
@@ -594,11 +593,16 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		return
 	}
 	var req struct {
+		Hash        *string `json:"hash"`
 		FileName    string  `json:"file_name"`
 		Description *string `json:"description"`
 		FileSize    int64   `json:"file_size"`
 		PoolID      *string `json:"pool_id"`
+		ExpiredAt   *string `json:"expired_at"`
 		ChunkSize   int64   `json:"chunk_size"`
+		ParentID    *string `json:"parent_id"`
+		Usage       *string `json:"usage"`
+		ApplicationType *string `json:"application_type"`
 		ContentType string  `json:"content_type"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -620,6 +624,11 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	if strings.TrimSpace(req.ContentType) == "" {
 		req.ContentType = "application/octet-stream"
 	}
+	expiredAt, err := parseRFC3339Ptr(req.ExpiredAt)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	if err := files.ValidatePoolUsage(ctx, req.PoolID, req.FileSize, req.ContentType); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -634,7 +643,8 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		Int("chunks", chunks).
 		Str("contentType", req.ContentType).
 		Msg("creating upload task")
-	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, req.Description, req.FileSize, req.PoolID, name, req.ContentType, req.ChunkSize, chunks)
+	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, ApplicationType: req.ApplicationType}
+	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, req.PoolID, name, req.ContentType, req.ChunkSize, chunks)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -659,7 +669,16 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
 		return
 	}
-	description := optionalStringPtr(c.PostForm("description"))
+		description := optionalStringPtr(c.PostForm("description"))
+		hash := optionalStringPtr(c.PostForm("hash"))
+		parentID := optionalStringPtr(c.PostForm("parent_id"))
+		usage := optionalStringPtr(c.PostForm("usage"))
+		appType := optionalStringPtr(c.PostForm("application_type"))
+		expiredAt, err := parseRFC3339Ptr(optionalStringPtr(c.PostForm("expired_at")))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	reader, err := fileHeader.Open()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -699,7 +718,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	storageKey := &object.ID
-	createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, object.ID, nil, nil, storageKey)
+		createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -823,7 +842,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	_ = ctx
 	storageKey := &object.ID
-	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, object.ID, task.PoolID, task.ApplicationType, storageKey)
+	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -973,4 +992,15 @@ func optionalStringPtr(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+func parseRFC3339Ptr(v *string) (*time.Time, error) {
+	if v == nil || strings.TrimSpace(*v) == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*v))
+	if err != nil {
+		return nil, fmt.Errorf("invalid expired_at: %w", err)
+	}
+	return &parsed, nil
 }

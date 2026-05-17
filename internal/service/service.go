@@ -1604,9 +1604,12 @@ func writeTempObject(r io.Reader) (string, func(), error) {
 	return file.Name(), func() { _ = os.Remove(file.Name()) }, nil
 }
 
-func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, description *string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
+func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, description *string, hash *string, expiredAt *time.Time, usage *string, parentID *string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
 	resolvedPoolID := s.resolvedPoolID(poolID)
-	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: true, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage}
+	if hash != nil && strings.TrimSpace(*hash) != "" {
+		file.FileMeta = datatypes.JSON([]byte(fmt.Sprintf(`{"hash":%q}`, strings.TrimSpace(*hash))))
+	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(file).Error; err != nil {
 			return err
@@ -1819,8 +1822,16 @@ func NewTaskService(db *database.DB) *TaskService { return &TaskService{db: db} 
 
 func (s *TaskService) DB() *database.DB { return s.db }
 
-func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, description *string, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
-	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, Description: firstNonEmptyPtr(description), ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
+func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload *database.PersistentTask, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
+	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
+		if payload != nil {
+			task.Description = payload.Description
+			task.Hash = payload.Hash
+			task.ExpiredAt = payload.ExpiredAt
+			task.Usage = payload.Usage
+		task.ApplicationType = payload.ApplicationType
+		task.ParentID = payload.ParentID
+	}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err
 	}
