@@ -148,6 +148,14 @@ List responses include extra metadata for navigation and access UI:
 - `children_count` for immediate child count
 - `permission_status` for current access state
 
+Performance notes:
+
+- Child counts and inherited permission status are resolved in batches for list responses to avoid per-file query fan-out.
+- Postgres should have a composite index on `cloud_files(parent_id, deleted_at)` so `children_count` lookups do not fall back to full table scans.
+- Postgres should have a composite index on `file_permissions(file_id, permission, deleted_at)` so inherited permission-source lookups stay index-backed.
+- These indexes are declared in the GORM models and are created by `AutoMigrate`, but existing deployments need a restart or migration run before the new indexes appear.
+- If file-list or permission logs still show slow SQL after rollout, verify the indexes exist with `pg_indexes` and inspect the hot queries with `EXPLAIN (ANALYZE, BUFFERS)`.
+
 Example:
 
 ```json
