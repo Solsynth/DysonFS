@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -51,6 +52,28 @@ func (b *LocalBackend) Stat(_ context.Context, key string) (ObjectInfo, error) {
 		return ObjectInfo{}, err
 	}
 	return ObjectInfo{Size: stat.Size(), ModTime: stat.ModTime()}, nil
+}
+
+func (b *LocalBackend) List(_ context.Context, prefix string) ([]string, error) {
+	if b == nil || b.base == "" {
+		return nil, fmt.Errorf("local backend not configured")
+	}
+	keys := []string{}
+	_ = filepath.Walk(b.base, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(b.base, path)
+		if err != nil {
+			return nil
+		}
+		key := filepath.ToSlash(rel)
+		if prefix == "" || strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+		return nil
+	})
+	return keys, nil
 }
 
 func (b *LocalBackend) SignedURL(_ context.Context, key string, _ time.Duration, filename string, download bool) (string, error) {

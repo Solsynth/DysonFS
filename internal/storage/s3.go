@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"path"
+	"sort"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -66,6 +67,22 @@ func (b *S3Backend) Stat(ctx context.Context, key string) (ObjectInfo, error) {
 		return ObjectInfo{}, err
 	}
 	return ObjectInfo{Size: stat.Size, ModTime: stat.LastModified, MimeType: stat.ContentType, ETag: stat.ETag}, nil
+}
+
+func (b *S3Backend) List(ctx context.Context, prefix string) ([]string, error) {
+	if b == nil || b.client == nil {
+		return nil, fmt.Errorf("s3 backend not configured")
+	}
+	ch := b.client.ListObjects(ctx, b.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true})
+	keys := make([]string, 0)
+	for obj := range ch {
+		if obj.Err != nil {
+			return nil, obj.Err
+		}
+		keys = append(keys, obj.Key)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 func (b *S3Backend) SignedURL(ctx context.Context, key string, ttl time.Duration, filename string, download bool) (string, error) {

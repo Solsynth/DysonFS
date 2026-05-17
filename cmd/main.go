@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"src.solsynth.dev/sosys/filesystem/internal/app"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
+	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/migratelegacy"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
@@ -28,6 +30,9 @@ func main() {
 	reanalyzeLimit := flag.Int("reanalyze-limit", 100, "maximum image records to preview and repair")
 	previewCount := flag.Int("preview-count", 20, "how many repair candidates to print before confirmation")
 	yes := flag.Bool("yes", false, "skip confirmation prompt for repair mode")
+	validateSnapshot := flag.String("validate-snapshot", "", "path to remote snapshot file")
+	validatePrefix := flag.String("validate-prefix", "", "remote key prefix to validate")
+	validateBatch := flag.Int("validate-batch", 500, "db batch size for validation")
 	pretty := flag.Bool("pretty", os.Getenv("ZEROLOG_PRETTY") == "true", "pretty logging")
 	positionalMode := extractPositionalMode()
 	flag.Parse()
@@ -68,6 +73,13 @@ func main() {
 	if mode == "reanalyze-missing" {
 		if err := runReanalysisCLI(context.Background(), cfg, *reanalyzeLimit, *previewCount, *yes); err != nil {
 			logging.Log.Fatal().Err(err).Msg("reanalysis failed")
+		}
+		return
+	}
+
+	if mode == "validate-storage" {
+		if err := runStorageValidationCLI(context.Background(), cfg, *validateSnapshot, *validatePrefix, *validateBatch, *yes); err != nil {
+			logging.Log.Fatal().Err(err).Msg("storage validation failed")
 		}
 		return
 	}
@@ -164,6 +176,78 @@ func runProgressBar(ctx context.Context, files *service.FileService, candidates 
 	}
 	fmt.Println()
 	return nil
+}
+
+func runStorageValidationCLI(ctx context.Context, cfg *config.Config, snapshotPath, prefix string, batchSize int, skipConfirm bool) error {
+	runner, err := app.New(cfg, "master")
+	if err != nil {
+		return err
+	}
+	files := runner.Files()
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	if snapshotPath == "" {
+		snapshotPath = filepath.Join(os.TempDir(), "dysonfs-remote-snapshot.txt")
+	}
+	remoteKeys, err := files.Storage().List(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	if err := writeLines(snapshotPath, remoteKeys); err != nil {
+		return err
+	}
+	fmt.Printf("remote snapshot written: %s (%d keys)\n", snapshotPath, len(remoteKeys))
+	if !skipConfirm && !confirmProceed() {
+		fmt.Println("storage validation cancelled")
+		return nil
+	}
+	deleted, err := validateStorageAgainstDB(ctx, files, remoteKeys, batchSize)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("validation complete: deleted=%d\n", deleted)
+	return nil
+}
+
+func writeLines(path string, lines []string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	writer := bufio.NewWriter(file)
+	for _, line := range lines {
+		if _, err := writer.WriteString(line + "\n"); err != nil {
+			return err
+		}
+	}
+	return writer.Flush()
+}
+
+func validateStorageAgainstDB(ctx context.Context, files *service.FileService, remoteKeys []string, batchSize int) (int, error) {
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	remoteSet := make(map[string]struct{}, len(remoteKeys))
+	for _, key := range remoteKeys {
+		remoteSet[key] = struct{}{}
+	}
+	var allKeys []string
+	if err := files.DB().Unscoped().Model(&database.FileObject{}).Where("storage_key IS NOT NULL AND storage_key <> ''").Pluck("storage_key", &allKeys).Error; err != nil {
+		return 0, err
+	}
+	for _, key := range allKeys {
+		delete(remoteSet, key)
+	}
+	deleted := 0
+	for key := range remoteSet {
+		if err := files.Storage().Delete(ctx, key); err != nil {
+			return deleted, err
+		}
+		deleted++
+	}
+	return deleted, nil
 }
 
 func printProgress(current, total int, label string) {

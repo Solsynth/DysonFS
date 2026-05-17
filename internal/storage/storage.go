@@ -18,5 +18,6 @@ type Backend interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error)
 	Delete(ctx context.Context, key string) error
 	Stat(ctx context.Context, key string) (ObjectInfo, error)
+	List(ctx context.Context, prefix string) ([]string, error)
 	SignedURL(ctx context.Context, key string, ttl time.Duration, filename string, download bool) (string, error)
 }
