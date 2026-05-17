@@ -21,7 +21,7 @@ import (
 )
 
 func main() {
-	modeFlag := flag.String("mode", "", "run mode: master, worker, storage, migrate-legacy, reanalyze-missing, repair-legacy-storage")
+	modeFlag := flag.String("mode", "", "run mode: master, worker, storage, migrate-legacy, reanalyze-missing, repair-legacy-storage, repair-missing-replicas")
 	configPath := flag.String("config", os.Getenv("CONFIG_PATH"), "config file path")
 	legacyDSN := flag.String("legacy-dsn", os.Getenv("LEGACY_DATABASE_DSN"), "legacy database dsn for migration")
 	dryRun := flag.Bool("dry-run", false, "simulate migration without writing")
@@ -32,6 +32,7 @@ func main() {
 	onlyDerived := flag.Bool("only-derived", false, "repair derived variants only")
 	onlyOriginal := flag.Bool("only-original", false, "repair original files only")
 	reanalyzeLimit := flag.Int("reanalyze-limit", 100, "maximum image records to preview and repair")
+	replicaRepairLimit := flag.Int("replica-repair-limit", 0, "maximum missing replica candidates to inspect")
 	previewCount := flag.Int("preview-count", 20, "how many repair candidates to print before confirmation")
 	yes := flag.Bool("yes", false, "skip confirmation prompt for repair mode")
 	validateSnapshot := flag.String("validate-snapshot", "", "path to remote snapshot file")
@@ -84,6 +85,13 @@ func main() {
 	if mode == "repair-legacy-storage" {
 		if err := runLegacyStorageRepairCLI(context.Background(), cfg, *legacyDSN, *dryRun, *batchSize, *previewCount, *repairLimit, *continueOnError, *onlyDerived, *onlyOriginal, *yes); err != nil {
 			logging.Log.Fatal().Err(err).Msg("legacy storage repair failed")
+		}
+		return
+	}
+
+	if mode == "repair-missing-replicas" {
+		if err := runMissingReplicaRepairCLI(context.Background(), cfg, *replicaRepairLimit, *previewCount, *dryRun, *yes); err != nil {
+			logging.Log.Fatal().Err(err).Msg("missing replica repair failed")
 		}
 		return
 	}
@@ -207,6 +215,40 @@ func runLegacyStorageRepairCLI(ctx context.Context, cfg *config.Config, legacyDS
 	return nil
 }
 
+func runMissingReplicaRepairCLI(ctx context.Context, cfg *config.Config, limit, previewCount int, dryRun, skipConfirm bool) error {
+	runner, err := app.New(cfg, "master")
+	if err != nil {
+		return err
+	}
+	files := runner.Files()
+	previews, summary, err := files.PreviewMissingReplicas(ctx, limit)
+	if err != nil {
+		return err
+	}
+	if previewCount >= 0 && previewCount < len(previews) {
+		previews = previews[:previewCount]
+	}
+	printReplicaRepairPreview(previews, summary, dryRun)
+	if summary.Verified == 0 {
+		fmt.Println("no verified missing replicas found")
+		return nil
+	}
+	if dryRun {
+		fmt.Println("dry run complete")
+		return nil
+	}
+	if !skipConfirm && !confirmProceedWithMessage("Proceed with missing replica repair?") {
+		fmt.Println("missing replica repair cancelled")
+		return nil
+	}
+	_, summary, err = files.RepairMissingReplicas(ctx, limit)
+	if err != nil {
+		return err
+	}
+	printReplicaRepairSummary(summary)
+	return nil
+}
+
 func confirmProceed() bool {
 	return confirmProceedWithMessage("Proceed with reanalysis?")
 }
@@ -284,6 +326,25 @@ func printLegacyRepairPreview(previews []repairlegacy.Preview, summary repairleg
 
 func printLegacyRepairSummary(summary repairlegacy.Summary) {
 	fmt.Printf("legacy storage repair complete: scanned=%d candidates=%d matched=%d verified=%d updated=%d already_correct=%d missing_hash=%d missing_legacy=%d missing_remote=%d ambiguous=%d conflict=%d failed=%d\n", summary.Scanned, summary.Candidates, summary.Matched, summary.Verified, summary.Updated, summary.AlreadyCorrect, summary.SkippedMissingHash, summary.SkippedMissingLegacy, summary.SkippedMissingRemote, summary.SkippedAmbiguous, summary.SkippedConflict, summary.Failed)
+}
+
+func printReplicaRepairPreview(previews []service.ReplicaRepairPreview, summary service.ReplicaRepairSummary, dryRun bool) {
+	fmt.Printf("missing replica preview: scanned=%d candidates=%d verified=%d already_present=%d missing_pool=%d missing_key=%d missing_remote=%d failed=%d\n", summary.Scanned, summary.Candidates, summary.Verified, summary.AlreadyPresent, summary.MissingPool, summary.MissingKey, summary.MissingRemote, summary.Failed)
+	if len(previews) == 0 {
+		return
+	}
+	if dryRun {
+		fmt.Println("preview candidates:")
+	} else {
+		fmt.Println("sample candidates:")
+	}
+	for _, item := range previews {
+		fmt.Printf("- [%s] object=%s file=%s pool=%s key=%s detail=%s\n", item.Status, blankAsDash(item.ObjectID), blankAsDash(item.FileID), blankAsDash(item.PoolID), blankAsDash(item.StorageKey), item.Detail)
+	}
+}
+
+func printReplicaRepairSummary(summary service.ReplicaRepairSummary) {
+	fmt.Printf("missing replica repair complete: scanned=%d candidates=%d verified=%d created=%d already_present=%d missing_pool=%d missing_key=%d missing_remote=%d failed=%d\n", summary.Scanned, summary.Candidates, summary.Verified, summary.Created, summary.AlreadyPresent, summary.MissingPool, summary.MissingKey, summary.MissingRemote, summary.Failed)
 }
 
 func blankAsDash(value string) string {

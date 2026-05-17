@@ -21,6 +21,124 @@ import (
 	gen "src.solsynth.dev/sosys/go/proto"
 )
 
+func TestCreateUploadedFileCreatesReplica(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
+	svc.defaultPoolID = poolID
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	storageKey := objectID
+	file, err := svc.CreateUploadedFile(uuid.New(), "sample.txt", objectID, nil, nil, &storageKey)
+	if err != nil {
+		t.Fatalf("CreateUploadedFile() error = %v", err)
+	}
+	if file.PoolID == nil || *file.PoolID != poolID {
+		t.Fatalf("file.PoolID = %v, want %q", file.PoolID, poolID)
+	}
+	var replica database.FileReplica
+	if err := db.First(&replica, "object_id = ?", objectID).Error; err != nil {
+		t.Fatalf("load replica: %v", err)
+	}
+	if replica.PoolID == nil || *replica.PoolID != poolID {
+		t.Fatalf("replica.PoolID = %v, want %q", replica.PoolID, poolID)
+	}
+	if replica.Status != "primary" || !replica.IsPrimary {
+		t.Fatalf("replica = %+v, want primary replica", replica)
+	}
+}
+
+func TestCreateDerivedFileCreatesReplicaUsingParentPool(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
+	svc.defaultPoolID = poolID
+	parentObjectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: parentObjectID, Size: 12, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create parent object: %v", err)
+	}
+	parentID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: parentID, Name: "parent", AccountID: uuid.New(), PoolID: ptr(poolID), ObjectID: &parentObjectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create parent file: %v", err)
+	}
+	derivedObjectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: derivedObjectID, Size: 8, MimeType: "image/webp", Hash: "hash2", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create derived object: %v", err)
+	}
+	storageKey := parentID + "/thumbnail.webp"
+	file, err := svc.CreateDerivedFile(uuid.New(), parentID, "parent", derivedObjectID, "system.thumbnail", &storageKey)
+	if err != nil {
+		t.Fatalf("CreateDerivedFile() error = %v", err)
+	}
+	if file.PoolID == nil || *file.PoolID != poolID {
+		t.Fatalf("file.PoolID = %v, want %q", file.PoolID, poolID)
+	}
+	var replica database.FileReplica
+	if err := db.First(&replica, "object_id = ?", derivedObjectID).Error; err != nil {
+		t.Fatalf("load replica: %v", err)
+	}
+	if replica.PoolID == nil || *replica.PoolID != poolID {
+		t.Fatalf("replica.PoolID = %v, want %q", replica.PoolID, poolID)
+	}
+}
+
+func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testing.T) {
+	tmp := t.TempDir()
+	stor := storage.NewLocalBackend(tmp)
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	poolID := seedDefaultPool(t, db, tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = poolID
+	accountID := uuid.New()
+	objectID := database.NewID()
+	storageKey := objectID
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 3, MimeType: "text/plain", Hash: "hash", StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader("abc"), "text/plain"); err != nil {
+		t.Fatalf("stor.Put() error = %v", err)
+	}
+	missingID := database.NewID()
+	missingKey := missingID
+	if err := db.Create(&database.FileObject{ID: missingID, Size: 4, MimeType: "text/plain", Hash: "hash2", StorageKey: &missingKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create missing object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "missing.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &missingID, StorageKey: &missingKey, Indexed: true}).Error; err != nil {
+		t.Fatalf("create missing file: %v", err)
+	}
+	previews, summary, err := svc.PreviewMissingReplicas(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("PreviewMissingReplicas() error = %v", err)
+	}
+	if summary.Verified != 1 || summary.MissingRemote != 1 {
+		t.Fatalf("preview summary = %+v, want verified=1 missing_remote=1", summary)
+	}
+	if len(previews) != 2 {
+		t.Fatalf("len(previews) = %d, want 2", len(previews))
+	}
+	_, summary, err = svc.RepairMissingReplicas(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("RepairMissingReplicas() error = %v", err)
+	}
+	if summary.Created != 1 {
+		t.Fatalf("summary.Created = %d, want 1", summary.Created)
+	}
+	var replicaCount int64
+	if err := db.Model(&database.FileReplica{}).Count(&replicaCount).Error; err != nil {
+		t.Fatalf("count replicas: %v", err)
+	}
+	if replicaCount != 1 {
+		t.Fatalf("replica count = %d, want 1", replicaCount)
+	}
+}
+
 func TestBackendFromPoolStorageLocal(t *testing.T) {
 	tmp := t.TempDir()
 	backend, err := backendFromPoolStorage(PoolStorageConfig{Endpoint: tmp}, nil)
@@ -54,7 +172,7 @@ func TestListOwnedReturnsAllUserFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
@@ -88,7 +206,7 @@ func TestListRootOwnedExcludesChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
@@ -126,7 +244,7 @@ func TestListRootOwnedDefaultsToRecentFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
@@ -162,13 +280,14 @@ func TestReanalyzeMissingImageMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = seedDefaultPool(t, db, tmp)
 
 	imgPath := filepath.Join(tmp, "sample.png")
 	f, err := os.Create(imgPath)
@@ -296,6 +415,27 @@ func TestCanAccessFileDefaultsToPublicWithoutPermissions(t *testing.T) {
 func blankImage(w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	return img
+}
+
+func openTestDB(t *testing.T, models ...any) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	if err := db.AutoMigrate(models...); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	return db
+}
+
+func seedDefaultPool(t *testing.T, db *gorm.DB, endpoint string) string {
+	t.Helper()
+	poolID := database.NewID()
+	if err := db.Create(&database.FilePool{ID: poolID, Name: "default", AccountID: uuid.Nil, StorageConfig: datatypes.JSON([]byte(fmt.Sprintf(`{"endpoint":%q}`, endpoint))), BillingConfig: datatypes.JSON([]byte(`{}`)), PolicyConfig: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	return poolID
 }
 
 func ptr(v string) *string { return &v }

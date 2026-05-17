@@ -68,6 +68,27 @@ type Pool struct {
 	IsHidden      bool              `json:"is_hidden"`
 }
 
+type ReplicaRepairPreview struct {
+	ObjectID   string `json:"object_id"`
+	FileID     string `json:"file_id"`
+	PoolID     string `json:"pool_id"`
+	StorageKey string `json:"storage_key"`
+	Status     string `json:"status"`
+	Detail     string `json:"detail"`
+}
+
+type ReplicaRepairSummary struct {
+	Scanned        int `json:"scanned"`
+	Candidates     int `json:"candidates"`
+	Verified       int `json:"verified"`
+	Created        int `json:"created"`
+	AlreadyPresent int `json:"already_present"`
+	MissingPool    int `json:"missing_pool"`
+	MissingKey     int `json:"missing_key"`
+	MissingRemote  int `json:"missing_remote"`
+	Failed         int `json:"failed"`
+}
+
 type SubjectPermission struct {
 	SubjectType string `json:"subject_type"`
 	SubjectID   string `json:"subject_id"`
@@ -84,6 +105,7 @@ type FileService struct {
 	db    *database.DB
 	stor  storage.Backend
 	cache sharedcache.CacheService
+	defaultPoolID string
 }
 
 const systemPoolName = "system"
@@ -158,7 +180,35 @@ func (s *FileService) SeedPools(cfg *config.Config) (string, error) {
 	if defaultCount != 1 {
 		return "", fmt.Errorf("exactly one pool must be marked default")
 	}
+	s.defaultPoolID = defaultPoolID
 	return defaultPoolID, nil
+}
+
+func (s *FileService) resolvedPoolID(poolID *string) *string {
+	if poolID != nil && strings.TrimSpace(*poolID) != "" {
+		resolved := strings.TrimSpace(*poolID)
+		return &resolved
+	}
+	if strings.TrimSpace(s.defaultPoolID) == "" {
+		return nil
+	}
+	resolved := s.defaultPoolID
+	return &resolved
+}
+
+func (s *FileService) createPrimaryReplica(tx *gorm.DB, objectID string, poolID *string) error {
+	if strings.TrimSpace(objectID) == "" {
+		return fmt.Errorf("object id is required")
+	}
+	replica := &database.FileReplica{
+		ID:        database.NewID(),
+		ObjectID:  objectID,
+		PoolID:    poolID,
+		StorageID: poolID,
+		Status:    "primary",
+		IsPrimary: true,
+	}
+	return tx.Create(replica).Error
 }
 
 func (s *FileService) BackendForPoolID(poolID *string) (storage.Backend, error) {
@@ -1307,9 +1357,14 @@ func writeTempObject(r io.Reader) (string, func(), error) {
 }
 
 func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
-	_ = poolID
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
-	if err := s.db.Create(file).Error; err != nil {
+	resolvedPoolID := s.resolvedPoolID(poolID)
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(file).Error; err != nil {
+			return err
+		}
+		return s.createPrimaryReplica(tx, objectID, resolvedPoolID)
+	}); err != nil {
 		return nil, err
 	}
 	return file, nil
@@ -1318,11 +1373,196 @@ func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objec
 func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, name string, objectID string, appType string, storageKey *string) (*database.CloudFile, error) {
 	pt := parentID
 	typeName := appType
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
-	if err := s.db.Create(file).Error; err != nil {
+	var file *database.CloudFile
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		var parent database.CloudFile
+		if err := tx.Select("pool_id", "storage_id").First(&parent, "id = ?", parentID).Error; err != nil {
+			return err
+		}
+		resolvedPoolID := s.resolvedPoolID(parent.PoolID)
+		file = &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
+		if err := tx.Create(file).Error; err != nil {
+			return err
+		}
+		return s.createPrimaryReplica(tx, objectID, resolvedPoolID)
+	}); err != nil {
 		return nil, err
 	}
 	return file, nil
+}
+
+type missingReplicaCandidate struct {
+	ObjectID         string  `gorm:"column:object_id"`
+	ObjectStorageKey *string `gorm:"column:object_storage_key"`
+	CreatedAt        time.Time `gorm:"column:created_at"`
+}
+
+func (s *FileService) PreviewMissingReplicas(ctx context.Context, limit int) ([]ReplicaRepairPreview, ReplicaRepairSummary, error) {
+	return s.repairMissingReplicas(ctx, limit, false)
+}
+
+func (s *FileService) RepairMissingReplicas(ctx context.Context, limit int) ([]ReplicaRepairPreview, ReplicaRepairSummary, error) {
+	return s.repairMissingReplicas(ctx, limit, true)
+}
+
+func (s *FileService) repairMissingReplicas(ctx context.Context, limit int, apply bool) ([]ReplicaRepairPreview, ReplicaRepairSummary, error) {
+	summary := ReplicaRepairSummary{}
+	if s == nil || s.db == nil {
+		return nil, summary, fmt.Errorf("database not configured")
+	}
+	if s.stor == nil {
+		return nil, summary, fmt.Errorf("storage backend not configured")
+	}
+	candidates, err := s.loadMissingReplicaCandidates(limit)
+	if err != nil {
+		return nil, summary, err
+	}
+	summary.Scanned = len(candidates)
+	previews := make([]ReplicaRepairPreview, 0, len(candidates))
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return previews, summary, err
+		}
+		preview, created, evalErr := s.evaluateMissingReplicaCandidate(ctx, candidate, apply)
+		if preview.Status != "" {
+			summary.Candidates++
+			previews = append(previews, preview)
+		}
+		switch preview.Status {
+		case "verified":
+			summary.Verified++
+			if created {
+				summary.Created++
+			}
+		case "already-present":
+			summary.AlreadyPresent++
+		case "missing-pool":
+			summary.MissingPool++
+		case "missing-key":
+			summary.MissingKey++
+		case "missing-remote":
+			summary.MissingRemote++
+		}
+		if evalErr != nil {
+			summary.Failed++
+			return previews, summary, evalErr
+		}
+	}
+	return previews, summary, nil
+}
+
+func (s *FileService) loadMissingReplicaCandidates(limit int) ([]missingReplicaCandidate, error) {
+	query := s.db.Model(&database.FileObject{}).
+		Select("file_objects.id AS object_id, file_objects.storage_key AS object_storage_key, file_objects.created_at").
+		Joins("LEFT JOIN file_replicas ON file_replicas.object_id = file_objects.id AND file_replicas.deleted_at IS NULL").
+		Where("file_objects.deleted_at IS NULL").
+		Where("file_replicas.id IS NULL").
+		Where("EXISTS (SELECT 1 FROM cloud_files WHERE cloud_files.object_id = file_objects.id AND cloud_files.deleted_at IS NULL)").
+		Order("file_objects.created_at asc")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	var rows []missingReplicaCandidate
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (s *FileService) evaluateMissingReplicaCandidate(ctx context.Context, candidate missingReplicaCandidate, apply bool) (ReplicaRepairPreview, bool, error) {
+	preview := ReplicaRepairPreview{ObjectID: candidate.ObjectID}
+	file, err := s.firstFileForObject(candidate.ObjectID)
+	if err != nil {
+		return preview, false, err
+	}
+	preview.FileID = file.ID
+	poolID := s.resolvedPoolID(firstNonEmptyPtr(file.PoolID, file.StorageID))
+	if poolID == nil {
+		preview.Status = "missing-pool"
+		preview.Detail = "no pool mapping available for object"
+		return preview, false, nil
+	}
+	preview.PoolID = *poolID
+	storageKey := firstNonEmptyString(candidate.ObjectStorageKey, file.StorageKey)
+	if storageKey == "" {
+		storageKey = candidate.ObjectID
+	}
+	if strings.TrimSpace(storageKey) == "" {
+		preview.Status = "missing-key"
+		preview.Detail = "no storage key available for object"
+		return preview, false, nil
+	}
+	preview.StorageKey = storageKey
+	backend, err := s.BackendForPoolID(poolID)
+	if err != nil {
+		return preview, false, err
+	}
+	if _, err := backend.Stat(ctx, storageKey); err != nil {
+		preview.Status = "missing-remote"
+		preview.Detail = err.Error()
+		return preview, false, nil
+	}
+	preview.Status = "verified"
+	preview.Detail = "remote object exists"
+	if !apply {
+		return preview, false, nil
+	}
+	created, err := s.insertReplicaIfMissing(candidate.ObjectID, poolID)
+	if err != nil {
+		return preview, false, err
+	}
+	if !created {
+		preview.Status = "already-present"
+		preview.Detail = "replica was created by another process"
+		return preview, false, nil
+	}
+	return preview, true, nil
+}
+
+func (s *FileService) firstFileForObject(objectID string) (*database.CloudFile, error) {
+	var file database.CloudFile
+	if err := s.db.Where("object_id = ? AND deleted_at IS NULL", objectID).Order("created_at asc").First(&file).Error; err != nil {
+		return nil, err
+	}
+	return &file, nil
+}
+
+func (s *FileService) insertReplicaIfMissing(objectID string, poolID *string) (bool, error) {
+	created := false
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&database.FileReplica{}).Where("object_id = ? AND deleted_at IS NULL", objectID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		if err := s.createPrimaryReplica(tx, objectID, poolID); err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
+	return created, err
+}
+
+func firstNonEmptyPtr(values ...*string) *string {
+	for _, value := range values {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			resolved := strings.TrimSpace(*value)
+			return &resolved
+		}
+	}
+	return nil
+}
+
+func firstNonEmptyString(values ...*string) string {
+	for _, value := range values {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			return strings.TrimSpace(*value)
+		}
+	}
+	return ""
 }
 
 type TaskService struct{ db *database.DB }
