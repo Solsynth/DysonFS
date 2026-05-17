@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"src.solsynth.dev/sosys/filesystem/internal/config"
-	"src.solsynth.dev/sosys/filesystem/internal/dispatch"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
+	"src.solsynth.dev/sosys/filesystem/internal/dispatch"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
@@ -38,7 +38,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
 		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files) })
-		f.GET("/children/:id", func(c *gin.Context) { listChildren(c, files) })
+		f.GET("/files/:id/children", func(c *gin.Context) { listChildren(c, files) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
 		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
 		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
@@ -490,7 +490,7 @@ func parseListQuery(c *gin.Context, defaultOffset, defaultTake int) (offset, tak
 	if v := strings.TrimSpace(c.Query("orderDesc")); v != "" {
 		orderDesc = !(strings.EqualFold(v, "false") || v == "0")
 	}
-	return
+	return offset, take, query, order, orderDesc
 }
 
 func filterAndSortFiles(items []database.CloudFile, query, order string, orderDesc bool) []database.CloudFile {
@@ -542,21 +542,21 @@ func sortFiles(items []database.CloudFile, order string, orderDesc bool) {
 	sort.SliceStable(items, func(i, j int) bool {
 		less := func() bool {
 			switch strings.ToLower(order) {
-		case "name":
-			return items[i].Name < items[j].Name
-		case "size":
-			iSize := int64(0)
-			jSize := int64(0)
-			if items[i].Object != nil {
-				iSize = items[i].Object.Size
+			case "name":
+				return items[i].Name < items[j].Name
+			case "size":
+				iSize := int64(0)
+				jSize := int64(0)
+				if items[i].Object != nil {
+					iSize = items[i].Object.Size
+				}
+				if items[j].Object != nil {
+					jSize = items[j].Object.Size
+				}
+				return iSize < jSize
+			default:
+				return items[i].CreatedAt.Before(items[j].CreatedAt)
 			}
-			if items[j].Object != nil {
-				jSize = items[j].Object.Size
-			}
-			return iSize < jSize
-		default:
-			return items[i].CreatedAt.Before(items[j].CreatedAt)
-		}
 		}
 		if orderDesc {
 			return !less()
@@ -679,7 +679,9 @@ func batchRecycleFiles(c *gin.Context, files *service.FileService, bus *eventbus
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	var req struct { IDs []string `json:"ids"` }
+	var req struct {
+		IDs []string `json:"ids"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -723,18 +725,18 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		return
 	}
 	var req struct {
-		Hash        *string `json:"hash"`
-		FileName    string  `json:"file_name"`
-		Description *string `json:"description"`
-		Index       bool    `json:"index"`
-		FileSize    int64   `json:"file_size"`
-		PoolID      *string `json:"pool_id"`
-		ExpiredAt   *string `json:"expired_at"`
-		ChunkSize   int64   `json:"chunk_size"`
-		ParentID    *string `json:"parent_id"`
-		Usage       *string `json:"usage"`
+		Hash            *string `json:"hash"`
+		FileName        string  `json:"file_name"`
+		Description     *string `json:"description"`
+		Index           bool    `json:"index"`
+		FileSize        int64   `json:"file_size"`
+		PoolID          *string `json:"pool_id"`
+		ExpiredAt       *string `json:"expired_at"`
+		ChunkSize       int64   `json:"chunk_size"`
+		ParentID        *string `json:"parent_id"`
+		Usage           *string `json:"usage"`
 		ApplicationType *string `json:"application_type"`
-		ContentType string  `json:"content_type"`
+		ContentType     string  `json:"content_type"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -800,17 +802,17 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
 		return
 	}
-		description := optionalStringPtr(c.PostForm("description"))
-		hash := optionalStringPtr(c.PostForm("hash"))
-		parentID := optionalStringPtr(c.PostForm("parent_id"))
-		usage := optionalStringPtr(c.PostForm("usage"))
-		appType := optionalStringPtr(c.PostForm("application_type"))
-		indexed := optionalBool(c.PostForm("index"))
-		expiredAt, err := parseRFC3339Ptr(optionalStringPtr(c.PostForm("expired_at")))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
+	description := optionalStringPtr(c.PostForm("description"))
+	hash := optionalStringPtr(c.PostForm("hash"))
+	parentID := optionalStringPtr(c.PostForm("parent_id"))
+	usage := optionalStringPtr(c.PostForm("usage"))
+	appType := optionalStringPtr(c.PostForm("application_type"))
+	indexed := optionalBool(c.PostForm("index"))
+	expiredAt, err := parseRFC3339Ptr(optionalStringPtr(c.PostForm("expired_at")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	reader, err := fileHeader.Open()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -850,17 +852,17 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	storageKey := &object.ID
-		createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
+	createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if analysis, err := files.AnalyzeSourceFile(c.Request.Context(), tempPath, object.MimeType); err == nil {
 		if updated, err := files.StoreSourceAnalysis(createdFile.ID, analysis); err == nil {
-				createdFile = updated
-			} else {
-				logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to persist source analysis")
-			}
+			createdFile = updated
+		} else {
+			logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to persist source analysis")
+		}
 	} else {
 		logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to analyze source file")
 	}
@@ -974,17 +976,17 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	_ = ctx
 	storageKey := &object.ID
-		created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
+	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if analysis, err := files.AnalyzeSourceFile(c.Request.Context(), mergedPath, object.MimeType); err == nil {
 		if updated, err := files.StoreSourceAnalysis(created.ID, analysis); err == nil {
-				created = updated
-			} else {
-				logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to persist source analysis")
-			}
+			created = updated
+		} else {
+			logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to persist source analysis")
+		}
 	} else {
 		logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to analyze source file")
 	}
@@ -1080,6 +1082,7 @@ func cancelUpload(c *gin.Context, tasks *service.TaskService) {
 func uploadStats(c *gin.Context, tasks *service.TaskService) {
 	c.JSON(http.StatusOK, gin.H{"total_tasks": 0, "in_progress_tasks": 0})
 }
+
 func cleanupTasks(c *gin.Context, tasks *service.TaskService) {
 	c.JSON(http.StatusOK, gin.H{"count": 0})
 }
@@ -1107,6 +1110,7 @@ func reanalyzeMissingMetadata(c *gin.Context, files *service.FileService) {
 func recentTasks(c *gin.Context, tasks *service.TaskService) {
 	c.JSON(http.StatusOK, gin.H{"items": []any{}})
 }
+
 func taskDetails(c *gin.Context, cfg *config.Config, tasks *service.TaskService) {
 	c.JSON(http.StatusOK, gin.H{"task": nil})
 }
