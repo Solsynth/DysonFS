@@ -246,6 +246,54 @@ func TestListOwnedReturnsAllUserFiles(t *testing.T) {
 	}
 }
 
+func TestListOwnedPopulatesChildrenCountAndInheritedPermissionStatus(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	rootID := database.NewID()
+	childID := database.NewID()
+	grandchildID := database.NewID()
+
+	if err := db.Create(&database.CloudFile{ID: rootID, Name: "root", AccountID: accountID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create root file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: childID, Name: "child", AccountID: accountID, ParentID: ptr(rootID), Indexed: true}).Error; err != nil {
+		t.Fatalf("create child file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: grandchildID, Name: "grandchild", AccountID: accountID, ParentID: ptr(childID), Indexed: true}).Error; err != nil {
+		t.Fatalf("create grandchild file: %v", err)
+	}
+	perm := database.FilePermission{ID: database.NewID(), FileID: rootID, SubjectType: "private", Permission: "read"}
+	if err := db.Create(&perm).Error; err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+
+	files, err := svc.ListOwned(accountID)
+	if err != nil {
+		t.Fatalf("ListOwned() error = %v", err)
+	}
+
+	byID := make(map[string]database.CloudFile, len(files))
+	for _, file := range files {
+		byID[file.ID] = file
+	}
+	if byID[rootID].ChildrenCount != 1 {
+		t.Fatalf("root ChildrenCount = %d, want 1", byID[rootID].ChildrenCount)
+	}
+	if byID[childID].ChildrenCount != 1 {
+		t.Fatalf("child ChildrenCount = %d, want 1", byID[childID].ChildrenCount)
+	}
+	if byID[grandchildID].ChildrenCount != 0 {
+		t.Fatalf("grandchild ChildrenCount = %d, want 0", byID[grandchildID].ChildrenCount)
+	}
+	if byID[childID].PermissionStatus.Visibility != "private" {
+		t.Fatalf("child visibility = %q, want private", byID[childID].PermissionStatus.Visibility)
+	}
+	if byID[childID].PermissionStatus.InheritedFrom == nil || *byID[childID].PermissionStatus.InheritedFrom != rootID {
+		t.Fatalf("child inherited_from = %v, want %q", byID[childID].PermissionStatus.InheritedFrom, rootID)
+	}
+}
+
 func TestListRootOwnedExcludesChildren(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

@@ -39,30 +39,30 @@ type FileObject struct {
 }
 
 type CloudFile struct {
-	ID              string         `gorm:"primaryKey;size:36" json:"id"`
-	Name            string         `json:"name"`
-	Description     *string        `json:"description"`
-	AccountID       uuid.UUID      `json:"account_id"`
-	PoolID          *string        `gorm:"size:36" json:"pool_id"`
-	ObjectID        *string        `gorm:"size:36" json:"object_id"`
-	ParentID        *string        `gorm:"size:36" json:"parent_id"`
-	Indexed         bool           `json:"indexed"`
-	IsFolder        bool           `json:"is_folder"`
-	IsMarkedRecycle bool           `json:"is_marked_recycle"`
-	ExpiredAt       *time.Time     `json:"expired_at"`
-	StorageID       *string        `gorm:"size:36" json:"storage_id"`
-	StorageURL      *string        `gorm:"size:255" json:"storage_url"`
-	StorageKey      *string        `gorm:"size:64" json:"storage_key"`
-	FileMeta        datatypes.JSON `gorm:"type:jsonb" json:"file_meta"`
-	UserMeta        datatypes.JSON `gorm:"type:jsonb" json:"user_meta"`
-	Usage           *string        `json:"usage"`
-	ApplicationType *string        `json:"application_type"`
-	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	Object          *FileObject    `gorm:"foreignKey:ObjectID;references:ID" json:"object,omitempty"`
-	Children        []CloudFile    `gorm:"foreignKey:ParentID;references:ID" json:"children,omitempty"`
-	ChildrenCount   int            `gorm:"-" json:"children_count"`
+	ID               string           `gorm:"primaryKey;size:36" json:"id"`
+	Name             string           `json:"name"`
+	Description      *string          `json:"description"`
+	AccountID        uuid.UUID        `json:"account_id"`
+	PoolID           *string          `gorm:"size:36" json:"pool_id"`
+	ObjectID         *string          `gorm:"size:36" json:"object_id"`
+	ParentID         *string          `gorm:"size:36;index:idx_cloud_files_parent_deleted,priority:1" json:"parent_id"`
+	Indexed          bool             `json:"indexed"`
+	IsFolder         bool             `json:"is_folder"`
+	IsMarkedRecycle  bool             `json:"is_marked_recycle"`
+	ExpiredAt        *time.Time       `json:"expired_at"`
+	StorageID        *string          `gorm:"size:36" json:"storage_id"`
+	StorageURL       *string          `gorm:"size:255" json:"storage_url"`
+	StorageKey       *string          `gorm:"size:64" json:"storage_key"`
+	FileMeta         datatypes.JSON   `gorm:"type:jsonb" json:"file_meta"`
+	UserMeta         datatypes.JSON   `gorm:"type:jsonb" json:"user_meta"`
+	Usage            *string          `json:"usage"`
+	ApplicationType  *string          `json:"application_type"`
+	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_cloud_files_parent_deleted,priority:2" json:"deleted_at"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
+	Object           *FileObject      `gorm:"foreignKey:ObjectID;references:ID" json:"object,omitempty"`
+	Children         []CloudFile      `gorm:"foreignKey:ParentID;references:ID" json:"children,omitempty"`
+	ChildrenCount    int              `gorm:"-" json:"children_count"`
 	PermissionStatus PermissionStatus `gorm:"-" json:"permission_status"`
 }
 
@@ -237,11 +237,11 @@ type FileReplica struct {
 
 type FilePermission struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
-	FileID      string         `gorm:"size:36;index" json:"file_id"`
+	FileID      string         `gorm:"size:36;index;index:idx_file_permissions_file_permission_deleted,priority:1" json:"file_id"`
 	SubjectType string         `json:"subject_type"`
 	SubjectID   string         `gorm:"size:36" json:"subject_id"`
-	Permission  string         `json:"permission"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	Permission  string         `gorm:"index:idx_file_permissions_file_permission_deleted,priority:2" json:"permission"`
+	DeletedAt   gorm.DeletedAt `gorm:"index;index:idx_file_permissions_file_permission_deleted,priority:3" json:"deleted_at"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 }

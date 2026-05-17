@@ -103,9 +103,9 @@ type AccessContext struct {
 }
 
 type FileService struct {
-	db    *database.DB
-	stor  storage.Backend
-	cache sharedcache.CacheService
+	db            *database.DB
+	stor          storage.Backend
+	cache         sharedcache.CacheService
 	defaultPoolID string
 }
 
@@ -278,9 +278,8 @@ func (s *FileService) GetChildren(parentID string) ([]database.CloudFile, error)
 	if err := s.db.Preload("Object").Where("parent_id = ?", parentID).Where("deleted_at IS NULL").Find(&files).Error; err != nil {
 		return nil, err
 	}
-	for i := range files {
-		files[i].ChildrenCount = s.countChildren(files[i].ID)
-		files[i].PermissionStatus = s.permissionStatus(&files[i])
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
 	}
 	return files, nil
 }
@@ -528,6 +527,83 @@ func (s *FileService) loadInheritedFilePermissions(fileID, permission string) (c
 	return cachedFilePermissionLookup{HasSource: true, SourceID: sourceID, Perms: perms}, nil
 }
 
+func (s *FileService) loadInheritedFilePermissionsBatch(fileIDs []string, permission string) (map[string]cachedFilePermissionLookup, error) {
+	if len(fileIDs) == 0 {
+		return map[string]cachedFilePermissionLookup{}, nil
+	}
+
+	const sourceQuery = `WITH RECURSIVE ancestors AS (
+		SELECT id AS file_id, id AS ancestor_id, parent_id, 0 AS depth
+		FROM cloud_files
+		WHERE id IN ? AND deleted_at IS NULL
+
+		UNION ALL
+
+		SELECT ancestors.file_id, cf.id AS ancestor_id, cf.parent_id, ancestors.depth + 1
+		FROM cloud_files cf
+		JOIN ancestors ON cf.id = ancestors.parent_id
+		WHERE cf.deleted_at IS NULL
+	), ranked_sources AS (
+		SELECT a.file_id, a.ancestor_id AS source_id,
+			ROW_NUMBER() OVER (PARTITION BY a.file_id ORDER BY a.depth) AS rn
+		FROM ancestors a
+		JOIN file_permissions fp ON fp.file_id = a.ancestor_id
+		WHERE fp.permission = ?
+		  AND fp.deleted_at IS NULL
+	)
+	SELECT file_id, source_id
+	FROM ranked_sources
+	WHERE rn = 1`
+
+	type permissionSourceRow struct {
+		FileID   string
+		SourceID string
+	}
+
+	var sourceRows []permissionSourceRow
+	if err := s.db.DB.Raw(sourceQuery, fileIDs, permission).Scan(&sourceRows).Error; err != nil {
+		return nil, err
+	}
+
+	lookups := make(map[string]cachedFilePermissionLookup, len(fileIDs))
+	if len(sourceRows) == 0 {
+		return lookups, nil
+	}
+
+	sourceIDs := make([]string, 0, len(sourceRows))
+	sourceToFileIDs := make(map[string][]string, len(sourceRows))
+	for _, row := range sourceRows {
+		if strings.TrimSpace(row.FileID) == "" || strings.TrimSpace(row.SourceID) == "" {
+			continue
+		}
+		if _, ok := sourceToFileIDs[row.SourceID]; !ok {
+			sourceIDs = append(sourceIDs, row.SourceID)
+		}
+		sourceToFileIDs[row.SourceID] = append(sourceToFileIDs[row.SourceID], row.FileID)
+		lookups[row.FileID] = cachedFilePermissionLookup{HasSource: true, SourceID: row.SourceID}
+	}
+
+	var perms []database.FilePermission
+	if err := s.db.Where("file_id IN ? AND permission = ?", sourceIDs, permission).Find(&perms).Error; err != nil {
+		return nil, err
+	}
+
+	permsBySource := make(map[string][]database.FilePermission, len(sourceIDs))
+	for _, perm := range perms {
+		permsBySource[perm.FileID] = append(permsBySource[perm.FileID], perm)
+	}
+
+	for sourceID, fileIDs := range sourceToFileIDs {
+		for _, fileID := range fileIDs {
+			lookup := lookups[fileID]
+			lookup.Perms = permsBySource[sourceID]
+			lookups[fileID] = lookup
+		}
+	}
+
+	return lookups, nil
+}
+
 func (s *FileService) resolveInheritedFilePermissions(ctx context.Context, fileID, permission string) (cachedFilePermissionLookup, error) {
 	key := s.filePermissionCacheKey(fileID, permission)
 	if s.cache != nil {
@@ -639,9 +715,8 @@ func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error
 	if err := s.db.Preload("Object").Where("account_id = ? AND parent_id IS NULL AND indexed = true", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
-	for i := range files {
-		files[i].ChildrenCount = s.countChildren(files[i].ID)
-		files[i].PermissionStatus = s.permissionStatus(&files[i])
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
 	}
 	return files, nil
 }
@@ -655,9 +730,8 @@ func (s *FileService) ListRootOwned(accountID uuid.UUID, take int) ([]database.C
 	if err := query.Find(&files).Error; err != nil {
 		return nil, err
 	}
-	for i := range files {
-		files[i].ChildrenCount = s.countChildren(files[i].ID)
-		files[i].PermissionStatus = s.permissionStatus(&files[i])
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
 	}
 	return files, nil
 }
@@ -667,9 +741,8 @@ func (s *FileService) ListOwned(accountID uuid.UUID) ([]database.CloudFile, erro
 	if err := s.db.Preload("Object").Where("account_id = ?", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
-	for i := range files {
-		files[i].ChildrenCount = s.countChildren(files[i].ID)
-		files[i].PermissionStatus = s.permissionStatus(&files[i])
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
 	}
 	return files, nil
 }
@@ -679,9 +752,8 @@ func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, 
 	if err := s.db.Preload("Object").Where("account_id = ? AND indexed = false", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
-	for i := range files {
-		files[i].ChildrenCount = s.countChildren(files[i].ID)
-		files[i].PermissionStatus = s.permissionStatus(&files[i])
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
 	}
 	return files, nil
 }
@@ -709,12 +781,34 @@ func (s *FileService) countChildren(parentID string) int {
 	return int(count)
 }
 
-func (s *FileService) permissionStatus(file *database.CloudFile) database.PermissionStatus {
-	if file == nil {
-		return database.PermissionStatus{Readable: true, Visibility: "public"}
+func (s *FileService) countChildrenBatch(parentIDs []string) (map[string]int, error) {
+	counts := make(map[string]int, len(parentIDs))
+	if len(parentIDs) == 0 {
+		return counts, nil
 	}
-	lookup, err := s.resolveInheritedFilePermissions(context.Background(), file.ID, "read")
-	if err != nil || !lookup.HasSource {
+
+	type childCountRow struct {
+		ParentID string
+		Count    int
+	}
+
+	var rows []childCountRow
+	if err := s.db.Model(&database.CloudFile{}).
+		Select("parent_id, COUNT(*) AS count").
+		Where("parent_id IN ? AND deleted_at IS NULL", parentIDs).
+		Group("parent_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	for _, row := range rows {
+		counts[row.ParentID] = row.Count
+	}
+	return counts, nil
+}
+
+func permissionStatusFromLookup(lookup cachedFilePermissionLookup) database.PermissionStatus {
+	if !lookup.HasSource {
 		return database.PermissionStatus{Readable: true, Visibility: "public"}
 	}
 	visibility := "restricted"
@@ -731,15 +825,59 @@ func (s *FileService) permissionStatus(file *database.CloudFile) database.Permis
 		}
 	}
 	status := database.PermissionStatus{
-		Readable:      readable || visibility == "public",
-		Writable:      false,
-		Manageable:    false,
-		Visibility:    visibility,
+		Readable:   readable || visibility == "public",
+		Writable:   false,
+		Manageable: false,
+		Visibility: visibility,
 	}
 	if strings.TrimSpace(lookup.SourceID) != "" {
 		status.InheritedFrom = &lookup.SourceID
 	}
 	return status
+}
+
+func (s *FileService) populateFilesMetadata(files []database.CloudFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(files))
+	for i := range files {
+		if strings.TrimSpace(files[i].ID) != "" {
+			ids = append(ids, files[i].ID)
+		}
+	}
+
+	childCounts, err := s.countChildrenBatch(ids)
+	if err != nil {
+		return err
+	}
+	permissionLookups, err := s.loadInheritedFilePermissionsBatch(ids, "read")
+	if err != nil {
+		return err
+	}
+
+	for i := range files {
+		files[i].ChildrenCount = childCounts[files[i].ID]
+		lookup, ok := permissionLookups[files[i].ID]
+		if !ok {
+			lookup = cachedFilePermissionLookup{HasSource: false}
+		}
+		files[i].PermissionStatus = permissionStatusFromLookup(lookup)
+	}
+
+	return nil
+}
+
+func (s *FileService) permissionStatus(file *database.CloudFile) database.PermissionStatus {
+	if file == nil {
+		return database.PermissionStatus{Readable: true, Visibility: "public"}
+	}
+	lookup, err := s.resolveInheritedFilePermissions(context.Background(), file.ID, "read")
+	if err != nil || !lookup.HasSource {
+		return database.PermissionStatus{Readable: true, Visibility: "public"}
+	}
+	return permissionStatusFromLookup(lookup)
 }
 
 func (s *FileService) CreateFile(accountID uuid.UUID, name string, objectID string, parentID *string, appType *string) (*database.CloudFile, error) {
@@ -1757,8 +1895,8 @@ func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, na
 }
 
 type missingReplicaCandidate struct {
-	ObjectID         string  `gorm:"column:object_id"`
-	ObjectStorageKey *string `gorm:"column:object_storage_key"`
+	ObjectID         string    `gorm:"column:object_id"`
+	ObjectStorageKey *string   `gorm:"column:object_storage_key"`
 	CreatedAt        time.Time `gorm:"column:created_at"`
 }
 
@@ -1938,14 +2076,14 @@ func (s *TaskService) DB() *database.DB { return s.db }
 
 func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload *database.PersistentTask, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
 	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
-		if payload != nil {
-			task.Description = payload.Description
-			task.Hash = payload.Hash
-			task.ExpiredAt = payload.ExpiredAt
-			task.Usage = payload.Usage
+	if payload != nil {
+		task.Description = payload.Description
+		task.Hash = payload.Hash
+		task.ExpiredAt = payload.ExpiredAt
+		task.Usage = payload.Usage
 		task.ApplicationType = payload.ApplicationType
 		task.ParentID = payload.ParentID
-			task.Indexed = payload.Indexed
+		task.Indexed = payload.Indexed
 	}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err
