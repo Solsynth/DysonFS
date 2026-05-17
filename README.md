@@ -10,6 +10,17 @@ Go implementation of the Dyson Network file service.
 - `worker`: post-upload media processing, derived file generation, cleanup
 - `storage`: optional local storage node for filesystem-backed deployments
 
+## CLI
+
+Use the first positional argument as the command.
+
+```bash
+go run ./cmd master
+go run ./cmd migrate-legacy --config ./config.toml --legacy-dsn "$LEGACY_DATABASE_DSN"
+go run ./cmd reanalyze-missing --config ./config.toml
+go run ./cmd validate-storage --config ./config.toml
+```
+
 ## Logging
 
 - `ZEROLOG_PRETTY=true` enables console-style pretty logs
@@ -18,7 +29,7 @@ Go implementation of the Dyson Network file service.
 ## Run
 
 ```bash
-go run ./cmd --mode master
+go run ./cmd master
 ```
 
 ### Legacy migration
@@ -26,7 +37,7 @@ go run ./cmd --mode master
 Use the one-shot migrator to import data from the old C# database into the new schema:
 
 ```bash
-go run ./cmd --mode migrate-legacy --config ./config.toml --legacy-dsn "$LEGACY_DATABASE_DSN"
+go run ./cmd migrate-legacy --config ./config.toml --legacy-dsn "$LEGACY_DATABASE_DSN"
 ```
 
 Flags:
@@ -35,6 +46,39 @@ Flags:
 - `--skip-derived` to skip thumbnail/compression child reconstruction
 - `--batch-size` to tune import batch size
 - `--continue-on-error` to keep going after row-level failures
+
+### Metadata reanalysis
+
+Repair missing image metadata from stored source files:
+
+```bash
+go run ./cmd reanalyze-missing --config ./config.toml
+```
+
+It shows a preview first, then asks for confirmation before changing anything.
+
+Flags:
+
+- `--reanalyze-limit` to cap the preview/repair batch size
+- `--preview-count` to control how many candidates are shown first
+- `--yes` to skip the confirmation prompt
+
+### Storage validation
+
+Validate `file_objects.storage_key` against remote S3 objects and clean up orphans:
+
+```bash
+go run ./cmd validate-storage --config ./config.toml --yes
+```
+
+It snapshots remote keys first, then compares the snapshot against the database in batches.
+
+Flags:
+
+- `--validate-snapshot` to choose the snapshot file path
+- `--validate-prefix` to limit the remote listing prefix
+- `--validate-batch` to control DB batch size
+- `--yes` to skip the confirmation prompt
 
 ## Config
 
