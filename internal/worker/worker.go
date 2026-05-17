@@ -223,6 +223,13 @@ func (w *Worker) processImage(path string, evt eventbus.FileUploadedEvent, paren
 	if err := img.RemoveMetadata(); err != nil {
 		return err
 	}
+	if img.Pages() > 1 {
+		return nil
+	}
+	return w.processImageStill(path, evt, parent, img)
+}
+
+func (w *Worker) processImageStill(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, img *vips.ImageRef) error {
 	origBuf, _, err := img.ExportWebp(&vips.WebpExportParams{Lossless: true, StripMetadata: true})
 	if err != nil {
 		return err
@@ -258,27 +265,58 @@ func (w *Worker) processImage(path string, evt eventbus.FileUploadedEvent, paren
 			return err
 		}
 		defer compressed.Close()
-		if err := compressed.Resize(0.5, vips.KernelLanczos3); err != nil {
-			return err
-		}
-		compBuf, _, err := compressed.ExportWebp(&vips.WebpExportParams{Quality: 80, StripMetadata: true})
+		compBuf, err := exportSmallerWebp(compressed, origBuf)
 		if err != nil {
 			return err
 		}
-		compKey := storageKey(parent.ID, ".compressed")
-		if err := w.stor.Put(context.Background(), compKey, bytes.NewReader(compBuf), "image/webp"); err != nil {
-			return err
-		}
-		if err := w.upsertChild(parent, evt, "system.compression.low", compKey, "image/webp", compBuf); err != nil {
-			return err
+		if len(compBuf) > 0 {
+			compKey := storageKey(parent.ID, ".compressed")
+			if err := w.stor.Put(context.Background(), compKey, bytes.NewReader(compBuf), "image/webp"); err != nil {
+				return err
+			}
+			if err := w.upsertChild(parent, evt, "system.compression.low", compKey, "image/webp", compBuf); err != nil {
+				return err
+			}
 		}
 	}
 
-	_ = mimeType
 	if err := w.files.TouchCompatibilityFlags(parent.ID); err != nil {
 		return err
 	}
 	return nil
+}
+
+func exportSmallerWebp(img *vips.ImageRef, original []byte) ([]byte, error) {
+	if img == nil {
+		return nil, nil
+	}
+	steps := []struct {
+		scale   float64
+		quality int
+	}{
+		{0.5, 80},
+		{0.35, 72},
+		{0.25, 65},
+	}
+	for _, step := range steps {
+		candidate, err := img.Copy()
+		if err != nil {
+			return nil, err
+		}
+		if err := candidate.Resize(step.scale, vips.KernelLanczos3); err != nil {
+			candidate.Close()
+			return nil, err
+		}
+		buf, _, err := candidate.ExportWebp(&vips.WebpExportParams{Quality: step.quality, StripMetadata: true})
+		candidate.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(buf) < len(original) {
+			return buf, nil
+		}
+	}
+	return nil, nil
 }
 
 func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {

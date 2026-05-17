@@ -1249,6 +1249,9 @@ func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.C
 	if err := img.RemoveMetadata(); err != nil {
 		return err
 	}
+	if img.Pages() > 1 {
+		return nil
+	}
 	origBuf, _, err := img.ExportWebp(&vips.WebpExportParams{Lossless: true, StripMetadata: true})
 	if err != nil {
 		return err
@@ -1274,15 +1277,14 @@ func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.C
 			return err
 		}
 		defer compressed.Close()
-		if err := compressed.Resize(0.5, vips.KernelLanczos3); err != nil {
-			return err
-		}
-		compBuf, _, err := compressed.ExportWebp(&vips.WebpExportParams{Quality: 80, StripMetadata: true})
+		compBuf, err := exportSmallerWebp(compressed, origBuf)
 		if err != nil {
 			return err
 		}
-		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
-			return err
+		if len(compBuf) > 0 {
+			if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1344,6 +1346,9 @@ func (s *FileService) rebuildImageVariantsFromPath(ctx context.Context, file *da
 	if err := img.RemoveMetadata(); err != nil {
 		return err
 	}
+	if img.Pages() > 1 {
+		return nil
+	}
 	origBuf, _, err := img.ExportWebp(&vips.WebpExportParams{Lossless: true, StripMetadata: true})
 	if err != nil {
 		return err
@@ -1369,18 +1374,50 @@ func (s *FileService) rebuildImageVariantsFromPath(ctx context.Context, file *da
 			return err
 		}
 		defer compressed.Close()
-		if err := compressed.Resize(0.5, vips.KernelLanczos3); err != nil {
-			return err
-		}
-		compBuf, _, err := compressed.ExportWebp(&vips.WebpExportParams{Quality: 80, StripMetadata: true})
+		compBuf, err := exportSmallerWebp(compressed, origBuf)
 		if err != nil {
 			return err
 		}
-		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
-			return err
+		if len(compBuf) > 0 {
+			if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func exportSmallerWebp(img *vips.ImageRef, original []byte) ([]byte, error) {
+	if img == nil {
+		return nil, nil
+	}
+	steps := []struct {
+		scale   float64
+		quality int
+	}{
+		{0.5, 80},
+		{0.35, 72},
+		{0.25, 65},
+	}
+	for _, step := range steps {
+		candidate, err := img.Copy()
+		if err != nil {
+			return nil, err
+		}
+		if err := candidate.Resize(step.scale, vips.KernelLanczos3); err != nil {
+			candidate.Close()
+			return nil, err
+		}
+		buf, _, err := candidate.ExportWebp(&vips.WebpExportParams{Quality: step.quality, StripMetadata: true})
+		candidate.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(buf) < len(original) {
+			return buf, nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *FileService) rebuildVideoThumbnailFromPath(ctx context.Context, file *database.CloudFile, path string) error {
