@@ -9,6 +9,7 @@ import (
 	"io"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,6 +21,8 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	gen "src.solsynth.dev/sosys/go/proto"
+	"github.com/rwcarlsen/goexif/exif"
+	"github.com/rwcarlsen/goexif/tiff"
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
@@ -637,7 +640,7 @@ func (s *FileService) DetectAndCreateObject(path string) (*database.FileObject, 
 	if len(data) > 0 {
 		mimeType = mimetype.Detect(data).String()
 	}
-	object := &database.FileObject{ID: database.NewID(), MimeType: mimeType, Hash: "", Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false, HasThumbnail: false}
+	object := &database.FileObject{ID: database.NewID(), Size: int64(len(data)), MimeType: mimeType, Hash: "", Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false, HasThumbnail: false}
 	if err := s.db.Create(object).Error; err != nil {
 		return nil, err
 	}
@@ -648,6 +651,12 @@ type ImageAnalysis struct {
 	Width    int
 	Height   int
 	Blurhash string
+	Exif     map[string]any
+}
+
+type SourceAnalysis struct {
+	Image *ImageAnalysis
+	Media map[string]any
 }
 
 func (s *FileService) AnalyzeImage(path string) (*ImageAnalysis, error) {
@@ -669,7 +678,74 @@ func (s *FileService) AnalyzeImage(path string) (*ImageAnalysis, error) {
 		return nil, err
 	}
 
-	return &ImageAnalysis{Width: img.Width(), Height: img.Height(), Blurhash: blur}, nil
+	exifMeta, err := extractExif(path)
+	if err != nil {
+		exifMeta = nil
+	}
+
+	return &ImageAnalysis{Width: img.Width(), Height: img.Height(), Blurhash: blur, Exif: exifMeta}, nil
+}
+
+func (s *FileService) AnalyzeSourceFile(ctx context.Context, path, mimeType string) (*SourceAnalysis, error) {
+	analysis := &SourceAnalysis{}
+	if strings.HasPrefix(mimeType, "image/") {
+		img, err := s.AnalyzeImage(path)
+		if err != nil {
+			return nil, err
+		}
+		analysis.Image = img
+		return analysis, nil
+	}
+	if strings.HasPrefix(mimeType, "video/") || strings.HasPrefix(mimeType, "audio/") {
+		media, err := probeMedia(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		analysis.Media = media
+		return analysis, nil
+	}
+	return analysis, nil
+}
+
+func probeMedia(ctx context.Context, path string) (map[string]any, error) {
+	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("ffprobe: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func extractExif(path string) (map[string]any, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	x, err := exif.Decode(f)
+	if err != nil {
+		return nil, err
+	}
+	meta := map[string]any{}
+	_ = x.Walk(exifWalker{meta: meta})
+	if len(meta) == 0 {
+		return nil, nil
+	}
+	return meta, nil
+}
+
+type exifWalker struct{ meta map[string]any }
+
+func (w exifWalker) Walk(name exif.FieldName, tag *tiff.Tag) error {
+	if tag == nil {
+		return nil
+	}
+	w.meta[string(name)] = tag.String()
+	return nil
 }
 
 func analyzeBlurhash(path string) (string, error) {
@@ -712,6 +788,10 @@ func mergeJSONMeta(raw datatypes.JSON, updates map[string]any) (datatypes.JSON, 
 }
 
 func (s *FileService) StoreImageAnalysis(fileID string, analysis *ImageAnalysis) (*database.CloudFile, error) {
+	return s.StoreSourceAnalysis(fileID, &SourceAnalysis{Image: analysis})
+}
+
+func (s *FileService) StoreSourceAnalysis(fileID string, analysis *SourceAnalysis) (*database.CloudFile, error) {
 	if analysis == nil {
 		return s.GetFile(fileID)
 	}
@@ -721,9 +801,17 @@ func (s *FileService) StoreImageAnalysis(fileID string, analysis *ImageAnalysis)
 			return err
 		}
 		updates := map[string]any{
-			"width":      analysis.Width,
-			"height":     analysis.Height,
-			"blurhash":   analysis.Blurhash,
+		}
+		if analysis.Image != nil {
+			updates["width"] = analysis.Image.Width
+			updates["height"] = analysis.Image.Height
+			updates["blurhash"] = analysis.Image.Blurhash
+			if len(analysis.Image.Exif) > 0 {
+				updates["exif"] = analysis.Image.Exif
+			}
+		}
+		if len(analysis.Media) > 0 {
+			updates["media"] = analysis.Media
 		}
 		mergedFileMeta, err := mergeJSONMeta(file.FileMeta, updates)
 		if err != nil {
@@ -905,6 +993,9 @@ func repairReason(file *database.CloudFile) string {
 		if _, ok := meta["blurhash"]; !ok {
 			reasons = append(reasons, "missing blurhash")
 		}
+		if _, ok := meta["exif"]; !ok {
+			reasons = append(reasons, "missing exif")
+		}
 	}
 	if file.Object != nil {
 		if len(bytes.TrimSpace(file.Object.Meta)) == 0 || string(bytes.TrimSpace(file.Object.Meta)) == "null" || string(bytes.TrimSpace(file.Object.Meta)) == "{}" {
@@ -915,6 +1006,14 @@ func repairReason(file *database.CloudFile) string {
 		}
 		if file.StorageKey == nil && file.Object.StorageKey == nil && file.ObjectID != nil {
 			reasons = append(reasons, "missing storage key")
+		}
+		if len(bytes.TrimSpace(file.Object.Meta)) > 0 && string(bytes.TrimSpace(file.Object.Meta)) != "{}" {
+			var om map[string]any
+			if err := json.Unmarshal(file.Object.Meta, &om); err == nil {
+				if _, ok := om["exif"]; !ok {
+					reasons = append(reasons, "missing object exif")
+				}
+			}
 		}
 	}
 	return strings.Join(reasons, ", ")

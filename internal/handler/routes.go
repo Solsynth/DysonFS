@@ -702,16 +702,14 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if strings.HasPrefix(object.MimeType, "image/") {
-		if analysis, err := files.AnalyzeImage(tempPath); err == nil {
-			if updated, err := files.StoreImageAnalysis(createdFile.ID, analysis); err == nil {
+	if analysis, err := files.AnalyzeSourceFile(c.Request.Context(), tempPath, object.MimeType); err == nil {
+		if updated, err := files.StoreSourceAnalysis(createdFile.ID, analysis); err == nil {
 				createdFile = updated
 			} else {
-				logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to persist image analysis")
+				logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to persist source analysis")
 			}
-		} else {
-			logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to analyze image")
-		}
+	} else {
+		logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to analyze source file")
 	}
 	stage, err := os.Open(tempPath)
 	if err != nil {
@@ -730,6 +728,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		Str("objectId", object.ID).
 		Msg("direct upload stored")
 	_ = tasks
+	_ = publishFileUploaded(c.Request.Context(), nil, nil, eventbus.FileUploadedEvent{FileID: createdFile.ID, ContentType: object.MimeType, StorageKey: object.ID, IsTempFile: true})
 	c.JSON(http.StatusOK, createdFile)
 }
 
@@ -827,16 +826,14 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if strings.HasPrefix(object.MimeType, "image/") {
-		if analysis, err := files.AnalyzeImage(mergedPath); err == nil {
-			if updated, err := files.StoreImageAnalysis(created.ID, analysis); err == nil {
+	if analysis, err := files.AnalyzeSourceFile(c.Request.Context(), mergedPath, object.MimeType); err == nil {
+		if updated, err := files.StoreSourceAnalysis(created.ID, analysis); err == nil {
 				created = updated
 			} else {
-				logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to persist image analysis")
+				logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to persist source analysis")
 			}
-		} else {
-			logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to analyze image")
-		}
+	} else {
+		logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to analyze source file")
 	}
 	stage, err := os.Open(mergedPath)
 	if err != nil {
@@ -854,7 +851,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		Str("fileId", created.ID).
 		Str("objectId", object.ID).
 		Msg("upload stored")
-	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: object.MimeType, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
+	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: object.MimeType, StorageKey: object.ID, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

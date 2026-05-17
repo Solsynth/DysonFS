@@ -3,15 +3,13 @@ package worker
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	blurhash "github.com/bbrks/go-blurhash"
 	"github.com/davidbyttow/govips/v2/vips"
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"gorm.io/datatypes"
@@ -114,9 +112,6 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 	if w.files == nil {
 		return fmt.Errorf("file service not configured")
 	}
-	if _, err := os.Stat(evt.ProcessingFilePath); err != nil {
-		return err
-	}
 	parent, err := w.files.GetFile(evt.FileID)
 	if err != nil {
 		return err
@@ -124,16 +119,35 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 	if parent.Object == nil {
 		return fmt.Errorf("file object missing")
 	}
-	if err := w.processDerived(evt, parent); err != nil {
+	path := evt.ProcessingFilePath
+	if path == "" && evt.StorageKey != "" && w.stor != nil {
+		rc, _, err := w.stor.Get(context.Background(), evt.StorageKey)
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+		path, err = writeTempFile(rc, parent.ID)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(path)
+	}
+	if path == "" {
+		return fmt.Errorf("processing file path missing")
+	}
+	if _, err := os.Stat(path); err != nil {
 		return err
 	}
-	if evt.IsTempFile {
-		_ = os.Remove(evt.ProcessingFilePath)
+	if err := w.processDerived(path, evt, parent); err != nil {
+		return err
+	}
+	if evt.IsTempFile && evt.ProcessingFilePath != "" {
+		_ = os.Remove(path)
 	}
 	return nil
 }
 
-func (w *Worker) processDerived(evt eventbus.FileUploadedEvent, parent *database.CloudFile) error {
+func (w *Worker) processDerived(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile) error {
 	if parent.Object == nil {
 		return nil
 	}
@@ -145,28 +159,24 @@ func (w *Worker) processDerived(evt eventbus.FileUploadedEvent, parent *database
 		mimeType = "application/octet-stream"
 	}
 
-	if err := w.files.TouchCompatibilityFlags(parent.ID); err != nil {
-		return err
-	}
-
 	if strings.HasPrefix(mimeType, "image/") {
-		if err := w.processImage(evt, parent, mimeType); err != nil {
+		if err := w.processImage(path, evt, parent, mimeType); err != nil {
 			return err
 		}
 	} else if strings.HasPrefix(mimeType, "video/") {
-		if err := w.processVideo(evt, parent, mimeType); err != nil {
+		if err := w.processVideo(path, evt, parent, mimeType); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (w *Worker) processImage(evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {
+func (w *Worker) processImage(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {
 	if w.stor == nil {
 		return nil
 	}
 
-	img, err := vips.NewImageFromFile(evt.ProcessingFilePath)
+	img, err := vips.NewImageFromFile(path)
 	if err != nil {
 		return err
 	}
@@ -178,19 +188,6 @@ func (w *Worker) processImage(evt eventbus.FileUploadedEvent, parent *database.C
 	if err := img.RemoveMetadata(); err != nil {
 		return err
 	}
-	width, height := img.Width(), img.Height()
-
-	blurHash, err := w.computeBlurHash(evt.ProcessingFilePath)
-	if err != nil {
-		return err
-	}
-	if err := w.storeBlurHash(parent, blurHash); err != nil {
-		return err
-	}
-	if err := w.storeImageDimensions(parent, width, height); err != nil {
-		return err
-	}
-
 	origBuf, _, err := img.ExportWebp(&vips.WebpExportParams{Lossless: true, StripMetadata: true})
 	if err != nil {
 		return err
@@ -203,7 +200,7 @@ func (w *Worker) processImage(evt eventbus.FileUploadedEvent, parent *database.C
 		return err
 	}
 
-	thumb, err := vips.NewThumbnailFromFile(evt.ProcessingFilePath, 512, 512, vips.InterestingAttention)
+	thumb, err := vips.NewThumbnailFromFile(path, 512, 512, vips.InterestingAttention)
 	if err != nil {
 		return err
 	}
@@ -221,7 +218,7 @@ func (w *Worker) processImage(evt eventbus.FileUploadedEvent, parent *database.C
 	}
 
 	if img.Width() >= 1024 || img.Height() >= 1024 {
-		compressed, err := vips.NewImageFromFile(evt.ProcessingFilePath)
+		compressed, err := vips.NewImageFromFile(path)
 		if err != nil {
 			return err
 		}
@@ -243,17 +240,20 @@ func (w *Worker) processImage(evt eventbus.FileUploadedEvent, parent *database.C
 	}
 
 	_ = mimeType
+	if err := w.files.TouchCompatibilityFlags(parent.ID); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (w *Worker) processVideo(evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {
+func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {
 	if w.stor == nil {
 		return nil
 	}
 
 	thumbKey := storageKey(parent.ID, "thumbnail.jpg")
 	thumbPath := filepath.Join(os.TempDir(), parent.ID+".thumb.jpg")
-	stream := ffmpeg.Input(evt.ProcessingFilePath).
+	stream := ffmpeg.Input(path).
 		Output(thumbPath, ffmpeg.KwArgs{"vframes": 1, "q:v": 2}).
 		OverWriteOutput()
 	if err := stream.Run(); err != nil {
@@ -271,60 +271,23 @@ func (w *Worker) processVideo(evt eventbus.FileUploadedEvent, parent *database.C
 		return err
 	}
 	_ = mimeType
+	if err := w.files.TouchCompatibilityFlags(parent.ID); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (w *Worker) computeBlurHash(path string) (string, error) {
-	img, err := vips.NewImageFromFile(path)
+func writeTempFile(r io.Reader, prefix string) (string, error) {
+	file, err := os.CreateTemp("", prefix+"-*")
 	if err != nil {
 		return "", err
 	}
-	defer img.Close()
-
-	buf, _, err := img.ExportPng(&vips.PngExportParams{StripMetadata: true})
-	if err != nil {
+	defer file.Close()
+	if _, err := io.Copy(file, r); err != nil {
+		_ = os.Remove(file.Name())
 		return "", err
 	}
-	decoded, err := png.Decode(bytes.NewReader(buf))
-	if err != nil {
-		return "", err
-	}
-	return blurhash.Encode(4, 3, decoded)
-}
-
-func (w *Worker) storeBlurHash(parent *database.CloudFile, hash string) error {
-	if w.db == nil || parent.Object == nil {
-		return nil
-	}
-	var object database.FileObject
-	if err := w.db.First(&object, "id = ?", *parent.ObjectID).Error; err != nil {
-		return err
-	}
-	meta := map[string]any{}
-	if len(object.Meta) > 0 {
-		_ = json.Unmarshal(object.Meta, &meta)
-	}
-	meta["blurhash"] = hash
-	raw, _ := json.Marshal(meta)
-	return w.db.Model(&database.FileObject{}).Where("id = ?", object.ID).Update("meta", datatypes.JSON(raw)).Error
-}
-
-func (w *Worker) storeImageDimensions(parent *database.CloudFile, width, height int) error {
-	if w.db == nil || parent.Object == nil {
-		return nil
-	}
-	var object database.FileObject
-	if err := w.db.First(&object, "id = ?", *parent.ObjectID).Error; err != nil {
-		return err
-	}
-	meta := map[string]any{}
-	if len(object.Meta) > 0 {
-		_ = json.Unmarshal(object.Meta, &meta)
-	}
-	meta["width"] = width
-	meta["height"] = height
-	raw, _ := json.Marshal(meta)
-	return w.db.Model(&database.FileObject{}).Where("id = ?", object.ID).Update("meta", datatypes.JSON(raw)).Error
+	return file.Name(), nil
 }
 
 func (w *Worker) upsertChild(parent *database.CloudFile, evt eventbus.FileUploadedEvent, appType, storageKey, mimeType string, body []byte) error {
