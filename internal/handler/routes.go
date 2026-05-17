@@ -48,7 +48,6 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.DELETE("/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus, dispatcher) })
 		f.POST("/:id/recycle", func(c *gin.Context) { recycleFile(c, files, bus, dispatcher) })
 		f.POST("/:id/restore", func(c *gin.Context) { restoreFile(c, files, bus, dispatcher) })
-		f.POST("/maintenance/reanalyze", func(c *gin.Context) { reanalyzeMissingMetadata(c, files) })
 		f.GET("/:id/permissions", func(c *gin.Context) { getFilePermissions(c, files) })
 		f.PUT("/:id/permissions", func(c *gin.Context) { updateFilePermissions(c, files) })
 	}
@@ -1085,26 +1084,6 @@ func uploadStats(c *gin.Context, tasks *service.TaskService) {
 
 func cleanupTasks(c *gin.Context, tasks *service.TaskService) {
 	c.JSON(http.StatusOK, gin.H{"count": 0})
-}
-
-func reanalyzeMissingMetadata(c *gin.Context, files *service.FileService) {
-	result, _, ok := auth.GetAuth(c)
-	if !ok || !result.Account.GetIsSuperuser() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
-	}
-	limit := 100
-	if v := c.Query("limit"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-	out, err := files.ReanalyzeMissingMetadata(c.Request.Context(), limit)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, out)
 }
 
 func recentTasks(c *gin.Context, tasks *service.TaskService) {
