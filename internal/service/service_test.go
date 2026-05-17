@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/png"
@@ -32,12 +33,15 @@ func TestCreateUploadedFileCreatesReplica(t *testing.T) {
 		t.Fatalf("create object: %v", err)
 	}
 	storageKey := objectID
-	file, err := svc.CreateUploadedFile(uuid.New(), "sample.txt", objectID, nil, nil, &storageKey)
+	file, err := svc.CreateUploadedFile(uuid.New(), "sample.txt", nil, objectID, nil, nil, &storageKey)
 	if err != nil {
 		t.Fatalf("CreateUploadedFile() error = %v", err)
 	}
 	if file.PoolID == nil || *file.PoolID != poolID {
 		t.Fatalf("file.PoolID = %v, want %q", file.PoolID, poolID)
+	}
+	if file.Description != nil {
+		t.Fatalf("file.Description = %v, want nil", *file.Description)
 	}
 	var replica database.FileReplica
 	if err := db.First(&replica, "object_id = ?", objectID).Error; err != nil {
@@ -83,6 +87,27 @@ func TestCreateDerivedFileCreatesReplicaUsingParentPool(t *testing.T) {
 	}
 	if replica.PoolID == nil || *replica.PoolID != poolID {
 		t.Fatalf("replica.PoolID = %v, want %q", replica.PoolID, poolID)
+	}
+}
+
+func TestCreateUploadedFilePersistsDescription(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
+	svc.defaultPoolID = poolID
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	description := "uploaded from phone"
+	storageKey := objectID
+	file, err := svc.CreateUploadedFile(uuid.New(), "sample.txt", &description, objectID, nil, nil, &storageKey)
+	if err != nil {
+		t.Fatalf("CreateUploadedFile() error = %v", err)
+	}
+	if file.Description == nil || *file.Description != description {
+		t.Fatalf("file.Description = %v, want %q", file.Description, description)
 	}
 }
 
@@ -337,6 +362,49 @@ func TestReanalyzeMissingImageMetadata(t *testing.T) {
 	}
 	if updated.Object == nil || updated.Object.Meta == nil {
 		t.Fatalf("expected object meta to be populated")
+	}
+}
+
+func TestStoreSourceAnalysisStoresSharedMediaDimensions(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "video/mp4", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	fileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.mp4", AccountID: uuid.New(), ObjectID: &objectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	analysis := &SourceAnalysis{
+		Width:  1920,
+		Height: 1080,
+		Media: map[string]any{
+			"streams": []any{map[string]any{"codec_type": "video", "width": float64(1920), "height": float64(1080)}},
+		},
+	}
+	updated, err := svc.StoreSourceAnalysis(fileID, analysis)
+	if err != nil {
+		t.Fatalf("StoreSourceAnalysis() error = %v", err)
+	}
+	if updated.Object == nil {
+		t.Fatal("expected object to be loaded")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(updated.Object.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if got := int(meta["width"].(float64)); got != 1920 {
+		t.Fatalf("meta width = %d, want 1920", got)
+	}
+	if got := int(meta["height"].(float64)); got != 1080 {
+		t.Fatalf("meta height = %d, want 1080", got)
+	}
+	if _, ok := meta["media"].(map[string]any); !ok {
+		t.Fatalf("meta media missing or wrong type: %#v", meta["media"])
+	}
+	if width, height := mediaDimensions(analysis.Media); width != 1920 || height != 1080 {
+		t.Fatalf("mediaDimensions() = (%d, %d), want (1920, 1080)", width, height)
 	}
 }
 

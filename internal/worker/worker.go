@@ -120,8 +120,14 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 		return fmt.Errorf("file object missing")
 	}
 	path := evt.ProcessingFilePath
-	if path == "" && evt.StorageKey != "" && w.stor != nil {
-		rc, _, err := w.stor.Get(context.Background(), evt.StorageKey)
+	if path != "" {
+		if _, err := os.Stat(path); err != nil {
+			logging.Log.Warn().Err(err).Str("fileId", evt.FileID).Str("path", path).Msg("processing file path unavailable, falling back to storage")
+			path = ""
+		}
+	}
+	if path == "" {
+		rc, err := w.openSourceObject(context.Background(), parent)
 		if err != nil {
 			return err
 		}
@@ -135,14 +141,43 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 	if path == "" {
 		return fmt.Errorf("processing file path missing")
 	}
-	if _, err := os.Stat(path); err != nil {
-		return err
-	}
 	if err := w.processDerived(path, evt, parent); err != nil {
 		return err
 	}
 	if evt.IsTempFile && evt.ProcessingFilePath != "" {
 		_ = os.Remove(path)
+	}
+	return nil
+}
+
+func (w *Worker) openSourceObject(ctx context.Context, file *database.CloudFile) (io.ReadCloser, error) {
+	if file == nil || file.Object == nil {
+		return nil, fmt.Errorf("file object missing")
+	}
+	storageKey := firstNonEmptyPtr(file.StorageKey, file.Object.StorageKey)
+	if storageKey == nil || *storageKey == "" {
+		if file.ObjectID == nil || strings.TrimSpace(*file.ObjectID) == "" {
+			return nil, fmt.Errorf("storage key missing")
+		}
+		storageKey = file.ObjectID
+	}
+	backend, err := w.files.BackendForFile(file)
+	if err != nil {
+		return nil, err
+	}
+	rc, _, err := backend.Get(ctx, *storageKey)
+	if err != nil {
+		return nil, err
+	}
+	return rc, nil
+}
+
+func firstNonEmptyPtr(values ...*string) *string {
+	for _, value := range values {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			resolved := strings.TrimSpace(*value)
+			return &resolved
+		}
 	}
 	return nil
 }

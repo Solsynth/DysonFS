@@ -271,6 +271,7 @@ type PersistentTask struct {
 	FileSize        *int64         `json:"file_size"`
 	PoolID          *string        `gorm:"size:36" json:"pool_id"`
 	ParentID        *string        `gorm:"size:36" json:"parent_id"`
+	Description     *string        `json:"description"`
 	ApplicationType *string        `json:"application_type"`
 	StorageKey      *string        `gorm:"size:36" json:"storage_key"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`

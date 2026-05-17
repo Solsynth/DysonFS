@@ -851,8 +851,10 @@ type ImageAnalysis struct {
 }
 
 type SourceAnalysis struct {
-	Image *ImageAnalysis
-	Media map[string]any
+	Width  int
+	Height int
+	Image  *ImageAnalysis
+	Media  map[string]any
 }
 
 func (s *FileService) AnalyzeImage(path string) (*ImageAnalysis, error) {
@@ -889,6 +891,8 @@ func (s *FileService) AnalyzeSourceFile(ctx context.Context, path, mimeType stri
 		if err != nil {
 			return nil, err
 		}
+		analysis.Width = img.Width
+		analysis.Height = img.Height
 		analysis.Image = img
 		return analysis, nil
 	}
@@ -897,10 +901,55 @@ func (s *FileService) AnalyzeSourceFile(ctx context.Context, path, mimeType stri
 		if err != nil {
 			return nil, err
 		}
+		analysis.Width, analysis.Height = mediaDimensions(media)
 		analysis.Media = media
 		return analysis, nil
 	}
 	return analysis, nil
+}
+
+func mediaDimensions(media map[string]any) (width, height int) {
+	streams, ok := media["streams"].([]any)
+	if !ok {
+		return 0, 0
+	}
+	for _, raw := range streams {
+		stream, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		codecType, _ := stream["codec_type"].(string)
+		if codecType != "video" {
+			continue
+		}
+		width = intFromAny(stream["width"])
+		height = intFromAny(stream["height"])
+		if width > 0 || height > 0 {
+			return width, height
+		}
+	}
+	return 0, 0
+}
+
+func intFromAny(v any) int {
+	switch value := v.(type) {
+	case float64:
+		return int(value)
+	case float32:
+		return int(value)
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case int32:
+		return int(value)
+	case json.Number:
+		n, err := value.Int64()
+		if err == nil {
+			return int(n)
+		}
+	}
+	return 0
 }
 
 func probeMedia(ctx context.Context, path string) (map[string]any, error) {
@@ -997,6 +1046,12 @@ func (s *FileService) StoreSourceAnalysis(fileID string, analysis *SourceAnalysi
 			return err
 		}
 		updates := map[string]any{}
+		if analysis.Width > 0 {
+			updates["width"] = analysis.Width
+		}
+		if analysis.Height > 0 {
+			updates["height"] = analysis.Height
+		}
 		if analysis.Image != nil {
 			updates["width"] = analysis.Image.Width
 			updates["height"] = analysis.Image.Height
@@ -1356,9 +1411,9 @@ func writeTempObject(r io.Reader) (string, func(), error) {
 	return file.Name(), func() { _ = os.Remove(file.Name()) }, nil
 }
 
-func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
+func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, description *string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
 	resolvedPoolID := s.resolvedPoolID(poolID)
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(file).Error; err != nil {
 			return err
@@ -1571,8 +1626,8 @@ func NewTaskService(db *database.DB) *TaskService { return &TaskService{db: db} 
 
 func (s *TaskService) DB() *database.DB { return s.db }
 
-func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
-	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
+func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, description *string, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
+	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, Description: firstNonEmptyPtr(description), ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err
 	}

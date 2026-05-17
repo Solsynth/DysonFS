@@ -56,7 +56,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	u := r.Group("/api/files/upload")
 	{
 		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks) })
-		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks) })
+		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks, bus, dispatcher) })
 		u.POST("/chunk/:taskId/:idx", func(c *gin.Context) { uploadChunk(c, cfg, tasks) })
 		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, bus, dispatcher) })
 		u.GET("/tasks", func(c *gin.Context) { listUploadTasks(c, tasks) })
@@ -594,8 +594,8 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		return
 	}
 	var req struct {
-		Name        string  `json:"name"`
 		FileName    string  `json:"file_name"`
+		Description *string `json:"description"`
 		FileSize    int64   `json:"file_size"`
 		PoolID      *string `json:"pool_id"`
 		ChunkSize   int64   `json:"chunk_size"`
@@ -609,10 +609,11 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file_size must be greater than zero"})
 		return
 	}
-	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+	if strings.TrimSpace(req.FileName) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_name is required"})
 		return
 	}
+	name := strings.TrimSpace(req.FileName)
 	if req.ChunkSize <= 0 {
 		req.ChunkSize = 5 * 1024 * 1024
 	}
@@ -627,13 +628,13 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	chunks := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
 	logging.Log.Info().
 		Str("accountId", result.Account.GetId()).
-		Str("name", req.Name).
+		Str("name", name).
 		Int64("fileSize", req.FileSize).
 		Int64("chunkSize", req.ChunkSize).
 		Int("chunks", chunks).
 		Str("contentType", req.ContentType).
 		Msg("creating upload task")
-	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), req.Name, req.FileSize, req.PoolID, req.FileName, req.ContentType, req.ChunkSize, chunks)
+	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, req.Description, req.FileSize, req.PoolID, name, req.ContentType, req.ChunkSize, chunks)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -647,7 +648,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 // @Produce json
 // @Success 200 {object} database.CloudFile
 // @Router /api/files/upload/direct [post]
-func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService) {
+func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -658,6 +659,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
 		return
 	}
+	description := optionalStringPtr(c.PostForm("description"))
 	reader, err := fileHeader.Open()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -697,7 +699,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	storageKey := &object.ID
-	createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, object.ID, nil, nil, storageKey)
+	createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, object.ID, nil, nil, storageKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -728,7 +730,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		Str("objectId", object.ID).
 		Msg("direct upload stored")
 	_ = tasks
-	_ = publishFileUploaded(c.Request.Context(), nil, nil, eventbus.FileUploadedEvent{FileID: createdFile.ID, ContentType: object.MimeType, StorageKey: object.ID, IsTempFile: true})
+	_ = publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: createdFile.ID, ContentType: object.MimeType, StorageKey: object.ID, ProcessingFilePath: tempPath, IsTempFile: true})
 	c.JSON(http.StatusOK, createdFile)
 }
 
@@ -821,7 +823,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	_ = ctx
 	storageKey := &object.ID
-	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), object.ID, task.PoolID, task.ApplicationType, storageKey)
+	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, object.ID, task.PoolID, task.ApplicationType, storageKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -963,4 +965,12 @@ func deref(v *string) string {
 		return ""
 	}
 	return *v
+}
+
+func optionalStringPtr(v string) *string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	return &v
 }
