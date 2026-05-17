@@ -111,6 +111,26 @@ func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 	}
 }
 
+func TestCreateFolderWithoutParentCreatesPrivatePermission(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	folder, err := svc.CreateFolder(accountID, "private-folder", nil)
+	if err != nil {
+		t.Fatalf("CreateFolder() error = %v", err)
+	}
+	if !folder.IsFolder || !folder.Indexed {
+		t.Fatalf("folder = %+v, want indexed folder", folder)
+	}
+	var perm database.FilePermission
+	if err := db.First(&perm, "file_id = ?", folder.ID).Error; err != nil {
+		t.Fatalf("load permission: %v", err)
+	}
+	if perm.SubjectType != "private" || perm.Permission != "read" {
+		t.Fatalf("permission = %+v, want private read", perm)
+	}
+}
+
 func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testing.T) {
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)

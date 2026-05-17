@@ -666,7 +666,16 @@ func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, 
 
 func (s *FileService) CreateFolder(accountID uuid.UUID, name string, parentID *string) (*database.CloudFile, error) {
 	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, Indexed: true, IsFolder: true, ParentID: parentID}
-	if err := s.db.Create(file).Error; err != nil {
+	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(file).Error; err != nil {
+			return err
+		}
+		if parentID != nil && strings.TrimSpace(*parentID) != "" {
+			return nil
+		}
+		perm := database.FilePermission{ID: database.NewID(), FileID: file.ID, SubjectType: "private", SubjectID: "", Permission: "read"}
+		return tx.Create(&perm).Error
+	}); err != nil {
 		return nil, err
 	}
 	return file, nil

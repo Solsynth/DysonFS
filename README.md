@@ -87,6 +87,23 @@ Both direct upload and chunked upload creation accept the same metadata payload:
 - `parent_id` is optional and can still be resolved server-side when omitted
 - `hash` is stored on the created file/task when provided
 
+### Folders
+
+Folders are created with `POST /folders`.
+
+Request body:
+
+```json
+{
+  "name": "Projects",
+  "parent_id": "..."
+}
+```
+
+- A folder is stored as a `cloud_files` row with `is_folder = true` and `indexed = true`
+- `parent_id` is optional
+- The current implementation does not yet validate that the parent exists or is a folder
+
 ### Storage validation
 
 Validate `file_objects.storage_key` against remote S3 objects and clean up orphans:
