@@ -38,7 +38,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
 		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files) })
-		f.GET("/files/:id/children", func(c *gin.Context) { listChildren(c, files) })
+		f.GET("/:id/children", func(c *gin.Context) { listChildren(c, files) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
 		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
 		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
