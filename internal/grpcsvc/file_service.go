@@ -22,9 +22,9 @@ func extractImageMeta(file *database.CloudFile) (width, height int, blurhash str
 	if file == nil {
 		return 0, 0, ""
 	}
-	if len(file.FileMeta) > 0 {
+	if file.Object != nil && len(file.Object.Meta) > 0 {
 		var meta map[string]any
-		if err := json.Unmarshal(file.FileMeta, &meta); err == nil {
+		if err := json.Unmarshal(file.Object.Meta, &meta); err == nil {
 			if v, ok := meta["width"].(float64); ok {
 				width = int(v)
 			}
@@ -33,26 +33,6 @@ func extractImageMeta(file *database.CloudFile) (width, height int, blurhash str
 			}
 			if v, ok := meta["blurhash"].(string); ok {
 				blurhash = v
-			}
-		}
-	}
-	if (width == 0 || height == 0 || blurhash == "") && file.Object != nil && len(file.Object.Meta) > 0 {
-		var meta map[string]any
-		if err := json.Unmarshal(file.Object.Meta, &meta); err == nil {
-			if width == 0 {
-				if v, ok := meta["width"].(float64); ok {
-					width = int(v)
-				}
-			}
-			if height == 0 {
-				if v, ok := meta["height"].(float64); ok {
-					height = int(v)
-				}
-			}
-			if blurhash == "" {
-				if v, ok := meta["blurhash"].(string); ok {
-					blurhash = v
-				}
 			}
 		}
 	}
@@ -136,7 +116,10 @@ func (s *fileServiceServer) UpdateFile(_ context.Context, req *gen.DyUpdateFileR
 		}
 	}
 	if maskIncludes(req.GetUpdateMask(), "file_meta") {
-		if err := s.files.DB().Model(&database.CloudFile{}).Where("id = ?", file.ID).Update("file_meta", req.GetFile().GetFileMeta()).Error; err != nil {
+		if file.ObjectID == nil {
+			return nil, status.Error(codes.InvalidArgument, "file object is required")
+		}
+		if err := s.files.DB().Model(&database.FileObject{}).Where("id = ?", *file.ObjectID).Update("meta", req.GetFile().GetFileMeta()).Error; err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
@@ -219,7 +202,7 @@ func toProtoCloudFile(file *database.CloudFile) *gen.DyCloudFile {
 	resp := &gen.DyCloudFile{
 		Id:              file.ID,
 		Name:            file.Name,
-		FileMeta:        file.FileMeta,
+		FileMeta:        file.LegacyFileMeta(),
 		UserMeta:        file.UserMeta,
 		Indexed:         file.Indexed,
 		IsFolder:        file.IsFolder,

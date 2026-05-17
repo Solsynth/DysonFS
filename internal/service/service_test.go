@@ -206,8 +206,8 @@ func TestReanalyzeMissingImageMetadata(t *testing.T) {
 	if updated.Object == nil || updated.Object.Meta == nil {
 		t.Fatalf("expected object meta to be populated")
 	}
-	if updated.FileMeta == nil {
-		t.Fatalf("expected file meta to be populated")
+	if updated.Object == nil || updated.Object.Meta == nil {
+		t.Fatalf("expected object meta to be populated")
 	}
 }
 

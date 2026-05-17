@@ -813,19 +813,12 @@ func (s *FileService) StoreSourceAnalysis(fileID string, analysis *SourceAnalysi
 		if len(analysis.Media) > 0 {
 			updates["media"] = analysis.Media
 		}
-		mergedFileMeta, err := mergeJSONMeta(file.FileMeta, updates)
-		if err != nil {
-			return err
-		}
-		if err := tx.Model(&database.CloudFile{}).Where("id = ?", fileID).Update("file_meta", mergedFileMeta).Error; err != nil {
-			return err
-		}
 		if file.ObjectID != nil {
 			var object database.FileObject
 			if err := tx.First(&object, "id = ?", *file.ObjectID).Error; err != nil {
 				return err
 			}
-			mergedObjectMeta, err := mergeJSONMeta(object.Meta, updates)
+			mergedObjectMeta, err := mergeJSONMeta(object.LegacyMeta(), updates)
 			if err != nil {
 				return err
 			}
@@ -977,11 +970,15 @@ func repairReason(file *database.CloudFile) string {
 		return ""
 	}
 	reasons := make([]string, 0, 4)
-	if len(bytes.TrimSpace(file.FileMeta)) == 0 || string(bytes.TrimSpace(file.FileMeta)) == "null" || string(bytes.TrimSpace(file.FileMeta)) == "{}" {
+	fileMeta := datatypes.JSON(nil)
+	if file.Object != nil {
+		fileMeta = file.Object.LegacyMeta()
+	}
+	if len(bytes.TrimSpace(fileMeta)) == 0 || string(bytes.TrimSpace(fileMeta)) == "null" || string(bytes.TrimSpace(fileMeta)) == "{}" {
 		reasons = append(reasons, "missing file_meta")
 	}
 	var meta map[string]any
-	if err := json.Unmarshal(file.FileMeta, &meta); err != nil {
+	if err := json.Unmarshal(fileMeta, &meta); err != nil {
 		reasons = append(reasons, "invalid file_meta")
 	} else {
 		if _, ok := meta["width"]; !ok {
@@ -1038,7 +1035,7 @@ func writeTempObject(r io.Reader) (string, func(), error) {
 
 func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objectID string, poolID *string, appType *string, storageKey *string) (*database.CloudFile, error) {
 	_ = poolID
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageKey: storageKey, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, Indexed: true, ApplicationType: appType, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
 	if err := s.db.Create(file).Error; err != nil {
 		return nil, err
 	}
@@ -1048,7 +1045,7 @@ func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, objec
 func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, name string, objectID string, appType string, storageKey *string) (*database.CloudFile, error) {
 	pt := parentID
 	typeName := appType
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, StorageKey: storageKey, FileMeta: datatypes.JSON([]byte(`{}`)), UserMeta: datatypes.JSON([]byte(`{}`))}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
 	if err := s.db.Create(file).Error; err != nil {
 		return nil, err
 	}

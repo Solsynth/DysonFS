@@ -95,11 +95,11 @@ func (f *CloudFile) LegacyFileMeta() datatypes.JSON {
 	if f == nil {
 		return nil
 	}
-	if len(bytes.TrimSpace(f.FileMeta)) > 0 && string(bytes.TrimSpace(f.FileMeta)) != "null" {
-		return f.FileMeta
-	}
 	if f.Object != nil {
 		return f.Object.LegacyMeta()
+	}
+	if len(bytes.TrimSpace(f.FileMeta)) > 0 && string(bytes.TrimSpace(f.FileMeta)) != "null" {
+		return f.FileMeta
 	}
 	return nil
 }
