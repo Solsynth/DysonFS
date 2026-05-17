@@ -408,6 +408,81 @@ func TestStoreSourceAnalysisStoresSharedMediaDimensions(t *testing.T) {
 	}
 }
 
+func TestListReanalysisCandidatesIncludesVideoMetadataGaps(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	objectID := database.NewID()
+	storageKey := objectID
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "video/quicktime", Hash: "hash", StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	fileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "clip.mov", AccountID: uuid.New(), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	items, err := svc.ListReanalysisCandidates(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListReanalysisCandidates() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if items[0].Kind != "video" {
+		t.Fatalf("candidate kind = %q, want video", items[0].Kind)
+	}
+	if !strings.Contains(items[0].Reason, "missing media") {
+		t.Fatalf("candidate reason = %q, want missing media", items[0].Reason)
+	}
+}
+
+func TestReanalyzeFilesDeduplicatesAndUpdatesSourceMetadata(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = seedDefaultPool(t, db, tmp)
+
+	imgPath := filepath.Join(tmp, "target.png")
+	f, err := os.Create(imgPath)
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	if err := png.Encode(f, blankImage(4, 5)); err != nil {
+		_ = f.Close()
+		t.Fatalf("encode image: %v", err)
+	}
+	_ = f.Close()
+
+	object, err := svc.DetectAndCreateObject(imgPath)
+	if err != nil {
+		t.Fatalf("DetectAndCreateObject() error = %v", err)
+	}
+	imgFile, err := os.Open(imgPath)
+	if err != nil {
+		t.Fatalf("open image: %v", err)
+	}
+	if err := stor.Put(context.Background(), object.ID, imgFile, object.MimeType); err != nil {
+		_ = imgFile.Close()
+		t.Fatalf("stor.Put() error = %v", err)
+	}
+	_ = imgFile.Close()
+	file := &database.CloudFile{ID: database.NewID(), Name: "target.png", AccountID: uuid.New(), ObjectID: &object.ID, StorageKey: &object.ID, Indexed: true}
+	if err := db.Create(file).Error; err != nil {
+		t.Fatalf("create cloud file: %v", err)
+	}
+	if err := db.Model(&database.FileObject{}).Where("id = ?", object.ID).Updates(map[string]any{"meta": datatypes.JSON([]byte(`{}`)), "size": 0}).Error; err != nil {
+		t.Fatalf("seed object: %v", err)
+	}
+
+	res, err := svc.ReanalyzeFiles(context.Background(), []string{file.ID, file.ID, ""})
+	if err != nil {
+		t.Fatalf("ReanalyzeFiles() error = %v", err)
+	}
+	if res.Scanned != 1 || res.Updated != 1 {
+		t.Fatalf("result = %+v, want scanned=1 updated=1", res)
+	}
+}
+
 func TestCanAccessFileInheritsPermissionsFromAncestors(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

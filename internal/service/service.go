@@ -20,6 +20,7 @@ import (
 	"github.com/davidbyttow/govips/v2/vips"
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/tiff"
+	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
@@ -1096,13 +1097,14 @@ type ReanalysisCandidate struct {
 	Name       string    `json:"name"`
 	MimeType   string    `json:"mime_type"`
 	Size       int64     `json:"size"`
+	Kind       string    `json:"kind,omitempty"`
 	StorageKey string    `json:"storage_key,omitempty"`
 	ObjectID   string    `json:"object_id,omitempty"`
 	Reason     string    `json:"reason"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-func (s *FileService) ListImageReanalysisCandidates(ctx context.Context, limit int) ([]ReanalysisCandidate, error) {
+func (s *FileService) ListReanalysisCandidates(ctx context.Context, limit int) ([]ReanalysisCandidate, error) {
 	if s.stor == nil {
 		return nil, fmt.Errorf("storage backend not configured")
 	}
@@ -1116,17 +1118,17 @@ func (s *FileService) ListImageReanalysisCandidates(ctx context.Context, limit i
 	candidates := make([]ReanalysisCandidate, 0, len(files))
 	for i := range files {
 		file := &files[i]
-		if file.Object == nil || !strings.HasPrefix(file.Object.MimeType, "image/") {
+		if file.Object == nil {
 			continue
 		}
-		reason := repairReason(file)
-		if reason == "" {
+		reason, kind := s.reanalysisReason(file)
+		if reason == "" && kind == "image" {
 			reason = s.imageVariantRepairReason(file)
 		}
 		if reason == "" {
 			continue
 		}
-		candidate := ReanalysisCandidate{FileID: file.ID, Name: file.Name, MimeType: file.Object.MimeType, Size: file.Object.Size, UpdatedAt: file.UpdatedAt, Reason: reason}
+		candidate := ReanalysisCandidate{FileID: file.ID, Name: file.Name, MimeType: file.Object.MimeType, Size: file.Object.Size, UpdatedAt: file.UpdatedAt, Reason: reason, Kind: kind}
 		if file.ObjectID != nil {
 			candidate.ObjectID = *file.ObjectID
 		}
@@ -1140,61 +1142,61 @@ func (s *FileService) ListImageReanalysisCandidates(ctx context.Context, limit i
 	return candidates, nil
 }
 
-func (s *FileService) RepairImageMetadataCandidate(ctx context.Context, fileID string) error {
+func (s *FileService) ListImageReanalysisCandidates(ctx context.Context, limit int) ([]ReanalysisCandidate, error) {
+	items, err := s.ListReanalysisCandidates(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]ReanalysisCandidate, 0, len(items))
+	for _, item := range items {
+		if item.Kind == "image" {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
+}
+
+func (s *FileService) RepairReanalysisCandidate(ctx context.Context, fileID string) error {
 	if s.stor == nil {
 		return fmt.Errorf("storage backend not configured")
 	}
-	var file database.CloudFile
-	if err := s.db.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
+	file, path, cleanup, err := s.prepareSourceReanalysis(ctx, fileID)
+	if err != nil {
 		return err
 	}
-	if file.Object == nil || !strings.HasPrefix(file.Object.MimeType, "image/") {
+	if file == nil || file.Object == nil {
 		return nil
 	}
-	storageKey := file.StorageKey
-	if storageKey == nil && file.Object.StorageKey != nil {
-		storageKey = file.Object.StorageKey
-	}
-	if storageKey == nil && file.ObjectID != nil {
-		storageKey = file.ObjectID
-	}
-	if storageKey == nil || strings.TrimSpace(*storageKey) == "" {
-		return fmt.Errorf("storage key missing")
-	}
-	if err := s.rebuildImageVariants(ctx, &file, *storageKey); err != nil {
-		return err
-	}
-	info, err := s.stor.Stat(ctx, *storageKey)
-	if err != nil {
-		return err
-	}
-	rc, _, err := s.stor.Get(ctx, *storageKey)
-	if err != nil {
-		return err
-	}
-	path, cleanup, err := writeTempObject(rc)
-	_ = rc.Close()
-	if err != nil {
-		return err
-	}
 	defer cleanup()
-	analysis, err := s.AnalyzeImage(path)
+	if err := s.rebuildSourceVariants(ctx, file, path); err != nil {
+		return err
+	}
+	analysis, err := s.AnalyzeSourceFile(ctx, path, file.Object.MimeType)
 	if err != nil {
 		return err
 	}
-	if _, err := s.StoreImageAnalysis(file.ID, analysis); err != nil {
+	if _, err := s.StoreSourceAnalysis(file.ID, analysis); err != nil {
 		return err
 	}
-	if err := s.db.Model(&database.FileObject{}).Where("id = ?", file.Object.ID).Update("size", info.Size).Error; err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		return err
 	}
-	if file.StorageKey == nil && storageKey != nil {
-		_ = s.db.Model(&database.CloudFile{}).Where("id = ?", file.ID).Update("storage_key", *storageKey).Error
+	if err := s.db.Model(&database.FileObject{}).Where("id = ?", file.Object.ID).Update("size", info.Size()).Error; err != nil {
+		return err
 	}
-	if file.Object.StorageKey == nil && storageKey != nil {
-		_ = s.db.Model(&database.FileObject{}).Where("id = ?", file.Object.ID).Update("storage_key", *storageKey).Error
+	resolvedKey := firstNonEmptyPtr(file.StorageKey, file.Object.StorageKey, file.ObjectID)
+	if file.StorageKey == nil && resolvedKey != nil {
+		_ = s.db.Model(&database.CloudFile{}).Where("id = ?", file.ID).Update("storage_key", *resolvedKey).Error
 	}
-	return nil
+	if file.Object.StorageKey == nil && resolvedKey != nil {
+		_ = s.db.Model(&database.FileObject{}).Where("id = ?", file.Object.ID).Update("storage_key", *resolvedKey).Error
+	}
+	return s.TouchCompatibilityFlags(file.ID)
+}
+
+func (s *FileService) RepairImageMetadataCandidate(ctx context.Context, fileID string) error {
+	return s.RepairReanalysisCandidate(ctx, fileID)
 }
 
 func (s *FileService) imageVariantRepairReason(file *database.CloudFile) string {
@@ -1286,6 +1288,120 @@ func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.C
 	return nil
 }
 
+func (s *FileService) prepareSourceReanalysis(ctx context.Context, fileID string) (*database.CloudFile, string, func(), error) {
+	var file database.CloudFile
+	if err := s.db.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
+		return nil, "", func() {}, err
+	}
+	if file.Object == nil {
+		return nil, "", func() {}, nil
+	}
+	backend, err := s.BackendForFile(&file)
+	if err != nil {
+		return nil, "", func() {}, err
+	}
+	storageKey := firstNonEmptyPtr(file.StorageKey, file.Object.StorageKey, file.ObjectID)
+	if storageKey == nil || strings.TrimSpace(*storageKey) == "" {
+		return nil, "", func() {}, fmt.Errorf("storage key missing")
+	}
+	rc, _, err := backend.Get(ctx, *storageKey)
+	if err != nil {
+		return nil, "", func() {}, err
+	}
+	path, cleanup, err := writeTempObject(rc)
+	_ = rc.Close()
+	if err != nil {
+		return nil, "", func() {}, err
+	}
+	return &file, path, cleanup, nil
+}
+
+func (s *FileService) rebuildSourceVariants(ctx context.Context, file *database.CloudFile, path string) error {
+	if s == nil || file == nil || file.Object == nil {
+		return nil
+	}
+	if strings.HasPrefix(file.Object.MimeType, "image/") {
+		return s.rebuildImageVariantsFromPath(ctx, file, path)
+	}
+	if strings.HasPrefix(file.Object.MimeType, "video/") {
+		return s.rebuildVideoThumbnailFromPath(ctx, file, path)
+	}
+	return nil
+}
+
+func (s *FileService) rebuildImageVariantsFromPath(ctx context.Context, file *database.CloudFile, path string) error {
+	if s == nil || s.stor == nil || file == nil || file.Object == nil {
+		return nil
+	}
+	img, err := vips.NewImageFromFile(path)
+	if err != nil {
+		return err
+	}
+	defer img.Close()
+	if err := img.AutoRotate(); err != nil {
+		return err
+	}
+	if err := img.RemoveMetadata(); err != nil {
+		return err
+	}
+	origBuf, _, err := img.ExportWebp(&vips.WebpExportParams{Lossless: true, StripMetadata: true})
+	if err != nil {
+		return err
+	}
+	if err := s.persistReanalysisVariant(ctx, file, "system.original", origBuf, "image/webp", "original.webp"); err != nil {
+		return err
+	}
+	thumb, err := vips.NewThumbnailFromFile(path, 512, 512, vips.InterestingAttention)
+	if err != nil {
+		return err
+	}
+	defer thumb.Close()
+	thumbBuf, _, err := thumb.ExportWebp(&vips.WebpExportParams{Quality: 82, StripMetadata: true})
+	if err != nil {
+		return err
+	}
+	if err := s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBuf, "image/webp", "thumbnail.webp"); err != nil {
+		return err
+	}
+	if img.Width() >= 1024 || img.Height() >= 1024 {
+		compressed, err := vips.NewImageFromFile(path)
+		if err != nil {
+			return err
+		}
+		defer compressed.Close()
+		if err := compressed.Resize(0.5, vips.KernelLanczos3); err != nil {
+			return err
+		}
+		compBuf, _, err := compressed.ExportWebp(&vips.WebpExportParams{Quality: 80, StripMetadata: true})
+		if err != nil {
+			return err
+		}
+		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", "compression.low.webp"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *FileService) rebuildVideoThumbnailFromPath(ctx context.Context, file *database.CloudFile, path string) error {
+	if s == nil || s.stor == nil || file == nil || file.Object == nil {
+		return nil
+	}
+	thumbPath := filepath.Join(os.TempDir(), file.ID+".thumb.jpg")
+	defer os.Remove(thumbPath)
+	stream := ffmpeg.Input(path).
+		Output(thumbPath, ffmpeg.KwArgs{"vframes": 1, "q:v": 2}).
+		OverWriteOutput()
+	if err := stream.Run(); err != nil {
+		return err
+	}
+	thumbBytes, err := os.ReadFile(thumbPath)
+	if err != nil {
+		return err
+	}
+	return s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBytes, "image/jpeg", "thumbnail.jpg")
+}
+
 func (s *FileService) persistReanalysisVariant(ctx context.Context, parent *database.CloudFile, appType string, body []byte, mimeType string, suffix string) error {
 	if s == nil || parent == nil || parent.Object == nil {
 		return nil
@@ -1312,14 +1428,14 @@ func (s *FileService) persistReanalysisVariant(ctx context.Context, parent *data
 	return nil
 }
 
-func (s *FileService) ReanalyzeMissingImageMetadata(ctx context.Context, limit int) (ReanalysisResult, error) {
+func (s *FileService) ReanalyzeMissingMetadata(ctx context.Context, limit int) (ReanalysisResult, error) {
 	if s.stor == nil {
 		return ReanalysisResult{}, fmt.Errorf("storage backend not configured")
 	}
 	if limit <= 0 {
 		limit = 100
 	}
-	candidates, err := s.ListImageReanalysisCandidates(ctx, limit)
+	candidates, err := s.ListReanalysisCandidates(ctx, limit)
 	if err != nil {
 		return ReanalysisResult{}, err
 	}
@@ -1328,13 +1444,90 @@ func (s *FileService) ReanalyzeMissingImageMetadata(ctx context.Context, limit i
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		if err := s.RepairImageMetadataCandidate(ctx, candidate.FileID); err != nil {
+		if err := s.RepairReanalysisCandidate(ctx, candidate.FileID); err != nil {
 			result.Failed++
 			continue
 		}
 		result.Updated++
 	}
 	return result, nil
+}
+
+func (s *FileService) ReanalyzeMissingImageMetadata(ctx context.Context, limit int) (ReanalysisResult, error) {
+	return s.ReanalyzeMissingMetadata(ctx, limit)
+}
+
+func (s *FileService) ReanalyzeFiles(ctx context.Context, fileIDs []string) (ReanalysisResult, error) {
+	seen := map[string]struct{}{}
+	result := ReanalysisResult{}
+	for _, fileID := range fileIDs {
+		fileID = strings.TrimSpace(fileID)
+		if fileID == "" {
+			continue
+		}
+		if _, ok := seen[fileID]; ok {
+			continue
+		}
+		seen[fileID] = struct{}{}
+		result.Scanned++
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if err := s.RepairReanalysisCandidate(ctx, fileID); err != nil {
+			result.Failed++
+			continue
+		}
+		result.Updated++
+	}
+	return result, nil
+}
+
+func (s *FileService) reanalysisReason(file *database.CloudFile) (string, string) {
+	if file == nil || file.Object == nil {
+		return "", ""
+	}
+	if strings.HasPrefix(file.Object.MimeType, "image/") {
+		return repairReason(file), "image"
+	}
+	if strings.HasPrefix(file.Object.MimeType, "video/") {
+		return s.videoRepairReason(file), "video"
+	}
+	return "", ""
+}
+
+func (s *FileService) videoRepairReason(file *database.CloudFile) string {
+	if file == nil || file.Object == nil || !strings.HasPrefix(file.Object.MimeType, "video/") {
+		return ""
+	}
+	reasons := make([]string, 0, 4)
+	fileMeta := file.Object.LegacyMeta()
+	if len(bytes.TrimSpace(fileMeta)) == 0 || string(bytes.TrimSpace(fileMeta)) == "null" || string(bytes.TrimSpace(fileMeta)) == "{}" {
+		reasons = append(reasons, "missing file_meta")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(fileMeta, &meta); err != nil {
+		reasons = append(reasons, "invalid file_meta")
+	} else {
+		if _, ok := meta["width"]; !ok {
+			reasons = append(reasons, "missing width")
+		}
+		if _, ok := meta["height"]; !ok {
+			reasons = append(reasons, "missing height")
+		}
+		if _, ok := meta["media"]; !ok {
+			reasons = append(reasons, "missing media")
+		}
+	}
+	if child, err := s.getDerivedChild(file.ID, "system.thumbnail"); err != nil || child == nil {
+		reasons = append(reasons, "missing thumbnail variant")
+	}
+	if file.Object.Size == 0 {
+		reasons = append(reasons, "zero object size")
+	}
+	if file.StorageKey == nil && file.Object.StorageKey == nil && file.ObjectID != nil {
+		reasons = append(reasons, "missing storage key")
+	}
+	return strings.Join(reasons, ", ")
 }
 
 func repairReason(file *database.CloudFile) string {

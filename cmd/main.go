@@ -32,6 +32,7 @@ func main() {
 	onlyDerived := flag.Bool("only-derived", false, "repair derived variants only")
 	onlyOriginal := flag.Bool("only-original", false, "repair original files only")
 	reanalyzeLimit := flag.Int("reanalyze-limit", 100, "maximum image records to preview and repair")
+	reanalyzeFileIDs := flag.String("file-id", "", "comma-separated file ids to reanalyze")
 	replicaRepairLimit := flag.Int("replica-repair-limit", 0, "maximum missing replica candidates to inspect")
 	previewCount := flag.Int("preview-count", 20, "how many repair candidates to print before confirmation")
 	yes := flag.Bool("yes", false, "skip confirmation prompt for repair mode")
@@ -76,7 +77,7 @@ func main() {
 	}
 
 	if mode == "reanalyze-missing" {
-		if err := runReanalysisCLI(context.Background(), cfg, *reanalyzeLimit, *previewCount, *yes); err != nil {
+		if err := runReanalysisCLI(context.Background(), cfg, *reanalyzeLimit, *previewCount, *yes, splitCSV(*reanalyzeFileIDs)); err != nil {
 			logging.Log.Fatal().Err(err).Msg("reanalysis failed")
 		}
 		return
@@ -135,18 +136,34 @@ func extractPositionalMode() string {
 	return mode
 }
 
-func runReanalysisCLI(ctx context.Context, cfg *config.Config, limit, previewCount int, skipConfirm bool) error {
+func runReanalysisCLI(ctx context.Context, cfg *config.Config, limit, previewCount int, skipConfirm bool, fileIDs []string) error {
 	runner, err := app.New(cfg, "master")
 	if err != nil {
 		return err
 	}
 	files := runner.Files()
-	candidates, err := files.ListImageReanalysisCandidates(ctx, limit)
+	if len(fileIDs) > 0 {
+		fmt.Printf("targeted reanalysis for %d file(s):\n", len(fileIDs))
+		for _, fileID := range fileIDs {
+			fmt.Printf("- %s\n", fileID)
+		}
+		if !skipConfirm && !confirmProceed() {
+			fmt.Println("reanalysis cancelled")
+			return nil
+		}
+		result, err := files.ReanalyzeFiles(ctx, fileIDs)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("reanalysis complete: scanned=%d updated=%d failed=%d\n", result.Scanned, result.Updated, result.Failed)
+		return nil
+	}
+	candidates, err := files.ListReanalysisCandidates(ctx, limit)
 	if err != nil {
 		return err
 	}
 	if len(candidates) == 0 {
-		fmt.Println("no image records need reanalysis")
+		fmt.Println("no records need reanalysis")
 		return nil
 	}
 	if previewCount < 0 {
@@ -158,7 +175,7 @@ func runReanalysisCLI(ctx context.Context, cfg *config.Config, limit, previewCou
 	fmt.Printf("reanalysis preview (%d candidates):\n", len(candidates))
 	for i := 0; i < previewCount; i++ {
 		c := candidates[i]
-		fmt.Printf("- %s | %s | size=%d | reason=%s\n", c.FileID, c.Name, c.Size, c.Reason)
+		fmt.Printf("- %s | %s | mime=%s | reason=%s\n", c.FileID, c.Name, c.MimeType, c.Reason)
 	}
 	if previewCount < len(candidates) {
 		fmt.Printf("... and %d more\n", len(candidates)-previewCount)
@@ -267,7 +284,7 @@ func runProgressBar(ctx context.Context, files *service.FileService, candidates 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := files.RepairImageMetadataCandidate(ctx, candidate.FileID); err != nil {
+		if err := files.RepairReanalysisCandidate(ctx, candidate.FileID); err != nil {
 			fmt.Printf("[%d/%d] %s failed: %v\n", i+1, total, candidate.FileID, err)
 			continue
 		}
@@ -352,6 +369,18 @@ func blankAsDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			items = append(items, part)
+		}
+	}
+	return items
 }
 
 func writeLines(path string, lines []string) error {

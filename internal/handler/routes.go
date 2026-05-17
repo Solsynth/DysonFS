@@ -945,7 +945,7 @@ func reanalyzeMissingMetadata(c *gin.Context, files *service.FileService) {
 			limit = parsed
 		}
 	}
-	out, err := files.ReanalyzeMissingImageMetadata(c.Request.Context(), limit)
+	out, err := files.ReanalyzeMissingMetadata(c.Request.Context(), limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
