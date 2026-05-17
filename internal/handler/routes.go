@@ -36,7 +36,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:id", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
-		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
+		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, []any{}) })
 		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files) })
 		f.GET("/:id/children", func(c *gin.Context) { listChildren(c, files) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
@@ -321,7 +321,7 @@ func getPoolPermissions(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": perms})
+	c.JSON(http.StatusOK, perms)
 }
 
 func updatePoolPermissions(c *gin.Context, files *service.FileService) {
@@ -373,7 +373,7 @@ func getFilePermissions(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": perms})
+	c.JSON(http.StatusOK, perms)
 }
 
 func updateFilePermissions(c *gin.Context, files *service.FileService) {
@@ -1087,7 +1087,7 @@ func cleanupTasks(c *gin.Context, tasks *service.TaskService) {
 }
 
 func recentTasks(c *gin.Context, tasks *service.TaskService) {
-	c.JSON(http.StatusOK, gin.H{"items": []any{}})
+	c.JSON(http.StatusOK, []any{})
 }
 
 func taskDetails(c *gin.Context, cfg *config.Config, tasks *service.TaskService) {
