@@ -16,17 +16,21 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/migratelegacy"
+	"src.solsynth.dev/sosys/filesystem/internal/repairlegacy"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 )
 
 func main() {
-	modeFlag := flag.String("mode", "", "run mode: master, worker, storage, migrate-legacy, reanalyze-missing")
+	modeFlag := flag.String("mode", "", "run mode: master, worker, storage, migrate-legacy, reanalyze-missing, repair-legacy-storage")
 	configPath := flag.String("config", os.Getenv("CONFIG_PATH"), "config file path")
 	legacyDSN := flag.String("legacy-dsn", os.Getenv("LEGACY_DATABASE_DSN"), "legacy database dsn for migration")
 	dryRun := flag.Bool("dry-run", false, "simulate migration without writing")
 	batchSize := flag.Int("batch-size", 500, "migration batch size")
 	skipDerived := flag.Bool("skip-derived", false, "skip derived child reconstruction")
 	continueOnError := flag.Bool("continue-on-error", false, "continue migration after row errors")
+	repairLimit := flag.Int("repair-limit", 0, "maximum suspicious rows to inspect for legacy storage repair")
+	onlyDerived := flag.Bool("only-derived", false, "repair derived variants only")
+	onlyOriginal := flag.Bool("only-original", false, "repair original files only")
 	reanalyzeLimit := flag.Int("reanalyze-limit", 100, "maximum image records to preview and repair")
 	previewCount := flag.Int("preview-count", 20, "how many repair candidates to print before confirmation")
 	yes := flag.Bool("yes", false, "skip confirmation prompt for repair mode")
@@ -73,6 +77,13 @@ func main() {
 	if mode == "reanalyze-missing" {
 		if err := runReanalysisCLI(context.Background(), cfg, *reanalyzeLimit, *previewCount, *yes); err != nil {
 			logging.Log.Fatal().Err(err).Msg("reanalysis failed")
+		}
+		return
+	}
+
+	if mode == "repair-legacy-storage" {
+		if err := runLegacyStorageRepairCLI(context.Background(), cfg, *legacyDSN, *dryRun, *batchSize, *previewCount, *repairLimit, *continueOnError, *onlyDerived, *onlyOriginal, *yes); err != nil {
+			logging.Log.Fatal().Err(err).Msg("legacy storage repair failed")
 		}
 		return
 	}
@@ -154,8 +165,54 @@ func runReanalysisCLI(ctx context.Context, cfg *config.Config, limit, previewCou
 	return nil
 }
 
+func runLegacyStorageRepairCLI(ctx context.Context, cfg *config.Config, legacyDSN string, dryRun bool, batchSize, previewCount, limit int, continueOnError, onlyDerived, onlyOriginal, skipConfirm bool) error {
+	runner, err := app.New(cfg, "master")
+	if err != nil {
+		return err
+	}
+	repairer, err := repairlegacy.Open(cfg.Database.DSN, legacyDSN, runner.Files().Storage(), repairlegacy.Options{
+		DryRun:          dryRun,
+		BatchSize:       batchSize,
+		PreviewCount:    previewCount,
+		Limit:           limit,
+		ContinueOnError: continueOnError,
+		OnlyDerived:     onlyDerived,
+		OnlyOriginal:    onlyOriginal,
+	})
+	if err != nil {
+		return err
+	}
+	previews, summary, err := repairer.Preview(ctx)
+	if err != nil {
+		return err
+	}
+	printLegacyRepairPreview(previews, summary, dryRun)
+	if summary.Verified == 0 {
+		fmt.Println("no verified legacy storage fixes found")
+		return nil
+	}
+	if dryRun {
+		fmt.Println("dry run complete")
+		return nil
+	}
+	if !skipConfirm && !confirmProceedWithMessage("Proceed with legacy storage repair?") {
+		fmt.Println("legacy storage repair cancelled")
+		return nil
+	}
+	_, summary, err = repairer.Run(ctx)
+	if err != nil {
+		return err
+	}
+	printLegacyRepairSummary(summary)
+	return nil
+}
+
 func confirmProceed() bool {
-	fmt.Print("Proceed with reanalysis? [y/N]: ")
+	return confirmProceedWithMessage("Proceed with reanalysis?")
+}
+
+func confirmProceedWithMessage(message string) bool {
+	fmt.Printf("%s [y/N]: ", message)
 	reader := bufio.NewReader(os.Stdin)
 	line, _ := reader.ReadString('\n')
 	line = strings.TrimSpace(strings.ToLower(line))
@@ -208,6 +265,32 @@ func runStorageValidationCLI(ctx context.Context, cfg *config.Config, snapshotPa
 	}
 	fmt.Printf("validation complete: deleted=%d\n", deleted)
 	return nil
+}
+
+func printLegacyRepairPreview(previews []repairlegacy.Preview, summary repairlegacy.Summary, dryRun bool) {
+	fmt.Printf("legacy storage repair preview: scanned=%d candidates=%d matched=%d verified=%d already_correct=%d missing_hash=%d missing_legacy=%d missing_remote=%d ambiguous=%d conflict=%d failed=%d\n", summary.Scanned, summary.Candidates, summary.Matched, summary.Verified, summary.AlreadyCorrect, summary.SkippedMissingHash, summary.SkippedMissingLegacy, summary.SkippedMissingRemote, summary.SkippedAmbiguous, summary.SkippedConflict, summary.Failed)
+	if len(previews) == 0 {
+		return
+	}
+	if dryRun {
+		fmt.Println("preview candidates:")
+	} else {
+		fmt.Println("sample candidates:")
+	}
+	for _, item := range previews {
+		fmt.Printf("- [%s] file=%s object=%s app=%s current_file=%s current_object=%s legacy_key=%s detail=%s\n", item.Status, item.Candidate.FileID, blankAsDash(item.Candidate.ObjectID), blankAsDash(item.Candidate.ApplicationType), blankAsDash(item.Candidate.CurrentFileKey), blankAsDash(item.Candidate.CurrentObjectKey), blankAsDash(item.Candidate.LegacyKey), item.Detail)
+	}
+}
+
+func printLegacyRepairSummary(summary repairlegacy.Summary) {
+	fmt.Printf("legacy storage repair complete: scanned=%d candidates=%d matched=%d verified=%d updated=%d already_correct=%d missing_hash=%d missing_legacy=%d missing_remote=%d ambiguous=%d conflict=%d failed=%d\n", summary.Scanned, summary.Candidates, summary.Matched, summary.Verified, summary.Updated, summary.AlreadyCorrect, summary.SkippedMissingHash, summary.SkippedMissingLegacy, summary.SkippedMissingRemote, summary.SkippedAmbiguous, summary.SkippedConflict, summary.Failed)
+}
+
+func blankAsDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func writeLines(path string, lines []string) error {
