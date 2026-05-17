@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -188,18 +189,22 @@ func listChildren(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
+	offset, take, query, order, orderDesc := parseListQuery(c, 0, 50)
 	items, err := files.GetChildren(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+	items = filterAndSortFiles(items, query, order, orderDesc)
+	total := len(items)
+	items = paginateFiles(items, offset, take)
 	filtered := make([]database.CloudFile, 0, len(items))
 	for _, item := range items {
 		if !ok || files.CanAccessFile(result.Account, result.Session, &item, "read") {
 			filtered = append(filtered, item)
 		}
 	}
-	c.Header("X-Total", strconv.Itoa(len(filtered)))
+	c.Header("X-Total", strconv.Itoa(total))
 	c.JSON(http.StatusOK, filtered)
 }
 
@@ -407,12 +412,16 @@ func listRootIndexed(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	offset, take, query, order, orderDesc := parseListQuery(c, 0, 50)
 	items, err := files.ListRoot(uuid.MustParse(result.Account.GetId()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.Header("X-Total", strconv.Itoa(len(items)))
+	items = filterAndSortFiles(items, query, order, orderDesc)
+	total := len(items)
+	items = paginateFiles(items, offset, take)
+	c.Header("X-Total", strconv.Itoa(total))
 	c.JSON(http.StatusOK, items)
 }
 
@@ -422,18 +431,17 @@ func listRootOwned(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	take := 20
-	if v := strings.TrimSpace(c.Query("take")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			take = n
-		}
-	}
-	items, err := files.ListRootOwned(uuid.MustParse(result.Account.GetId()), take)
+	offset, take, query, order, orderDesc := parseListQuery(c, 0, 20)
+	items, err := files.ListOwned(uuid.MustParse(result.Account.GetId()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.Header("X-Total", strconv.Itoa(len(items)))
+	items = filterAndSortFiles(items, query, order, orderDesc)
+	items = rootOnly(items)
+	total := len(items)
+	items = paginateFiles(items, offset, take)
+	c.Header("X-Total", strconv.Itoa(total))
 	c.JSON(http.StatusOK, items)
 }
 
@@ -443,13 +451,135 @@ func listUnindexed(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	pool := strings.TrimSpace(c.Query("pool"))
+	recycled := strings.EqualFold(c.Query("recycled"), "true") || c.Query("recycled") == "1"
+	offset, take, query, order, orderDesc := parseListQuery(c, 0, 20)
 	items, err := files.ListUnindexed(uuid.MustParse(result.Account.GetId()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.Header("X-Total", strconv.Itoa(len(items)))
+	items = filterAndSortUnindexed(items, pool, recycled, query, order, orderDesc)
+	total := len(items)
+	items = paginateFiles(items, offset, take)
+	c.Header("X-Total", strconv.Itoa(total))
 	c.JSON(http.StatusOK, items)
+}
+
+func parseListQuery(c *gin.Context, defaultOffset, defaultTake int) (offset, take int, query, order string, orderDesc bool) {
+	offset = defaultOffset
+	take = defaultTake
+	order = strings.TrimSpace(c.Query("order"))
+	if order == "" {
+		order = "date"
+	}
+	orderDesc = true
+	if v := strings.TrimSpace(c.Query("offset")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	if v := strings.TrimSpace(c.Query("take")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			take = n
+		}
+	}
+	if v := strings.TrimSpace(c.Query("query")); v != "" {
+		query = v
+	}
+	if v := strings.TrimSpace(c.Query("orderDesc")); v != "" {
+		orderDesc = !(strings.EqualFold(v, "false") || v == "0")
+	}
+	return
+}
+
+func filterAndSortFiles(items []database.CloudFile, query, order string, orderDesc bool) []database.CloudFile {
+	filtered := make([]database.CloudFile, 0, len(items))
+	for _, item := range items {
+		if query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(query)) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	sortFiles(filtered, order, orderDesc)
+	return filtered
+}
+
+func rootOnly(items []database.CloudFile) []database.CloudFile {
+	filtered := make([]database.CloudFile, 0, len(items))
+	for _, item := range items {
+		if item.ParentID == nil {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func filterAndSortUnindexed(items []database.CloudFile, pool string, recycled bool, query, order string, orderDesc bool) []database.CloudFile {
+	filtered := make([]database.CloudFile, 0, len(items))
+	for _, item := range items {
+		if item.IsMarkedRecycle != recycled {
+			continue
+		}
+		if item.Indexed || item.IsFolder {
+			continue
+		}
+		if pool != "" {
+			if item.PoolID == nil || *item.PoolID != pool {
+				continue
+			}
+		}
+		if query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(query)) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	sortFiles(filtered, order, orderDesc)
+	return filtered
+}
+
+func sortFiles(items []database.CloudFile, order string, orderDesc bool) {
+	sort.SliceStable(items, func(i, j int) bool {
+		less := func() bool {
+			switch strings.ToLower(order) {
+		case "name":
+			return items[i].Name < items[j].Name
+		case "size":
+			iSize := int64(0)
+			jSize := int64(0)
+			if items[i].Object != nil {
+				iSize = items[i].Object.Size
+			}
+			if items[j].Object != nil {
+				jSize = items[j].Object.Size
+			}
+			return iSize < jSize
+		default:
+			return items[i].CreatedAt.Before(items[j].CreatedAt)
+		}
+		}
+		if orderDesc {
+			return !less()
+		}
+		return less()
+	})
+}
+
+func paginateFiles(items []database.CloudFile, offset, take int) []database.CloudFile {
+	if offset < 0 {
+		offset = 0
+	}
+	if take <= 0 || offset >= len(items) {
+		if offset >= len(items) {
+			return []database.CloudFile{}
+		}
+		return items
+	}
+	end := offset + take
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[offset:end]
 }
 
 func createFolder(c *gin.Context, files *service.FileService) {
