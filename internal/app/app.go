@@ -18,6 +18,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	"src.solsynth.dev/sosys/filesystem/internal/worker"
+	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
@@ -28,21 +29,21 @@ import (
 )
 
 type App struct {
-	cfg      *config.Config
-	mode     string
-	db       *database.DB
-	bus      *eventbus.Bus
-	redis    *redis.Client
-	stor     storage.Backend
-	files    *service.FileService
-	tasks    *service.TaskService
-	quota    *service.QuotaService
-	worker   *worker.Worker
+	cfg        *config.Config
+	mode       string
+	db         *database.DB
+	bus        *eventbus.Bus
+	redis      *redis.Client
+	stor       storage.Backend
+	files      *service.FileService
+	tasks      *service.TaskService
+	quota      *service.QuotaService
+	worker     *worker.Worker
 	dispatcher dispatch.Dispatcher
-	httpSrv  *http.Server
-	grpcSrv  *grpc.Server
-	natsConn *nats.Conn
-	logger   zerolog.Logger
+	httpSrv    *http.Server
+	grpcSrv    *grpc.Server
+	natsConn   *nats.Conn
+	logger     zerolog.Logger
 }
 
 func (a *App) Files() *service.FileService { return a.files }
@@ -80,7 +81,11 @@ func New(cfg *config.Config, mode string) (*App, error) {
 		natsConn = conn
 	}
 
-	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: service.NewFileService(db, stor), tasks: service.NewTaskService(db), quota: service.NewQuotaService(db), natsConn: natsConn, logger: logging.Log}
+	files := service.NewFileService(db, stor)
+	if redisClient != nil {
+		files.SetCache(sharedcache.NewRedisCacheService(redisClient))
+	}
+	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: files, tasks: service.NewTaskService(db), quota: service.NewQuotaService(db), natsConn: natsConn, logger: logging.Log}
 	defaultPoolID, err := app.files.SeedPools(cfg)
 	if err != nil {
 		return nil, err

@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/datatypes"
 
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
+	gen "src.solsynth.dev/sosys/go/proto"
 )
 
 func TestBackendFromPoolStorageLocal(t *testing.T) {
@@ -56,6 +57,9 @@ func TestListOwnedReturnsAllUserFiles(t *testing.T) {
 	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
+	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
+		t.Fatalf("AutoMigrate() permission table error = %v", err)
+	}
 
 	svc := NewFileService(&database.DB{DB: db}, nil)
 	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
@@ -86,6 +90,9 @@ func TestListRootOwnedExcludesChildren(t *testing.T) {
 	}
 	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
+		t.Fatalf("AutoMigrate() permission table error = %v", err)
 	}
 
 	svc := NewFileService(&database.DB{DB: db}, nil)
@@ -121,6 +128,9 @@ func TestListRootOwnedDefaultsToRecentFirst(t *testing.T) {
 	}
 	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
+		t.Fatalf("AutoMigrate() permission table error = %v", err)
 	}
 
 	svc := NewFileService(&database.DB{DB: db}, nil)
@@ -208,6 +218,78 @@ func TestReanalyzeMissingImageMetadata(t *testing.T) {
 	}
 	if updated.Object == nil || updated.Object.Meta == nil {
 		t.Fatalf("expected object meta to be populated")
+	}
+}
+
+func TestCanAccessFileInheritsPermissionsFromAncestors(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FilePermission{}, &database.FileObject{}); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	viewerID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	childID := database.NewID()
+	parentID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: parentID, Name: "parent", AccountID: accountID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: childID, Name: "child", AccountID: accountID, ParentID: ptr(parentID), Indexed: true}).Error; err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	perm := database.FilePermission{ID: database.NewID(), FileID: parentID, SubjectType: "account", SubjectID: viewerID.String(), Permission: "read"}
+	if err := db.Create(&perm).Error; err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+
+	child, err := svc.GetFile(childID)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if !svc.CanAccessFile(&gen.DyAccount{Id: viewerID.String()}, nil, child, "read") {
+		t.Fatal("expected child access to inherit from parent permission")
+	}
+
+	grandchildID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: grandchildID, Name: "grandchild", AccountID: accountID, ParentID: ptr(childID), Indexed: true}).Error; err != nil {
+		t.Fatalf("create grandchild: %v", err)
+	}
+	grandchild, err := svc.GetFile(grandchildID)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if !svc.CanAccessFile(&gen.DyAccount{Id: viewerID.String()}, nil, grandchild, "read") {
+		t.Fatal("expected grandchild access to inherit through the full parent tree")
+	}
+}
+
+func TestCanAccessFileDefaultsToPublicWithoutPermissions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
+		t.Fatalf("AutoMigrate() permission table error = %v", err)
+	}
+
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	file := &database.CloudFile{ID: database.NewID(), Name: "file", AccountID: uuid.New(), Indexed: true}
+	if err := db.Create(file).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	loaded, err := svc.GetFile(file.ID)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if !svc.CanAccessFile(nil, nil, loaded, "read") {
+		t.Fatal("expected files without permissions to remain public")
 	}
 }
 

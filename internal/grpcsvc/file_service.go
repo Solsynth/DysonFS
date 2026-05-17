@@ -15,7 +15,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"gorm.io/gorm"
 )
 
 func extractImageMeta(file *database.CloudFile) (width, height int, blurhash string) {
@@ -114,6 +113,9 @@ func (s *fileServiceServer) UpdateFile(_ context.Context, req *gen.DyUpdateFileR
 		if err := s.files.DB().Model(&database.CloudFile{}).Where("id = ?", file.ID).Updates(updates).Error; err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
+		if _, ok := updates["parent_id"]; ok {
+			s.files.InvalidateFilePermissionCache(context.Background(), file.ID)
+		}
 	}
 	if maskIncludes(req.GetUpdateMask(), "file_meta") {
 		if file.ObjectID == nil {
@@ -161,6 +163,7 @@ func (s *fileServiceServer) DeleteFile(_ context.Context, req *gen.DyDeleteFileR
 	} else if err := s.files.DeleteFile(req.GetId()); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	s.files.InvalidateFilePermissionCache(context.Background(), req.GetId())
 	return &emptypb.Empty{}, nil
 }
 
@@ -168,9 +171,7 @@ func (s *fileServiceServer) PurgeCache(_ context.Context, req *gen.DyPurgeCacheR
 	if req.GetFileId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "file_id is required")
 	}
-	if err := s.files.DB().Model(&database.CloudFile{}).Where("id = ?", req.GetFileId()).Update("updated_at", gorm.Expr("updated_at")).Error; err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
+	s.files.InvalidateFilePermissionCache(context.Background(), req.GetFileId())
 	return &emptypb.Empty{}, nil
 }
 
@@ -181,6 +182,7 @@ func (s *fileServiceServer) SetFilePublic(_ context.Context, req *gen.DySetFileP
 	if err := s.files.DB().Where("file_id = ? AND permission = ?", req.GetFileId(), "read").Delete(&database.FilePermission{}).Error; err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	s.files.InvalidateFilePermissionCache(context.Background(), req.GetFileId())
 	return &emptypb.Empty{}, nil
 }
 
@@ -192,6 +194,7 @@ func (s *fileServiceServer) UnsetFilePublic(_ context.Context, req *gen.DyUnsetF
 	if err := s.files.DB().Create(&perm).Error; err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	s.files.InvalidateFilePermissionCache(context.Background(), req.GetFileId())
 	return &emptypb.Empty{}, nil
 }
 

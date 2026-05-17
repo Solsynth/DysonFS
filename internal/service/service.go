@@ -1,13 +1,13 @@
 package service
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,18 +16,19 @@ import (
 
 	blurhash "github.com/bbrks/go-blurhash"
 	"github.com/davidbyttow/govips/v2/vips"
-	"src.solsynth.dev/sosys/filesystem/internal/database"
-	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
-	"src.solsynth.dev/sosys/filesystem/internal/config"
-	"src.solsynth.dev/sosys/filesystem/internal/storage"
-	gen "src.solsynth.dev/sosys/go/proto"
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/tiff"
+	"src.solsynth.dev/sosys/filesystem/internal/config"
+	"src.solsynth.dev/sosys/filesystem/internal/database"
+	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
+	"src.solsynth.dev/sosys/filesystem/internal/storage"
+	gen "src.solsynth.dev/sosys/go/proto"
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 )
 
 type PoolConfig struct {
@@ -44,23 +45,23 @@ type PoolBillingConfig struct {
 }
 
 type PoolStorageConfig struct {
-	EnableSigned bool   `json:"enable_signed"`
-	EnableSsl    bool   `json:"enable_ssl"`
-	Endpoint     string `json:"endpoint"`
+	EnableSigned   bool    `json:"enable_signed"`
+	EnableSsl      bool    `json:"enable_ssl"`
+	Endpoint       string  `json:"endpoint"`
 	AccessEndpoint *string `json:"access_endpoint"`
-	Bucket       string `json:"bucket"`
-	ImageProxy   *string `json:"image_proxy"`
-	AccessProxy  *string `json:"access_proxy"`
-	SecretId     string `json:"secret_id"`
-	SecretKey    string `json:"secret_key"`
+	Bucket         string  `json:"bucket"`
+	ImageProxy     *string `json:"image_proxy"`
+	AccessProxy    *string `json:"access_proxy"`
+	SecretId       string  `json:"secret_id"`
+	SecretKey      string  `json:"secret_key"`
 }
 
 type Pool struct {
 	ID            string            `json:"id"`
 	Name          string            `json:"name"`
 	AccountID     uuid.UUID         `json:"account_id"`
-	StorageConfig PoolStorageConfig  `json:"storage_config"`
-	BillingConfig PoolBillingConfig  `json:"billing_config"`
+	StorageConfig PoolStorageConfig `json:"storage_config"`
+	BillingConfig PoolBillingConfig `json:"billing_config"`
 	PolicyConfig  PoolConfig        `json:"policy_config"`
 	IsHidden      bool              `json:"is_hidden"`
 }
@@ -78,14 +79,19 @@ type AccessContext struct {
 }
 
 type FileService struct {
-	db   *database.DB
-	stor storage.Backend
+	db    *database.DB
+	stor  storage.Backend
+	cache sharedcache.CacheService
 }
 
 const systemPoolName = "system"
 
 func NewFileService(db *database.DB, stor storage.Backend) *FileService {
 	return &FileService{db: db, stor: stor}
+}
+
+func (s *FileService) SetCache(cache sharedcache.CacheService) {
+	s.cache = cache
 }
 
 func (s *FileService) DB() *database.DB { return s.db }
@@ -284,7 +290,7 @@ func (s *FileService) UpdatePoolPermissions(poolID string, perms []database.Pool
 }
 
 func (s *FileService) UpdateFilePermissions(fileID string, perms []database.FilePermission) error {
-	return s.db.DB.Transaction(func(tx *gorm.DB) error {
+	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("file_id = ?", fileID).Delete(&database.FilePermission{}).Error; err != nil {
 			return err
 		}
@@ -292,7 +298,11 @@ func (s *FileService) UpdateFilePermissions(fileID string, perms []database.File
 			return nil
 		}
 		return tx.Create(&perms).Error
-	})
+	}); err != nil {
+		return err
+	}
+	s.InvalidateFilePermissionCache(context.Background(), fileID)
+	return nil
 }
 
 func (s *FileService) IsPoolPublic(poolID string) (bool, error) {
@@ -366,6 +376,127 @@ func (s *FileService) IsResourcePublic(perms []database.FilePermission) bool {
 	return len(perms) == 0
 }
 
+type cachedFilePermissionLookup struct {
+	HasSource bool                      `json:"has_source"`
+	SourceID  string                    `json:"source_id"`
+	Perms     []database.FilePermission `json:"perms"`
+}
+
+func (s *FileService) filePermissionCacheKey(fileID, permission string) string {
+	return fmt.Sprintf("fs:file-perm:%s:%s", fileID, permission)
+}
+
+func (s *FileService) filePermissionGroupKey(fileID string) string {
+	return "fs:file-perm-group:" + fileID
+}
+
+func (s *FileService) InvalidateFilePermissionCache(ctx context.Context, fileID string) {
+	if s == nil || s.cache == nil || strings.TrimSpace(fileID) == "" {
+		return
+	}
+	_ = s.cache.RemoveGroup(ctx, s.filePermissionGroupKey(fileID))
+}
+
+func (s *FileService) loadAncestorIDs(fileID string) ([]string, error) {
+	const query = `WITH RECURSIVE ancestors AS (
+		SELECT id, parent_id, 0 AS depth
+		FROM cloud_files
+		WHERE id = ? AND deleted_at IS NULL
+
+		UNION ALL
+
+		SELECT cf.id, cf.parent_id, ancestors.depth + 1
+		FROM cloud_files cf
+		JOIN ancestors ON cf.id = ancestors.parent_id
+		WHERE cf.deleted_at IS NULL
+	)
+	SELECT id FROM ancestors ORDER BY depth`
+
+	rows, err := s.db.DB.Raw(query, fileID).Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0, 8)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func (s *FileService) loadInheritedFilePermissions(fileID, permission string) (cachedFilePermissionLookup, error) {
+	const sourceQuery = `WITH RECURSIVE ancestors AS (
+		SELECT id, parent_id, 0 AS depth
+		FROM cloud_files
+		WHERE id = ? AND deleted_at IS NULL
+
+		UNION ALL
+
+		SELECT cf.id, cf.parent_id, ancestors.depth + 1
+		FROM cloud_files cf
+		JOIN ancestors ON cf.id = ancestors.parent_id
+		WHERE cf.deleted_at IS NULL
+	)
+	SELECT id
+	FROM ancestors a
+	WHERE EXISTS (
+		SELECT 1
+		FROM file_permissions fp
+		WHERE fp.file_id = a.id
+		  AND fp.permission = ?
+		  AND fp.deleted_at IS NULL
+	)
+	ORDER BY depth
+	LIMIT 1`
+
+	var sourceID string
+	if err := s.db.DB.Raw(sourceQuery, fileID, permission).Scan(&sourceID).Error; err != nil {
+		return cachedFilePermissionLookup{}, err
+	}
+	if strings.TrimSpace(sourceID) == "" {
+		return cachedFilePermissionLookup{HasSource: false}, nil
+	}
+
+	var perms []database.FilePermission
+	if err := s.db.Where("file_id = ? AND permission = ?", sourceID, permission).Find(&perms).Error; err != nil {
+		return cachedFilePermissionLookup{}, err
+	}
+	return cachedFilePermissionLookup{HasSource: true, SourceID: sourceID, Perms: perms}, nil
+}
+
+func (s *FileService) resolveInheritedFilePermissions(ctx context.Context, fileID, permission string) (cachedFilePermissionLookup, error) {
+	key := s.filePermissionCacheKey(fileID, permission)
+	if s.cache != nil {
+		var cached cachedFilePermissionLookup
+		if ok, err := s.cache.GetData(ctx, key, &cached, "FilePermissionLookup"); err == nil && ok {
+			return cached, nil
+		}
+	}
+
+	lookup, err := s.loadInheritedFilePermissions(fileID, permission)
+	if err != nil {
+		return cachedFilePermissionLookup{}, err
+	}
+
+	if s.cache != nil {
+		groups := []string{}
+		if ancestors, err := s.loadAncestorIDs(fileID); err == nil {
+			groups = make([]string, 0, len(ancestors))
+			for _, ancestorID := range ancestors {
+				groups = append(groups, s.filePermissionGroupKey(ancestorID))
+			}
+		}
+		_ = s.cache.SetWithGroups(ctx, key, lookup, groups, 5*time.Minute)
+	}
+
+	return lookup, nil
+}
+
 func (s *FileService) CanAccessFile(account *gen.DyAccount, session *gen.DyAuthSession, file *database.CloudFile, permission string) bool {
 	if file == nil {
 		return false
@@ -376,14 +507,14 @@ func (s *FileService) CanAccessFile(account *gen.DyAccount, session *gen.DyAuthS
 	if account != nil && file.AccountID.String() == account.GetId() {
 		return true
 	}
-	var perms []database.FilePermission
-	if err := s.db.Where("file_id = ? AND permission = ?", file.ID, permission).Find(&perms).Error; err != nil {
+	lookup, err := s.resolveInheritedFilePermissions(context.Background(), file.ID, permission)
+	if err != nil {
 		return false
 	}
-	if len(perms) == 0 {
+	if !lookup.HasSource {
 		return true
 	}
-	for _, perm := range perms {
+	for _, perm := range lookup.Perms {
 		switch perm.SubjectType {
 		case "account":
 			if account != nil && perm.SubjectID == account.GetId() {
@@ -521,7 +652,11 @@ func (s *FileService) MarkDerived(parentID string, kind string) error {
 }
 
 func (s *FileService) DeleteFile(id string) error {
-	return s.db.Delete(&database.CloudFile{}, "id = ?", id).Error
+	if err := s.db.Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
+		return err
+	}
+	s.InvalidateFilePermissionCache(context.Background(), id)
+	return nil
 }
 
 func (s *FileService) RecycleFile(id string) error {
@@ -547,6 +682,7 @@ func (s *FileService) PurgeFile(id string) error {
 	if err := s.db.Where("file_id = ?", id).Delete(&database.FilePermission{}).Error; err != nil {
 		return err
 	}
+	s.InvalidateFilePermissionCache(context.Background(), id)
 	return nil
 }
 
@@ -800,8 +936,7 @@ func (s *FileService) StoreSourceAnalysis(fileID string, analysis *SourceAnalysi
 		if err := tx.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
 			return err
 		}
-		updates := map[string]any{
-		}
+		updates := map[string]any{}
 		if analysis.Image != nil {
 			updates["width"] = analysis.Image.Width
 			updates["height"] = analysis.Image.Height
@@ -1161,8 +1296,8 @@ func NewQuotaService(db *database.DB) *QuotaService { return &QuotaService{db: d
 
 type QuotaSummary struct {
 	BasedQuota int64 `json:"based_quota"`
-	ExtraQuota  int64 `json:"extra_quota"`
-	TotalQuota  int64 `json:"total_quota"`
+	ExtraQuota int64 `json:"extra_quota"`
+	TotalQuota int64 `json:"total_quota"`
 }
 
 func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord, error) {
