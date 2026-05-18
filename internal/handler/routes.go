@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -763,7 +764,11 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	}
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	if err := quota.CheckUploadQuota(uuid.MustParse(result.Account.GetId()), req.FileSize); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		status := http.StatusBadRequest
+		if errors.Is(err, service.ErrQuotaExceeded) {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	if err := files.ValidatePoolUsage(ctx, req.PoolID, req.FileSize, req.ContentType); err != nil {
@@ -817,7 +822,11 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	if err := quota.CheckUploadQuota(uuid.MustParse(result.Account.GetId()), fileHeader.Size); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		status := http.StatusBadRequest
+		if errors.Is(err, service.ErrQuotaExceeded) {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	reader, err := fileHeader.Open()

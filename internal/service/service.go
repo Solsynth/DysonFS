@@ -2190,23 +2190,29 @@ type QuotaSummary struct {
 	TotalQuota int64 `json:"total_quota"`
 }
 
+var ErrQuotaExceeded = errors.New("quota exceeded")
+
+const quotaUnitBytes int64 = 1024 * 1024
+
 func (s *QuotaService) CheckUploadQuota(accountID uuid.UUID, size int64) error {
 	summary, err := s.GetSummary(accountID)
 	if err != nil {
 		return err
 	}
-	usage, err := s.GetUsage(accountID)
+	usedBytes, err := s.usedBytes(accountID)
 	if err != nil {
 		return err
 	}
-	if usage.BasedQuota+size <= summary.TotalQuota {
+	quotaBytes := summary.TotalQuota * quotaUnitBytes
+	if usedBytes+size <= quotaBytes {
 		return nil
 	}
-	remaining := summary.TotalQuota - usage.BasedQuota
-	if remaining < 0 {
-		remaining = 0
+	usedMB := (usedBytes + quotaUnitBytes - 1) / quotaUnitBytes
+	remainingMB := summary.TotalQuota - usedMB
+	if remainingMB < 0 {
+		remainingMB = 0
 	}
-	return fmt.Errorf("quota exceeded: used=%d total=%d remaining=%d", usage.BasedQuota, summary.TotalQuota, remaining)
+	return fmt.Errorf("%w: used=%dMB total=%dMB remaining=%dMB", ErrQuotaExceeded, usedMB, summary.TotalQuota, remainingMB)
 }
 
 func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord, error) {
@@ -2219,26 +2225,40 @@ func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord,
 
 func (s *QuotaService) GetSummary(accountID uuid.UUID) (QuotaSummary, error) {
 	var records []database.QuotaRecord
-	if err := s.db.Where("account_id = ?", accountID).Find(&records).Error; err != nil {
+	if err := s.db.Where("account_id = ?", accountID).Order("created_at asc").Find(&records).Error; err != nil {
 		return QuotaSummary{}, err
 	}
-	var total int64
+	var basedQuota int64
+	var extraQuota int64
 	for _, record := range records {
-		total += record.Quota
+		if strings.EqualFold(strings.TrimSpace(record.Name), "base") || strings.EqualFold(strings.TrimSpace(record.Description), "base") {
+			basedQuota += record.Quota
+			continue
+		}
+		extraQuota += record.Quota
 	}
-	return QuotaSummary{BasedQuota: total, ExtraQuota: 0, TotalQuota: total}, nil
+	return QuotaSummary{BasedQuota: basedQuota, ExtraQuota: extraQuota, TotalQuota: basedQuota + extraQuota}, nil
 }
 
 func (s *QuotaService) GetUsage(accountID uuid.UUID) (QuotaSummary, error) {
+	totalBytes, err := s.usedBytes(accountID)
+	if err != nil {
+		return QuotaSummary{}, err
+	}
+	totalMB := (totalBytes + quotaUnitBytes - 1) / quotaUnitBytes
+	return QuotaSummary{BasedQuota: totalMB, ExtraQuota: 0, TotalQuota: totalMB}, nil
+}
+
+func (s *QuotaService) usedBytes(accountID uuid.UUID) (int64, error) {
 	var total int64
 	if err := s.db.Model(&database.CloudFile{}).
 		Select("COALESCE(SUM(file_objects.size), 0)").
 		Joins("LEFT JOIN file_objects ON file_objects.id = cloud_files.object_id").
 		Where("cloud_files.account_id = ? AND cloud_files.deleted_at IS NULL", accountID).
 		Scan(&total).Error; err != nil {
-		return QuotaSummary{}, err
+		return 0, err
 	}
-	return QuotaSummary{BasedQuota: total, ExtraQuota: 0, TotalQuota: total}, nil
+	return total, nil
 }
 
 func (s *QuotaService) GetPoolUsage(accountID uuid.UUID, poolID string) (map[string]any, error) {
