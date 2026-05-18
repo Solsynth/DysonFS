@@ -246,6 +246,13 @@ type FilePermission struct {
 	UpdatedAt   time.Time      `json:"updated_at"`
 }
 
+func (p *FilePermission) BeforeCreate(tx *gorm.DB) error {
+	if p.ID == "" {
+		p.ID = NewID()
+	}
+	return nil
+}
+
 type PoolPermission struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
 	PoolID      string         `gorm:"size:36;index" json:"pool_id"`

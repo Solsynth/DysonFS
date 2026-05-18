@@ -131,6 +131,25 @@ func TestCreateFolderWithoutParentCreatesPrivatePermission(t *testing.T) {
 	}
 }
 
+func TestUpdateFilePermissionsAssignsIDs(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	fileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample", AccountID: uuid.New(), Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := svc.UpdateFilePermissions(fileID, []database.FilePermission{{FileID: fileID, SubjectType: "private", Permission: "read"}}); err != nil {
+		t.Fatalf("UpdateFilePermissions() error = %v", err)
+	}
+	var perm database.FilePermission
+	if err := db.First(&perm, "file_id = ?", fileID).Error; err != nil {
+		t.Fatalf("load permission: %v", err)
+	}
+	if perm.ID == "" {
+		t.Fatalf("permission ID is empty")
+	}
+}
+
 func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testing.T) {
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
