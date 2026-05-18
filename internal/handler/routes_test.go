@@ -3,12 +3,12 @@ package handler
 import (
 	"testing"
 
+	"github.com/gin-gonic/gin"
+
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestRegisterRoutesNoPanic(t *testing.T) {

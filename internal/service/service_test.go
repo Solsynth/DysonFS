@@ -111,6 +111,65 @@ func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 	}
 }
 
+func TestQuotaUsageCountsBytes(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+	poolID := database.NewID()
+	object1 := database.NewID()
+	object2 := database.NewID()
+	if err := db.Create(&database.FileObject{ID: object1, Size: 120, MimeType: "text/plain", Hash: "h1"}).Error; err != nil {
+		t.Fatalf("create object1: %v", err)
+	}
+	if err := db.Create(&database.FileObject{ID: object2, Size: 80, MimeType: "text/plain", Hash: "h2"}).Error; err != nil {
+		t.Fatalf("create object2: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "a.txt", AccountID: accountID, PoolID: &poolID, ObjectID: &object1}).Error; err != nil {
+		t.Fatalf("create file1: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "b.txt", AccountID: accountID, PoolID: &poolID, ObjectID: &object2}).Error; err != nil {
+		t.Fatalf("create file2: %v", err)
+	}
+
+	summary, err := svc.GetUsage(accountID)
+	if err != nil {
+		t.Fatalf("GetUsage() error = %v", err)
+	}
+	if summary.TotalQuota != 200 || summary.BasedQuota != 200 {
+		t.Fatalf("summary = %+v, want 200 bytes", summary)
+	}
+
+	usage, err := svc.GetPoolUsage(accountID, poolID)
+	if err != nil {
+		t.Fatalf("GetPoolUsage() error = %v", err)
+	}
+	if usage["total_quota"] != int64(200) {
+		t.Fatalf("usage = %+v, want total_quota=200", usage)
+	}
+}
+
+func TestCheckUploadQuota(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.QuotaRecord{})
+	svc := NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 120, MimeType: "text/plain", Hash: "h1"}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "used.txt", AccountID: accountID, ObjectID: &objectID}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := db.Create(&database.QuotaRecord{ID: database.NewID(), AccountID: accountID, Name: "base", Description: "base", Quota: 100}).Error; err != nil {
+		t.Fatalf("create quota record: %v", err)
+	}
+
+	if err := svc.CheckUploadQuota(accountID, 10); err == nil {
+		t.Fatal("CheckUploadQuota() error = nil, want quota exceeded")
+	} else if !strings.Contains(err.Error(), "used=120") || !strings.Contains(err.Error(), "total=100") {
+		t.Fatalf("CheckUploadQuota() error = %v, want used/total details", err)
+	}
+}
+
 func TestCreateFolderWithoutParentCreatesPrivatePermission(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FilePermission{})
 	svc := NewFileService(&database.DB{DB: db}, nil)

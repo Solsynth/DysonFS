@@ -54,8 +54,8 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 
 	u := r.Group("/api/files/upload")
 	{
-		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks) })
-		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks, bus, dispatcher) })
+		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks, quota) })
+		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks, quota, bus, dispatcher) })
 		u.POST("/chunk/:taskId/:idx", func(c *gin.Context) { uploadChunk(c, cfg, tasks) })
 		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, bus, dispatcher) })
 		u.GET("/tasks", func(c *gin.Context) { listUploadTasks(c, tasks) })
@@ -717,7 +717,7 @@ func purgeMyRecycleBin(c *gin.Context, files *service.FileService, bus *eventbus
 // @Produce json
 // @Success 200 {object} map[string]any
 // @Router /api/files/upload/create [post]
-func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService) {
+func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -762,6 +762,10 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		return
 	}
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
+	if err := quota.CheckUploadQuota(uuid.MustParse(result.Account.GetId()), req.FileSize); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := files.ValidatePoolUsage(ctx, req.PoolID, req.FileSize, req.ContentType); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -790,7 +794,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 // @Produce json
 // @Success 200 {object} database.CloudFile
 // @Router /api/files/upload/direct [post]
-func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -809,6 +813,10 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	indexed := optionalBool(c.PostForm("index"))
 	expiredAt, err := parseRFC3339Ptr(optionalStringPtr(c.PostForm("expired_at")))
 	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := quota.CheckUploadQuota(uuid.MustParse(result.Account.GetId()), fileHeader.Size); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

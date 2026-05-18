@@ -2190,6 +2190,25 @@ type QuotaSummary struct {
 	TotalQuota int64 `json:"total_quota"`
 }
 
+func (s *QuotaService) CheckUploadQuota(accountID uuid.UUID, size int64) error {
+	summary, err := s.GetSummary(accountID)
+	if err != nil {
+		return err
+	}
+	usage, err := s.GetUsage(accountID)
+	if err != nil {
+		return err
+	}
+	if usage.BasedQuota+size <= summary.TotalQuota {
+		return nil
+	}
+	remaining := summary.TotalQuota - usage.BasedQuota
+	if remaining < 0 {
+		remaining = 0
+	}
+	return fmt.Errorf("quota exceeded: used=%d total=%d remaining=%d", usage.BasedQuota, summary.TotalQuota, remaining)
+}
+
 func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord, error) {
 	var records []database.QuotaRecord
 	if err := s.db.Where("account_id = ?", accountID).Order("created_at desc").Find(&records).Error; err != nil {
@@ -2211,13 +2230,24 @@ func (s *QuotaService) GetSummary(accountID uuid.UUID) (QuotaSummary, error) {
 }
 
 func (s *QuotaService) GetUsage(accountID uuid.UUID) (QuotaSummary, error) {
-	return s.GetSummary(accountID)
+	var total int64
+	if err := s.db.Model(&database.CloudFile{}).
+		Select("COALESCE(SUM(file_objects.size), 0)").
+		Joins("LEFT JOIN file_objects ON file_objects.id = cloud_files.object_id").
+		Where("cloud_files.account_id = ? AND cloud_files.deleted_at IS NULL", accountID).
+		Scan(&total).Error; err != nil {
+		return QuotaSummary{}, err
+	}
+	return QuotaSummary{BasedQuota: total, ExtraQuota: 0, TotalQuota: total}, nil
 }
 
 func (s *QuotaService) GetPoolUsage(accountID uuid.UUID, poolID string) (map[string]any, error) {
-	_ = accountID
 	var total int64
-	if err := s.db.Model(&database.CloudFile{}).Where("pool_id = ?", poolID).Count(&total).Error; err != nil {
+	if err := s.db.Model(&database.CloudFile{}).
+		Select("COALESCE(SUM(file_objects.size), 0)").
+		Joins("LEFT JOIN file_objects ON file_objects.id = cloud_files.object_id").
+		Where("cloud_files.account_id = ? AND cloud_files.pool_id = ? AND cloud_files.deleted_at IS NULL", accountID, poolID).
+		Scan(&total).Error; err != nil {
 		return nil, err
 	}
 	return map[string]any{"pool_id": poolID, "total_quota": total}, nil
