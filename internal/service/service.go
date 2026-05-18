@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image/png"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2194,20 +2195,25 @@ var ErrQuotaExceeded = errors.New("quota exceeded")
 
 const quotaUnitBytes int64 = 1024 * 1024
 
-func (s *QuotaService) CheckUploadQuota(accountID uuid.UUID, size int64) error {
-	summary, err := s.GetSummary(accountID)
+func (s *QuotaService) CheckUploadQuota(account *gen.DyAccount, size int64, costMultiplier float64) error {
+	if account == nil {
+		return fmt.Errorf("account is required")
+	}
+	summary, err := s.GetSummary(account)
 	if err != nil {
 		return err
 	}
-	usedBytes, err := s.usedBytes(accountID)
+	usedMB, err := s.billableUsage(account.GetId())
 	if err != nil {
 		return err
 	}
-	quotaBytes := summary.TotalQuota * quotaUnitBytes
-	if usedBytes+size <= quotaBytes {
+	if costMultiplier <= 0 {
+		costMultiplier = 1
+	}
+	billableUnit := int64(math.Ceil(float64(size) * costMultiplier / float64(quotaUnitBytes)))
+	if usedMB+billableUnit <= summary.TotalQuota {
 		return nil
 	}
-	usedMB := (usedBytes + quotaUnitBytes - 1) / quotaUnitBytes
 	remainingMB := summary.TotalQuota - usedMB
 	if remainingMB < 0 {
 		remainingMB = 0
@@ -2223,54 +2229,120 @@ func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord,
 	return records, nil
 }
 
-func (s *QuotaService) GetSummary(accountID uuid.UUID) (QuotaSummary, error) {
+func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) {
+	if account == nil {
+		return QuotaSummary{}, fmt.Errorf("account is required")
+	}
 	var records []database.QuotaRecord
-	if err := s.db.Where("account_id = ?", accountID).Order("created_at asc").Find(&records).Error; err != nil {
+	if err := s.db.Where("account_id = ?", account.GetId()).Order("created_at asc").Find(&records).Error; err != nil {
 		return QuotaSummary{}, err
 	}
-	var basedQuota int64
 	var extraQuota int64
+	now := time.Now()
 	for _, record := range records {
-		if strings.EqualFold(strings.TrimSpace(record.Name), "base") || strings.EqualFold(strings.TrimSpace(record.Description), "base") {
-			basedQuota += record.Quota
+		if record.ExpiredAt != nil && record.ExpiredAt.Before(now) {
 			continue
 		}
 		extraQuota += record.Quota
 	}
+	basedQuota := baseQuotaFromAccount(account)
 	return QuotaSummary{BasedQuota: basedQuota, ExtraQuota: extraQuota, TotalQuota: basedQuota + extraQuota}, nil
 }
 
+func baseQuotaFromAccount(account *gen.DyAccount) int64 {
+	level := int32(0)
+	if account != nil {
+		if sub := account.GetPerkSubscription(); sub != nil {
+			level = sub.GetPerkLevel()
+		} else {
+			level = account.GetPerkLevel()
+		}
+	}
+	baseGiB := int64(1)
+	switch level {
+	case 1:
+		baseGiB = 5
+	case 2:
+		baseGiB = 10
+	case 3:
+		baseGiB = 15
+	default:
+		baseGiB = 1
+	}
+	return baseGiB * 1024
+}
+
 func (s *QuotaService) GetUsage(accountID uuid.UUID) (QuotaSummary, error) {
-	totalBytes, err := s.usedBytes(accountID)
+	usedMB, err := s.billableUsage(accountID.String())
 	if err != nil {
 		return QuotaSummary{}, err
 	}
-	totalMB := (totalBytes + quotaUnitBytes - 1) / quotaUnitBytes
-	return QuotaSummary{BasedQuota: totalMB, ExtraQuota: 0, TotalQuota: totalMB}, nil
+	return QuotaSummary{BasedQuota: usedMB, ExtraQuota: 0, TotalQuota: usedMB}, nil
 }
 
-func (s *QuotaService) usedBytes(accountID uuid.UUID) (int64, error) {
-	var total int64
-	if err := s.db.Model(&database.CloudFile{}).
-		Select("COALESCE(SUM(file_objects.size), 0)").
-		Joins("LEFT JOIN file_objects ON file_objects.id = cloud_files.object_id").
-		Where("cloud_files.account_id = ? AND cloud_files.deleted_at IS NULL", accountID).
-		Scan(&total).Error; err != nil {
+func (s *QuotaService) billableUsage(accountID string) (int64, error) {
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("account_id = ? AND deleted_at IS NULL", accountID).Find(&files).Error; err != nil {
 		return 0, err
+	}
+	poolMultipliers := map[string]float64{}
+	var total int64
+	for _, file := range files {
+		if file.Object == nil || file.Object.Size <= 0 {
+			continue
+		}
+		multiplier := 1.0
+		if file.PoolID != nil && strings.TrimSpace(*file.PoolID) != "" {
+			if cached, ok := poolMultipliers[*file.PoolID]; ok {
+				multiplier = cached
+			} else {
+				multiplier = 1.0
+				var pool database.FilePool
+				if err := s.db.First(&pool, "id = ?", *file.PoolID).Error; err == nil {
+					var billing PoolBillingConfig
+					_ = json.Unmarshal(pool.BillingConfig, &billing)
+					if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
+						multiplier = *billing.CostMultiplier
+					}
+				}
+				poolMultipliers[*file.PoolID] = multiplier
+			}
+		}
+		total += int64(math.Ceil(float64(file.Object.Size) * multiplier / float64(quotaUnitBytes)))
 	}
 	return total, nil
 }
 
 func (s *QuotaService) GetPoolUsage(accountID uuid.UUID, poolID string) (map[string]any, error) {
-	var total int64
-	if err := s.db.Model(&database.CloudFile{}).
-		Select("COALESCE(SUM(file_objects.size), 0)").
-		Joins("LEFT JOIN file_objects ON file_objects.id = cloud_files.object_id").
-		Where("cloud_files.account_id = ? AND cloud_files.pool_id = ? AND cloud_files.deleted_at IS NULL", accountID, poolID).
-		Scan(&total).Error; err != nil {
+	usage, err := s.billableUsageForPool(accountID, poolID)
+	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"pool_id": poolID, "total_quota": total}, nil
+	return map[string]any{"pool_id": poolID, "total_quota": usage}, nil
+}
+
+func (s *QuotaService) billableUsageForPool(accountID uuid.UUID, poolID string) (int64, error) {
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("account_id = ? AND pool_id = ? AND deleted_at IS NULL", accountID, poolID).Find(&files).Error; err != nil {
+		return 0, err
+	}
+	var multiplier float64 = 1
+	var pool database.FilePool
+	if err := s.db.First(&pool, "id = ?", poolID).Error; err == nil {
+		var billing PoolBillingConfig
+		_ = json.Unmarshal(pool.BillingConfig, &billing)
+		if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
+			multiplier = *billing.CostMultiplier
+		}
+	}
+	var total int64
+	for _, file := range files {
+		if file.Object == nil || file.Object.Size <= 0 {
+			continue
+		}
+		total += int64(math.Ceil(float64(file.Object.Size) * multiplier / float64(quotaUnitBytes)))
+	}
+	return total, nil
 }
 
 func ErrNotImplemented() error { return errors.New("not implemented") }

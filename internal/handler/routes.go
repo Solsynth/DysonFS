@@ -235,7 +235,7 @@ func getQuota(c *gin.Context, quota *service.QuotaService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	summary, err := quota.GetSummary(uuid.MustParse(result.Account.GetId()))
+	summary, err := quota.GetSummary(result.Account)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -763,7 +763,13 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		return
 	}
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
-	if err := quota.CheckUploadQuota(uuid.MustParse(result.Account.GetId()), req.FileSize); err != nil {
+	poolMultiplier := 1.0
+	if req.PoolID != nil && strings.TrimSpace(*req.PoolID) != "" {
+		if pool, err := files.GetPool(*req.PoolID); err == nil && pool.BillingConfig.CostMultiplier != nil && *pool.BillingConfig.CostMultiplier > 0 {
+			poolMultiplier = *pool.BillingConfig.CostMultiplier
+		}
+	}
+	if err := quota.CheckUploadQuota(result.Account, req.FileSize, poolMultiplier); err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQuotaExceeded) {
 			status = http.StatusForbidden
@@ -821,7 +827,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := quota.CheckUploadQuota(uuid.MustParse(result.Account.GetId()), fileHeader.Size); err != nil {
+	if err := quota.CheckUploadQuota(result.Account, fileHeader.Size, 1.0); err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQuotaExceeded) {
 			status = http.StatusForbidden

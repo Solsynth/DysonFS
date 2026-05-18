@@ -113,11 +113,14 @@ func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 }
 
 func TestQuotaUsageCountsBytes(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	svc := NewQuotaService(&database.DB{DB: db})
 	accountID := uuid.New()
 	poolID := database.NewID()
 	const mb = int64(1024 * 1024)
+	if err := db.Create(&database.FilePool{ID: poolID, Name: "default", AccountID: accountID}).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
 	object1 := database.NewID()
 	object2 := database.NewID()
 	if err := db.Create(&database.FileObject{ID: object1, Size: 120 * mb, MimeType: "text/plain", Hash: "h1"}).Error; err != nil {
@@ -145,8 +148,8 @@ func TestQuotaUsageCountsBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPoolUsage() error = %v", err)
 	}
-	if usage["total_quota"] != int64(200*mb) {
-		t.Fatalf("usage = %+v, want total_quota=%d", usage, 200*mb)
+	if usage["total_quota"] != int64(200) {
+		t.Fatalf("usage = %+v, want total_quota=200", usage)
 	}
 }
 
@@ -162,23 +165,21 @@ func TestCheckUploadQuota(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "used.txt", AccountID: accountID, ObjectID: &objectID}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := db.Create(&database.QuotaRecord{ID: database.NewID(), AccountID: accountID, Name: "base", Description: "base", Quota: 100}).Error; err != nil {
+	if err := db.Create(&database.QuotaRecord{ID: database.NewID(), AccountID: accountID, Name: "bonus", Description: "bonus", Quota: 25}).Error; err != nil {
 		t.Fatalf("create quota record: %v", err)
 	}
-	if err := db.Create(&database.QuotaRecord{ID: database.NewID(), AccountID: accountID, Name: "bonus", Description: "bonus", Quota: 25}).Error; err != nil {
-		t.Fatalf("create extra quota record: %v", err)
-	}
-	summary, err := svc.GetSummary(accountID)
+	account := &gen.DyAccount{Id: accountID.String(), PerkLevel: func() *int32 { v := int32(1); return &v }()}
+	summary, err := svc.GetSummary(account)
 	if err != nil {
 		t.Fatalf("GetSummary() error = %v", err)
 	}
-	if summary.BasedQuota != 100 || summary.ExtraQuota != 25 || summary.TotalQuota != 125 {
-		t.Fatalf("summary = %+v, want base=100 extra=25 total=125", summary)
+	if summary.BasedQuota != 5*1024 || summary.ExtraQuota != 25 || summary.TotalQuota != 5*1024+25 {
+		t.Fatalf("summary = %+v, want base=5GiB extra=25 total=5GiB+25MB", summary)
 	}
 
-	if err := svc.CheckUploadQuota(accountID, 10*mb); err == nil {
+	if err := svc.CheckUploadQuota(account, 6000*mb, 1); err == nil {
 		t.Fatal("CheckUploadQuota() error = nil, want quota exceeded")
-	} else if !errors.Is(err, ErrQuotaExceeded) || !strings.Contains(err.Error(), "used=120MB") || !strings.Contains(err.Error(), "total=125MB") {
+	} else if !errors.Is(err, ErrQuotaExceeded) || !strings.Contains(err.Error(), "used=120MB") || !strings.Contains(err.Error(), "total=5145MB") {
 		t.Fatalf("CheckUploadQuota() error = %v, want used/total details", err)
 	}
 }
