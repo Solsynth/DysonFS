@@ -281,7 +281,7 @@ func listQuotaRecords(c *gin.Context, quota *service.QuotaService) {
 // @Summary Get quota usage
 // @Tags billing
 // @Produce json
-// @Success 200 {object} service.QuotaSummary
+// @Success 200 {object} service.UsageSummary
 // @Router /api/billing/usage [get]
 func getUsage(c *gin.Context, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
@@ -289,7 +289,7 @@ func getUsage(c *gin.Context, quota *service.QuotaService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	summary, err := quota.GetUsage(uuid.MustParse(result.Account.GetId()))
+	summary, err := quota.GetUsage(result.Account)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

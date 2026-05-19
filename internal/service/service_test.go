@@ -113,7 +113,7 @@ func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 }
 
 func TestQuotaUsageCountsBytes(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.QuotaRecord{})
 	svc := NewQuotaService(&database.DB{DB: db})
 	accountID := uuid.New()
 	poolID := database.NewID()
@@ -136,12 +136,13 @@ func TestQuotaUsageCountsBytes(t *testing.T) {
 		t.Fatalf("create file2: %v", err)
 	}
 
-	summary, err := svc.GetUsage(accountID)
+	account := &gen.DyAccount{Id: accountID.String(), PerkLevel: func() *int32 { v := int32(1); return &v }()}
+	summary, err := svc.GetUsage(account)
 	if err != nil {
 		t.Fatalf("GetUsage() error = %v", err)
 	}
-	if summary.TotalQuota != 200 || summary.BasedQuota != 200 {
-		t.Fatalf("summary = %+v, want 200 MB", summary)
+	if summary.UsedQuota != 200 || summary.TotalQuota != 5*1024 || summary.TotalFileCount != 2 || summary.TotalUsageBytes != 200*mb {
+		t.Fatalf("summary = %+v, want used=200 total=5GiB count=2 bytes=200MiB", summary)
 	}
 
 	usage, err := svc.GetPoolUsage(accountID, poolID)

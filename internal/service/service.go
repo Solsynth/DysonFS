@@ -2191,6 +2191,13 @@ type QuotaSummary struct {
 	TotalQuota int64 `json:"total_quota"`
 }
 
+type UsageSummary struct {
+	UsedQuota      int64 `json:"used_quota"`
+	TotalQuota     int64 `json:"total_quota"`
+	TotalFileCount int64 `json:"total_file_count"`
+	TotalUsageBytes int64 `json:"total_usage_bytes"`
+}
+
 var ErrQuotaExceeded = errors.New("quota exceeded")
 
 const quotaUnitBytes int64 = 1024 * 1024
@@ -2272,25 +2279,36 @@ func baseQuotaFromAccount(account *gen.DyAccount) int64 {
 	return baseGiB * 1024
 }
 
-func (s *QuotaService) GetUsage(accountID uuid.UUID) (QuotaSummary, error) {
-	usedMB, err := s.billableUsage(accountID.String())
-	if err != nil {
-		return QuotaSummary{}, err
+func (s *QuotaService) GetUsage(account *gen.DyAccount) (UsageSummary, error) {
+	if account == nil {
+		return UsageSummary{}, fmt.Errorf("account is required")
 	}
-	return QuotaSummary{BasedQuota: usedMB, ExtraQuota: 0, TotalQuota: usedMB}, nil
+	usedMB, fileCount, usageBytes, err := s.usageStats(account.GetId())
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	summary, err := s.GetSummary(account)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	return UsageSummary{UsedQuota: usedMB, TotalQuota: summary.TotalQuota, TotalFileCount: fileCount, TotalUsageBytes: usageBytes}, nil
 }
 
-func (s *QuotaService) billableUsage(accountID string) (int64, error) {
+func (s *QuotaService) usageStats(accountID string) (int64, int64, int64, error) {
 	var files []database.CloudFile
 	if err := s.db.Preload("Object").Where("account_id = ? AND deleted_at IS NULL", accountID).Find(&files).Error; err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 	poolMultipliers := map[string]float64{}
 	var total int64
+	var fileCount int64
+	var usageBytes int64
 	for _, file := range files {
 		if file.Object == nil || file.Object.Size <= 0 {
 			continue
 		}
+		fileCount++
+		usageBytes += file.Object.Size
 		multiplier := 1.0
 		if file.PoolID != nil && strings.TrimSpace(*file.PoolID) != "" {
 			if cached, ok := poolMultipliers[*file.PoolID]; ok {
@@ -2310,7 +2328,12 @@ func (s *QuotaService) billableUsage(accountID string) (int64, error) {
 		}
 		total += int64(math.Ceil(float64(file.Object.Size) * multiplier / float64(quotaUnitBytes)))
 	}
-	return total, nil
+	return total, fileCount, usageBytes, nil
+}
+
+func (s *QuotaService) billableUsage(accountID string) (int64, error) {
+	total, _, _, err := s.usageStats(accountID)
+	return total, err
 }
 
 func (s *QuotaService) GetPoolUsage(accountID uuid.UUID, poolID string) (map[string]any, error) {
