@@ -20,6 +20,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/go/pkg/auth"
+	gen "src.solsynth.dev/sosys/go/proto"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -783,7 +784,9 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 			poolMultiplier = *pool.BillingConfig.CostMultiplier
 		}
 	}
+	logQuotaCheck(result.Account, req.FileSize, poolMultiplier, "create-upload", false, nil)
 	if err := quota.CheckUploadQuota(result.Account, req.FileSize, poolMultiplier); err != nil {
+		logQuotaCheck(result.Account, req.FileSize, poolMultiplier, "create-upload", true, err)
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQuotaExceeded) {
 			status = http.StatusForbidden
@@ -841,7 +844,9 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	logQuotaCheck(result.Account, fileHeader.Size, 1.0, "direct-upload", false, nil)
 	if err := quota.CheckUploadQuota(result.Account, fileHeader.Size, 1.0); err != nil {
+		logQuotaCheck(result.Account, fileHeader.Size, 1.0, "direct-upload", true, err)
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQuotaExceeded) {
 			status = http.StatusForbidden
@@ -1129,6 +1134,46 @@ func recentTasks(c *gin.Context, tasks *service.TaskService) {
 
 func taskDetails(c *gin.Context, cfg *config.Config, tasks *service.TaskService) {
 	c.JSON(http.StatusOK, gin.H{"task": nil})
+}
+
+func logQuotaCheck(account *gen.DyAccount, fileSize int64, costMultiplier float64, source string, refused bool, err error) {
+	if account == nil {
+		return
+	}
+	perkLevel := account.GetPerkLevel()
+	perkSubscriptionLevel := int32(0)
+	hasPerkSubscription := false
+	if sub := account.GetPerkSubscription(); sub != nil {
+		hasPerkSubscription = true
+		perkSubscriptionLevel = sub.GetPerkLevel()
+	}
+	entry := logging.Log.Info().
+		Str("source", source).
+		Str("accountId", account.GetId()).
+		Bool("isSuperuser", account.GetIsSuperuser()).
+		Int32("perkLevel", perkLevel).
+		Bool("hasPerkSubscription", hasPerkSubscription).
+		Int32("perkSubscriptionLevel", perkSubscriptionLevel).
+		Int64("fileSize", fileSize).
+		Float64("costMultiplier", costMultiplier)
+	if refused && err != nil {
+		entry = entry.Err(err)
+	}
+	if refused {
+		logging.Log.Warn().
+			Str("source", source).
+			Str("accountId", account.GetId()).
+			Bool("isSuperuser", account.GetIsSuperuser()).
+			Int32("perkLevel", perkLevel).
+			Bool("hasPerkSubscription", hasPerkSubscription).
+			Int32("perkSubscriptionLevel", perkSubscriptionLevel).
+			Int64("fileSize", fileSize).
+			Float64("costMultiplier", costMultiplier).
+			Err(err).
+			Msg("upload quota check")
+		return
+	}
+	entry.Msg("upload quota check")
 }
 
 func deref(v *string) string {
