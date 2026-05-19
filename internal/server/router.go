@@ -11,7 +11,6 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
 
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 	swaggerfiles "github.com/swaggo/files"
@@ -21,7 +20,6 @@ import (
 func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(cors.New(cors.Config{AllowAllOrigins: true, AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Origin", "Content-Type", "Authorization", "X-Forwarded-Authorization", "X-Original-Authorization"}, ExposeHeaders: []string{"X-Total"}}))
 
 	if cfg.Auth.Target != "" {
 		log.Info().Str("target", cfg.Auth.Target).Bool("useTLS", cfg.Auth.UseTLS).Msg("auth client enabled")
