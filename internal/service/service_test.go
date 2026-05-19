@@ -121,6 +121,10 @@ func TestQuotaUsageCountsBytes(t *testing.T) {
 	if err := db.Create(&database.FilePool{ID: poolID, Name: "default", AccountID: accountID}).Error; err != nil {
 		t.Fatalf("create pool: %v", err)
 	}
+	multiplier := 1.5
+	if err := db.Model(&database.FilePool{}).Where("id = ?", poolID).Update("billing_config", datatypes.JSON([]byte(fmt.Sprintf(`{"cost_multiplier":%v}`, multiplier)))).Error; err != nil {
+		t.Fatalf("update billing config: %v", err)
+	}
 	object1 := database.NewID()
 	object2 := database.NewID()
 	if err := db.Create(&database.FileObject{ID: object1, Size: 120 * mb, MimeType: "text/plain", Hash: "h1"}).Error; err != nil {
@@ -141,16 +145,16 @@ func TestQuotaUsageCountsBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUsage() error = %v", err)
 	}
-	if summary.UsedQuota != 200 || summary.TotalQuota != 5*1024 || summary.TotalFileCount != 2 || summary.TotalUsageBytes != 200*mb {
-		t.Fatalf("summary = %+v, want used=200 total=5GiB count=2 bytes=200MiB", summary)
+	if summary.UsedQuota != 300 || summary.TotalQuota != 5*1024 || summary.TotalFileCount != 2 || summary.TotalUsageBytes != 200*mb {
+		t.Fatalf("summary = %+v, want used=300 total=5GiB count=2 bytes=200MiB", summary)
 	}
 
 	usage, err := svc.GetPoolUsage(accountID, poolID)
 	if err != nil {
 		t.Fatalf("GetPoolUsage() error = %v", err)
 	}
-	if usage["total_quota"] != int64(200) {
-		t.Fatalf("usage = %+v, want total_quota=200", usage)
+	if usage["total_quota"] != int64(300) {
+		t.Fatalf("usage = %+v, want total_quota=300", usage)
 	}
 }
 

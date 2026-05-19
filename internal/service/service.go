@@ -198,6 +198,10 @@ func (s *FileService) resolvedPoolID(poolID *string) *string {
 	return &resolved
 }
 
+func (s *FileService) ResolvedPoolID(poolID *string) *string {
+	return s.resolvedPoolID(poolID)
+}
+
 func (s *FileService) createPrimaryReplica(tx *gorm.DB, objectID string, poolID *string) error {
 	if strings.TrimSpace(objectID) == "" {
 		return fmt.Errorf("object id is required")

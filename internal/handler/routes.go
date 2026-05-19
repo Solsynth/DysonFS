@@ -778,9 +778,10 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		return
 	}
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
+	resolvedPoolID := files.ResolvedPoolID(req.PoolID)
 	poolMultiplier := 1.0
-	if req.PoolID != nil && strings.TrimSpace(*req.PoolID) != "" {
-		if pool, err := files.GetPool(*req.PoolID); err == nil && pool.BillingConfig.CostMultiplier != nil && *pool.BillingConfig.CostMultiplier > 0 {
+	if resolvedPoolID != nil && strings.TrimSpace(*resolvedPoolID) != "" {
+		if pool, err := files.GetPool(*resolvedPoolID); err == nil && pool.BillingConfig.CostMultiplier != nil && *pool.BillingConfig.CostMultiplier > 0 {
 			poolMultiplier = *pool.BillingConfig.CostMultiplier
 		}
 	}
@@ -808,7 +809,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		Str("contentType", req.ContentType).
 		Msg("creating upload task")
 	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, ApplicationType: req.ApplicationType, Indexed: req.Index}
-	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, req.PoolID, name, req.ContentType, req.ChunkSize, chunks)
+	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, resolvedPoolID, name, req.ContentType, req.ChunkSize, chunks)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
