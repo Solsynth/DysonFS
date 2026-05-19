@@ -235,6 +235,20 @@ func getQuota(c *gin.Context, quota *service.QuotaService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	perkLevel := result.Account.GetPerkLevel()
+	perkSubscriptionLevel := int32(0)
+	hasPerkSubscription := false
+	if sub := result.Account.GetPerkSubscription(); sub != nil {
+		hasPerkSubscription = true
+		perkSubscriptionLevel = sub.GetPerkLevel()
+	}
+	logging.Log.Info().
+		Str("accountId", result.Account.GetId()).
+		Bool("isSuperuser", result.Account.GetIsSuperuser()).
+		Int32("perkLevel", perkLevel).
+		Bool("hasPerkSubscription", hasPerkSubscription).
+		Int32("perkSubscriptionLevel", perkSubscriptionLevel).
+		Msg("quota endpoint accessed")
 	summary, err := quota.GetSummary(result.Account)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
