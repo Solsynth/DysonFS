@@ -237,9 +237,14 @@ func getQuota(c *gin.Context, quota *service.QuotaService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	quotaLogEvent(logging.Log.Info(), result.Account).
+	account, err := quota.EnrichedAccount(c.Request.Context(), result.Account)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	quotaLogEvent(logging.Log.Info(), account).
 		Msg("quota endpoint accessed")
-	summary, err := quota.GetSummary(result.Account)
+	summary, err := quota.GetSummary(account)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -774,9 +779,14 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 			poolMultiplier = *pool.BillingConfig.CostMultiplier
 		}
 	}
-	logQuotaCheck(result.Account, req.FileSize, poolMultiplier, "create-upload", false, nil)
-	if err := quota.CheckUploadQuota(result.Account, req.FileSize, poolMultiplier); err != nil {
-		logQuotaCheck(result.Account, req.FileSize, poolMultiplier, "create-upload", true, err)
+	account, err := quota.EnrichedAccount(c.Request.Context(), result.Account)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	logQuotaCheck(account, req.FileSize, poolMultiplier, "create-upload", false, nil)
+	if err := quota.CheckUploadQuota(account, req.FileSize, poolMultiplier); err != nil {
+		logQuotaCheck(account, req.FileSize, poolMultiplier, "create-upload", true, err)
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQuotaExceeded) {
 			status = http.StatusForbidden
@@ -834,9 +844,14 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	logQuotaCheck(result.Account, fileHeader.Size, 1.0, "direct-upload", false, nil)
-	if err := quota.CheckUploadQuota(result.Account, fileHeader.Size, 1.0); err != nil {
-		logQuotaCheck(result.Account, fileHeader.Size, 1.0, "direct-upload", true, err)
+	account, err := quota.EnrichedAccount(c.Request.Context(), result.Account)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	logQuotaCheck(account, fileHeader.Size, 1.0, "direct-upload", false, nil)
+	if err := quota.CheckUploadQuota(account, fileHeader.Size, 1.0); err != nil {
+		logQuotaCheck(account, fileHeader.Size, 1.0, "direct-upload", true, err)
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQuotaExceeded) {
 			status = http.StatusForbidden

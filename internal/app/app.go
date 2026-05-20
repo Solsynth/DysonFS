@@ -42,6 +42,7 @@ type App struct {
 	dispatcher dispatch.Dispatcher
 	httpSrv    *http.Server
 	grpcSrv    *grpc.Server
+	profileConn *grpc.ClientConn
 	natsConn   *nats.Conn
 	logger     zerolog.Logger
 }
@@ -85,7 +86,20 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	if redisClient != nil {
 		files.SetCache(sharedcache.NewRedisCacheService(redisClient))
 	}
-	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: files, tasks: service.NewTaskService(db), quota: service.NewQuotaService(db), natsConn: natsConn, logger: logging.Log}
+	quota := service.NewQuotaService(db)
+	quota.SetLevelingConfig(cfg.Quota.Leveling)
+	if redisClient != nil {
+		quota.SetCache(sharedcache.NewRedisCacheService(redisClient))
+	}
+	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: files, tasks: service.NewTaskService(db), quota: quota, natsConn: natsConn, logger: logging.Log}
+	if cfg.Passport.Target != "" {
+		profileClient, profileConn, err := service.NewProfileClient(cfg.Passport)
+		if err != nil {
+			return nil, err
+		}
+		app.profileConn = profileConn
+		app.quota.SetProfileClient(profileClient)
+	}
 	defaultPoolID, err := app.files.SeedPools(cfg)
 	if err != nil {
 		return nil, err
@@ -138,6 +152,9 @@ func (a *App) Stop(ctx context.Context) error {
 	}
 	if a.natsConn != nil {
 		a.natsConn.Close()
+	}
+	if a.profileConn != nil {
+		_ = a.profileConn.Close()
 	}
 	if a.redis != nil {
 		_ = a.redis.Close()

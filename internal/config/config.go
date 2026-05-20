@@ -17,6 +17,8 @@ type Config struct {
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Bundled  BundledConfig  `mapstructure:"bundled"`
 	Auth     AuthConfig     `mapstructure:"auth"`
+	Passport PassportConfig `mapstructure:"passport"`
+	Quota    QuotaConfig    `mapstructure:"quota"`
 	Mode     ModeConfig     `mapstructure:"mode"`
 	Files    FileConfig     `mapstructure:"files"`
 	Pools    []PoolConfig   `mapstructure:"pools"`
@@ -64,6 +66,23 @@ type AuthConfig struct {
 	Target        string `mapstructure:"target"`
 	UseTLS        bool   `mapstructure:"useTLS"`
 	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
+}
+
+type PassportConfig struct {
+	Target        string `mapstructure:"target"`
+	UseTLS        bool   `mapstructure:"useTLS"`
+	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
+}
+
+type QuotaConfig struct {
+	Leveling LevelingQuotaConfig `mapstructure:"leveling"`
+}
+
+type LevelingQuotaConfig struct {
+	Level1   int64 `mapstructure:"level1"`
+	Level10  int64 `mapstructure:"level10"`
+	Level60  int64 `mapstructure:"level60"`
+	Level120 int64 `mapstructure:"level120"`
 }
 
 type ModeConfig struct {
@@ -144,6 +163,13 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("auth.target", "padlock:7003")
 	viper.SetDefault("auth.useTLS", false)
 	viper.SetDefault("auth.tlsSkipVerify", false)
+	viper.SetDefault("passport.target", "")
+	viper.SetDefault("passport.useTLS", false)
+	viper.SetDefault("passport.tlsSkipVerify", false)
+	viper.SetDefault("quota.leveling.level1", 512)
+	viper.SetDefault("quota.leveling.level10", 1024)
+	viper.SetDefault("quota.leveling.level60", 5*1024)
+	viper.SetDefault("quota.leveling.level120", 10*1024)
 	viper.SetDefault("mode.master", true)
 	viper.SetDefault("mode.worker", false)
 	viper.SetDefault("mode.storage", false)

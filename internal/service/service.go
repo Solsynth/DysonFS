@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -33,6 +34,10 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
+	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type PoolConfig struct {
@@ -2185,9 +2190,48 @@ func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {
 	return tx.RowsAffected, tx.Error
 }
 
-type QuotaService struct{ db *database.DB }
+type QuotaService struct {
+	db            *database.DB
+	cache         sharedcache.CacheService
+	profileClient gen.DyProfileServiceClient
+	levelingCfg   config.LevelingQuotaConfig
+}
 
 func NewQuotaService(db *database.DB) *QuotaService { return &QuotaService{db: db} }
+
+func (s *QuotaService) SetCache(cache sharedcache.CacheService) {
+	s.cache = cache
+}
+
+func (s *QuotaService) SetProfileClient(client gen.DyProfileServiceClient) {
+	s.profileClient = client
+}
+
+func (s *QuotaService) SetLevelingConfig(cfg config.LevelingQuotaConfig) {
+	s.levelingCfg = cfg
+}
+
+func (s *QuotaService) EnrichedAccount(ctx context.Context, account *gen.DyAccount) (*gen.DyAccount, error) {
+	return s.enrichedAccount(ctx, account)
+}
+
+func NewProfileClient(cfg config.PassportConfig) (gen.DyProfileServiceClient, *grpc.ClientConn, error) {
+	target, useTLS := dyauth.NormalizeAuthGRPCTarget(cfg.Target, cfg.UseTLS)
+	if strings.TrimSpace(target) == "" {
+		return nil, nil, errors.New("profile gRPC target is empty")
+	}
+	var transportCredentials credentials.TransportCredentials
+	if useTLS {
+		transportCredentials = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.TLSSkipVerify})
+	} else {
+		transportCredentials = insecure.NewCredentials()
+	}
+	conn, err := grpc.Dial(target, grpc.WithTransportCredentials(transportCredentials))
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial profile service: %w", err)
+	}
+	return gen.NewDyProfileServiceClient(conn), conn, nil
+}
 
 type QuotaSummary struct {
 	BasedQuota    int64 `json:"based_quota"`
@@ -2211,6 +2255,10 @@ const quotaUnitBytes int64 = 1024 * 1024
 func (s *QuotaService) CheckUploadQuota(account *gen.DyAccount, size int64, costMultiplier float64) error {
 	if account == nil {
 		return fmt.Errorf("account is required")
+	}
+	account, err := s.enrichedAccount(context.Background(), account)
+	if err != nil {
+		return err
 	}
 	summary, err := s.GetSummary(account)
 	if err != nil {
@@ -2246,6 +2294,10 @@ func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) 
 	if account == nil {
 		return QuotaSummary{}, fmt.Errorf("account is required")
 	}
+	account, err := s.enrichedAccount(context.Background(), account)
+	if err != nil {
+		return QuotaSummary{}, err
+	}
 	var records []database.QuotaRecord
 	if err := s.db.Where("account_id = ?", account.GetId()).Order("created_at asc").Find(&records).Error; err != nil {
 		return QuotaSummary{}, err
@@ -2258,17 +2310,17 @@ func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) 
 		}
 		extraQuota += record.Quota
 	}
-	levelingQuota := levelingQuotaFromAccount(account)
+	levelingQuota := levelingQuotaFromAccount(account, s.levelingCfg)
 	perkQuota := perkQuotaFromAccount(account)
 	basedQuota := levelingQuota + perkQuota
 	return QuotaSummary{BasedQuota: basedQuota, LevelingQuota: levelingQuota, PerkQuota: perkQuota, ExtraQuota: extraQuota, TotalQuota: basedQuota + extraQuota}, nil
 }
 
 func baseQuotaFromAccount(account *gen.DyAccount) int64 {
-	return levelingQuotaFromAccount(account) + perkQuotaFromAccount(account)
+	return levelingQuotaFromAccount(account, config.LevelingQuotaConfig{}) + perkQuotaFromAccount(account)
 }
 
-func levelingQuotaFromAccount(account *gen.DyAccount) int64 {
+func levelingQuotaFromAccount(account *gen.DyAccount, cfg config.LevelingQuotaConfig) int64 {
 	level := int64(0)
 	if account != nil && account.GetProfile() != nil {
 		level = int64(account.GetProfile().GetLevel())
@@ -2280,15 +2332,31 @@ func levelingQuotaFromAccount(account *gen.DyAccount) int64 {
 	if progressLevel > 100 {
 		progressLevel = 100
 	}
-	progressQuota := progressLevel * (10 * 1024) / 100
-	milestoneQuota := int64(512)
+	level1 := cfg.Level1
+	if level1 <= 0 {
+		level1 = 512
+	}
+	level10 := cfg.Level10
+	if level10 <= 0 {
+		level10 = 1024
+	}
+	level60 := cfg.Level60
+	if level60 <= 0 {
+		level60 = 5 * 1024
+	}
+	level120 := cfg.Level120
+	if level120 <= 0 {
+		level120 = 10 * 1024
+	}
+	progressQuota := progressLevel * level120 / 100
+	milestoneQuota := level1
 	switch {
 	case level >= 120:
-		milestoneQuota = 10 * 1024
+		milestoneQuota = level120
 	case level >= 60:
-		milestoneQuota = 5 * 1024
+		milestoneQuota = level60
 	case level >= 10:
-		milestoneQuota = 1024
+		milestoneQuota = level10
 	}
 	if progressQuota < milestoneQuota {
 		return milestoneQuota
@@ -2321,6 +2389,10 @@ func (s *QuotaService) GetUsage(account *gen.DyAccount) (UsageSummary, error) {
 	if account == nil {
 		return UsageSummary{}, fmt.Errorf("account is required")
 	}
+	account, err := s.enrichedAccount(context.Background(), account)
+	if err != nil {
+		return UsageSummary{}, err
+	}
 	usedMB, fileCount, usageBytes, err := s.usageStats(account.GetId())
 	if err != nil {
 		return UsageSummary{}, err
@@ -2330,6 +2402,30 @@ func (s *QuotaService) GetUsage(account *gen.DyAccount) (UsageSummary, error) {
 		return UsageSummary{}, err
 	}
 	return UsageSummary{UsedQuota: usedMB, TotalQuota: summary.TotalQuota, TotalFileCount: fileCount, TotalUsageBytes: usageBytes}, nil
+}
+
+func (s *QuotaService) enrichedAccount(ctx context.Context, account *gen.DyAccount) (*gen.DyAccount, error) {
+	if account == nil {
+		return nil, fmt.Errorf("account is required")
+	}
+	if s.profileClient == nil {
+		return account, nil
+	}
+	key := fmt.Sprintf("quota:account:%s", account.GetId())
+	if s.cache != nil {
+		var cached gen.DyAccount
+		if ok, err := s.cache.GetData(ctx, key, &cached, "DyAccount"); err == nil && ok {
+			return &cached, nil
+		}
+	}
+	resolved, err := s.profileClient.GetAccount(ctx, &gen.DyGetAccountRequest{Id: account.GetId()})
+	if err != nil {
+		return nil, err
+	}
+	if s.cache != nil {
+		_ = s.cache.SetData(ctx, key, resolved, "DyAccount", 5*time.Minute)
+	}
+	return resolved, nil
 }
 
 func (s *QuotaService) usageStats(accountID string) (int64, int64, int64, error) {

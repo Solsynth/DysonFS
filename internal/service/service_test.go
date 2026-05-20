@@ -18,10 +18,96 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
+	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 	gen "src.solsynth.dev/sosys/go/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+type stubProfileClient struct {
+	account *gen.DyAccount
+	calls int
+}
+
+func (s *stubProfileClient) GetAccount(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error) {
+	s.calls++
+	return s.account, nil
+}
+
+func (s *stubProfileClient) GetAccountBatch(context.Context, *gen.DyGetAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) GetBotAccountBatch(context.Context, *gen.DyGetBotAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) GetBotAccount(context.Context, *gen.DyGetBotAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) LookupAccountBatch(context.Context, *gen.DyLookupAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) SearchAccount(context.Context, *gen.DySearchAccountRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) ListAccounts(context.Context, *gen.DyListAccountsRequest, ...grpc.CallOption) (*gen.DyListAccountsResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) GetProfile(context.Context, *gen.DyGetProfileRequest, ...grpc.CallOption) (*gen.DyAccountProfile, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) UpdateProfile(context.Context, *gen.DyUpdateProfileRequest, ...grpc.CallOption) (*gen.DyAccountProfile, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) ListBadges(context.Context, *gen.DyListBadgesRequest, ...grpc.CallOption) (*gen.DyListBadgesResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) GrantBadge(context.Context, *gen.DyGrantBadgeRequest, ...grpc.CallOption) (*gen.DyGrantBadgeResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) GetBadge(context.Context, *gen.DyGetBadgeRequest, ...grpc.CallOption) (*gen.DyGetBadgeResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) UpdateBadge(context.Context, *gen.DyUpdateBadgeRequest, ...grpc.CallOption) (*gen.DyUpdateBadgeResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) GetRelationship(context.Context, *gen.DyGetRelationshipRequest, ...grpc.CallOption) (*gen.DyGetRelationshipResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) HasRelationship(context.Context, *gen.DyGetRelationshipRequest, ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) ListFriends(context.Context, *gen.DyListRelationshipSimpleRequest, ...grpc.CallOption) (*gen.DyListRelationshipSimpleResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) ListBlocked(context.Context, *gen.DyListRelationshipSimpleRequest, ...grpc.CallOption) (*gen.DyListRelationshipSimpleResponse, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) GetAccountStatus(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccountStatus, error) {
+	panic("unexpected call")
+}
+
+func (s *stubProfileClient) GetAccountStatusBatch(context.Context, *gen.DyGetAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountStatusBatchResponse, error) {
+	panic("unexpected call")
+}
 
 func TestCreateUploadedFileCreatesReplica(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
@@ -141,6 +227,7 @@ func TestQuotaUsageCountsBytes(t *testing.T) {
 	}
 
 	account := &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 60}, PerkLevel: func() *int32 { v := int32(1); return &v }()}
+	svc.SetLevelingConfig(config.LevelingQuotaConfig{Level1: 512, Level10: 1024, Level60: 5 * 1024, Level120: 10 * 1024})
 	summary, err := svc.GetUsage(account)
 	if err != nil {
 		t.Fatalf("GetUsage() error = %v", err)
@@ -174,6 +261,7 @@ func TestCheckUploadQuota(t *testing.T) {
 		t.Fatalf("create quota record: %v", err)
 	}
 	account := &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 60}, PerkLevel: func() *int32 { v := int32(1); return &v }()}
+	svc.SetLevelingConfig(config.LevelingQuotaConfig{Level1: 512, Level10: 1024, Level60: 5 * 1024, Level120: 10 * 1024})
 	summary, err := svc.GetSummary(account)
 	if err != nil {
 		t.Fatalf("GetSummary() error = %v", err)
@@ -208,6 +296,29 @@ func TestBaseQuotaFromAccount(t *testing.T) {
 		if got := baseQuotaFromAccount(tt.account); got != tt.want {
 			t.Fatalf("%s: baseQuotaFromAccount() = %d, want %d", tt.name, got, tt.want)
 		}
+	}
+}
+
+func TestEnrichedAccountUsesCache(t *testing.T) {
+	svc := NewQuotaService(nil)
+	svc.SetCache(sharedcache.NewMemoryCacheService(8))
+	client := &stubProfileClient{account: &gen.DyAccount{Id: "acct-1", Profile: &gen.DyAccountProfile{Level: 42, Experience: 12345}}}
+	svc.SetProfileClient(client)
+
+	account := &gen.DyAccount{Id: "acct-1"}
+	resolved1, err := svc.EnrichedAccount(context.Background(), account)
+	if err != nil {
+		t.Fatalf("EnrichedAccount() first call error = %v", err)
+	}
+	resolved2, err := svc.EnrichedAccount(context.Background(), account)
+	if err != nil {
+		t.Fatalf("EnrichedAccount() second call error = %v", err)
+	}
+	if resolved1.GetProfile().GetLevel() != 42 || resolved2.GetProfile().GetExperience() != 12345 {
+		t.Fatalf("resolved accounts = %+v %+v, want fetched profile data", resolved1, resolved2)
+	}
+	if client.calls != 1 {
+		t.Fatalf("profile client calls = %d, want 1", client.calls)
 	}
 }
 

@@ -259,6 +259,12 @@ Key settings:
 - `storage.localDir`
 - `auth.target`
 - `auth.useTLS`
+- `passport.target`
+- `passport.useTLS`
+- `quota.leveling.level1`
+- `quota.leveling.level10`
+- `quota.leveling.level60`
+- `quota.leveling.level120`
 - `nats.url`
 - `mode.master`
 - `mode.worker`
