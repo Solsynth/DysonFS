@@ -2261,26 +2261,50 @@ func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) 
 }
 
 func baseQuotaFromAccount(account *gen.DyAccount) int64 {
-	level := int32(0)
+	return levelingQuotaFromAccount(account) + perkQuotaFromAccount(account)
+}
+
+func levelingQuotaFromAccount(account *gen.DyAccount) int64 {
+	level := int64(0)
+	if account != nil && account.GetProfile() != nil {
+		level = int64(account.GetProfile().GetLevel())
+	}
+	if level < 0 {
+		level = 0
+	}
+	if level > 120 {
+		level = 120
+	}
+
+	switch {
+	case level <= 10:
+		return 512 + (level * 512 / 10)
+	case level <= 60:
+		return 1024 + ((level - 10) * 4096 / 50)
+	default:
+		return 5120 + ((level - 60) * 5120 / 60)
+	}
+}
+
+func perkQuotaFromAccount(account *gen.DyAccount) int64 {
+	perkLevel := int32(0)
 	if account != nil {
 		if sub := account.GetPerkSubscription(); sub != nil {
-			level = sub.GetPerkLevel()
+			perkLevel = sub.GetPerkLevel()
 		} else {
-			level = account.GetPerkLevel()
+			perkLevel = account.GetPerkLevel()
 		}
 	}
-	baseGiB := int64(1)
-	switch level {
+	switch perkLevel {
 	case 1:
-		baseGiB = 5
+		return 10 * 1024
 	case 2:
-		baseGiB = 10
+		return 25 * 1024
 	case 3:
-		baseGiB = 15
+		return 50 * 1024
 	default:
-		baseGiB = 1
+		return 0
 	}
-	return baseGiB * 1024
 }
 
 func (s *QuotaService) GetUsage(account *gen.DyAccount) (UsageSummary, error) {
