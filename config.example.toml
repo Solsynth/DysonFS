@@ -31,6 +31,17 @@ target = ""
 useTLS = false
 tlsSkipVerify = false
 
+[passport]
+target = ""
+useTLS = false
+tlsSkipVerify = false
+
+[quota.leveling]
+level1 = 512
+level10 = 1024
+level60 = 5120
+level120 = 10240
+
 [mode]
 master = true
 worker = true
