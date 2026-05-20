@@ -22,6 +22,7 @@ import (
 	"src.solsynth.dev/sosys/go/pkg/auth"
 	gen "src.solsynth.dev/sosys/go/proto"
 
+	"github.com/rs/zerolog"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -236,19 +237,7 @@ func getQuota(c *gin.Context, quota *service.QuotaService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	perkLevel := result.Account.GetPerkLevel()
-	perkSubscriptionLevel := int32(0)
-	hasPerkSubscription := false
-	if sub := result.Account.GetPerkSubscription(); sub != nil {
-		hasPerkSubscription = true
-		perkSubscriptionLevel = sub.GetPerkLevel()
-	}
-	logging.Log.Info().
-		Str("accountId", result.Account.GetId()).
-		Bool("isSuperuser", result.Account.GetIsSuperuser()).
-		Int32("perkLevel", perkLevel).
-		Bool("hasPerkSubscription", hasPerkSubscription).
-		Int32("perkSubscriptionLevel", perkSubscriptionLevel).
+	quotaLogEvent(logging.Log.Info(), result.Account).
 		Msg("quota endpoint accessed")
 	summary, err := quota.GetSummary(result.Account)
 	if err != nil {
@@ -1141,33 +1130,16 @@ func logQuotaCheck(account *gen.DyAccount, fileSize int64, costMultiplier float6
 	if account == nil {
 		return
 	}
-	perkLevel := account.GetPerkLevel()
-	perkSubscriptionLevel := int32(0)
-	hasPerkSubscription := false
-	if sub := account.GetPerkSubscription(); sub != nil {
-		hasPerkSubscription = true
-		perkSubscriptionLevel = sub.GetPerkLevel()
-	}
-	entry := logging.Log.Info().
+	entry := quotaLogEvent(logging.Log.Info(), account).
 		Str("source", source).
-		Str("accountId", account.GetId()).
-		Bool("isSuperuser", account.GetIsSuperuser()).
-		Int32("perkLevel", perkLevel).
-		Bool("hasPerkSubscription", hasPerkSubscription).
-		Int32("perkSubscriptionLevel", perkSubscriptionLevel).
 		Int64("fileSize", fileSize).
 		Float64("costMultiplier", costMultiplier)
 	if refused && err != nil {
 		entry = entry.Err(err)
 	}
 	if refused {
-		logging.Log.Warn().
+		quotaLogEvent(logging.Log.Warn(), account).
 			Str("source", source).
-			Str("accountId", account.GetId()).
-			Bool("isSuperuser", account.GetIsSuperuser()).
-			Int32("perkLevel", perkLevel).
-			Bool("hasPerkSubscription", hasPerkSubscription).
-			Int32("perkSubscriptionLevel", perkSubscriptionLevel).
 			Int64("fileSize", fileSize).
 			Float64("costMultiplier", costMultiplier).
 			Err(err).
@@ -1175,6 +1147,36 @@ func logQuotaCheck(account *gen.DyAccount, fileSize int64, costMultiplier float6
 		return
 	}
 	entry.Msg("upload quota check")
+}
+
+func quotaLogEvent(event *zerolog.Event, account *gen.DyAccount) *zerolog.Event {
+	if event == nil || account == nil {
+		return event
+	}
+	perkLevel := account.GetPerkLevel()
+	perkSubscriptionLevel := int32(0)
+	hasPerkSubscription := false
+	if sub := account.GetPerkSubscription(); sub != nil {
+		hasPerkSubscription = true
+		perkSubscriptionLevel = sub.GetPerkLevel()
+	}
+	level := int32(0)
+	experience := int32(0)
+	levelingProgress := 0.0
+	if profile := account.GetProfile(); profile != nil {
+		level = profile.GetLevel()
+		experience = profile.GetExperience()
+		levelingProgress = profile.GetLevelingProgress()
+	}
+	return event.
+		Str("accountId", account.GetId()).
+		Bool("isSuperuser", account.GetIsSuperuser()).
+		Int32("level", level).
+		Int32("experience", experience).
+		Float64("levelingProgress", levelingProgress).
+		Int32("perkLevel", perkLevel).
+		Bool("hasPerkSubscription", hasPerkSubscription).
+		Int32("perkSubscriptionLevel", perkSubscriptionLevel)
 }
 
 func deref(v *string) string {

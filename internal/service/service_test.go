@@ -145,8 +145,8 @@ func TestQuotaUsageCountsBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUsage() error = %v", err)
 	}
-	if summary.UsedQuota != 300 || summary.TotalQuota != 15*1024 || summary.TotalFileCount != 2 || summary.TotalUsageBytes != 200*mb {
-		t.Fatalf("summary = %+v, want used=300 total=15GiB count=2 bytes=200MiB", summary)
+	if summary.UsedQuota != 300 || summary.TotalQuota != 16*1024 || summary.TotalFileCount != 2 || summary.TotalUsageBytes != 200*mb {
+		t.Fatalf("summary = %+v, want used=300 total=16GiB count=2 bytes=200MiB", summary)
 	}
 
 	usage, err := svc.GetPoolUsage(accountID, poolID)
@@ -178,13 +178,13 @@ func TestCheckUploadQuota(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSummary() error = %v", err)
 	}
-	if summary.BasedQuota != 15*1024 || summary.ExtraQuota != 25 || summary.TotalQuota != 15*1024+25 {
-		t.Fatalf("summary = %+v, want base=15GiB extra=25 total=15GiB+25MB", summary)
+	if summary.BasedQuota != 16*1024 || summary.LevelingQuota != 6*1024 || summary.PerkQuota != 10*1024 || summary.ExtraQuota != 25 || summary.TotalQuota != 16*1024+25 {
+		t.Fatalf("summary = %+v, want base=16GiB leveling=6GiB perk=10GiB extra=25 total=16GiB+25MB", summary)
 	}
 
-	if err := svc.CheckUploadQuota(account, 16000*mb, 1); err == nil {
+	if err := svc.CheckUploadQuota(account, 17000*mb, 1); err == nil {
 		t.Fatal("CheckUploadQuota() error = nil, want quota exceeded")
-	} else if !errors.Is(err, ErrQuotaExceeded) || !strings.Contains(err.Error(), "used=120MB") || !strings.Contains(err.Error(), "total=15385MB") {
+	} else if !errors.Is(err, ErrQuotaExceeded) || !strings.Contains(err.Error(), "used=120MB") || !strings.Contains(err.Error(), "total=16409MB") {
 		t.Fatalf("CheckUploadQuota() error = %v, want used/total details", err)
 	}
 }
@@ -197,7 +197,8 @@ func TestBaseQuotaFromAccount(t *testing.T) {
 	}{
 		{name: "level 0 no perk", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 0}}, want: 512},
 		{name: "level 10 no perk", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 10}}, want: 1024},
-		{name: "level 60 no perk", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 60}}, want: 5 * 1024},
+		{name: "level 20 progressive", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 20}}, want: 2 * 1024},
+		{name: "level 60 no perk", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 60}}, want: 6 * 1024},
 		{name: "level 120 no perk", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 120}}, want: 10 * 1024},
 		{name: "level clamp high perk 2", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 999}, PerkLevel: func() *int32 { v := int32(2); return &v }()}, want: 35 * 1024},
 		{name: "level clamp low perk 3", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: -5}, PerkLevel: func() *int32 { v := int32(3); return &v }()}, want: 50*1024 + 512},

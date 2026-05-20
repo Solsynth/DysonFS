@@ -2190,9 +2190,11 @@ type QuotaService struct{ db *database.DB }
 func NewQuotaService(db *database.DB) *QuotaService { return &QuotaService{db: db} }
 
 type QuotaSummary struct {
-	BasedQuota int64 `json:"based_quota"`
-	ExtraQuota int64 `json:"extra_quota"`
-	TotalQuota int64 `json:"total_quota"`
+	BasedQuota    int64 `json:"based_quota"`
+	LevelingQuota int64 `json:"leveling_quota"`
+	PerkQuota     int64 `json:"perk_quota"`
+	ExtraQuota    int64 `json:"extra_quota"`
+	TotalQuota    int64 `json:"total_quota"`
 }
 
 type UsageSummary struct {
@@ -2256,8 +2258,10 @@ func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) 
 		}
 		extraQuota += record.Quota
 	}
-	basedQuota := baseQuotaFromAccount(account)
-	return QuotaSummary{BasedQuota: basedQuota, ExtraQuota: extraQuota, TotalQuota: basedQuota + extraQuota}, nil
+	levelingQuota := levelingQuotaFromAccount(account)
+	perkQuota := perkQuotaFromAccount(account)
+	basedQuota := levelingQuota + perkQuota
+	return QuotaSummary{BasedQuota: basedQuota, LevelingQuota: levelingQuota, PerkQuota: perkQuota, ExtraQuota: extraQuota, TotalQuota: basedQuota + extraQuota}, nil
 }
 
 func baseQuotaFromAccount(account *gen.DyAccount) int64 {
@@ -2272,18 +2276,24 @@ func levelingQuotaFromAccount(account *gen.DyAccount) int64 {
 	if level < 0 {
 		level = 0
 	}
-	if level > 120 {
-		level = 120
+	progressLevel := level
+	if progressLevel > 100 {
+		progressLevel = 100
 	}
-
+	progressQuota := progressLevel * (10 * 1024) / 100
+	milestoneQuota := int64(512)
 	switch {
-	case level <= 10:
-		return 512 + (level * 512 / 10)
-	case level <= 60:
-		return 1024 + ((level - 10) * 4096 / 50)
-	default:
-		return 5120 + ((level - 60) * 5120 / 60)
+	case level >= 120:
+		milestoneQuota = 10 * 1024
+	case level >= 60:
+		milestoneQuota = 5 * 1024
+	case level >= 10:
+		milestoneQuota = 1024
 	}
+	if progressQuota < milestoneQuota {
+		return milestoneQuota
+	}
+	return progressQuota
 }
 
 func perkQuotaFromAccount(account *gen.DyAccount) int64 {
