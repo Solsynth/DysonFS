@@ -86,6 +86,63 @@ Both direct upload and chunked upload creation accept the same metadata payload:
 - `direct` upload uses multipart form data with the same field names, plus `file`
 - `parent_id` is optional and can still be resolved server-side when omitted
 - `hash` is stored on the created file/task when provided
+- upload quota is checked before task creation or direct upload processing
+- quota refusal returns `403 Forbidden`
+- if `pool_id` is omitted, the quota check uses the resolved default pool
+
+### Quota And Billing
+
+Quota values are reported in MB.
+
+Base quota is the sum of:
+
+- leveling quota
+- perk quota
+
+Leveling quota uses `account.profile.level`, clamped to `0..120`, with these milestones:
+
+- `Lv0`: `512MB`
+- `Lv10`: `1GB`
+- `Lv60`: `5GB`
+- `Lv120`: `10GB`
+
+Between those milestones, the quota is interpolated piecewise.
+
+Perk quota is added on top of leveling quota:
+
+- perk `1`: `10GB`
+- perk `2`: `25GB`
+- perk `3`: `50GB`
+
+Extra quota comes from active `quota_records` and is added after the base quota.
+
+`GET /api/billing/quota` returns:
+
+```json
+{
+  "based_quota": 15360,
+  "extra_quota": 25,
+  "total_quota": 15385
+}
+```
+
+`GET /api/billing/usage` returns:
+
+```json
+{
+  "used_quota": 300,
+  "total_quota": 15385,
+  "total_file_count": 2,
+  "total_usage_bytes": 209715200
+}
+```
+
+Usage accounting rules:
+
+- `used_quota` is billable usage in MB, not raw bytes
+- raw file bytes are returned separately as `total_usage_bytes`
+- pool billing `cost_multiplier` affects billable usage and quota checks
+- the multiplier is applied per file based on the file's pool
 
 ### Folders
 
