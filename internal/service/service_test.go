@@ -658,6 +658,45 @@ func TestListRootOwnedExcludesChildren(t *testing.T) {
 	}
 }
 
+func TestListUnindexedExcludesChildren(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
+		t.Fatalf("AutoMigrate() permission table error = %v", err)
+	}
+
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root-unindexed", AccountID: accountID, Indexed: false}).Error; err != nil {
+		t.Fatalf("create root unindexed file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root-indexed", AccountID: accountID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create root indexed file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "child-unindexed", AccountID: accountID, ParentID: ptr("parent"), Indexed: false}).Error; err != nil {
+		t.Fatalf("create child unindexed file: %v", err)
+	}
+
+	files, err := svc.ListUnindexed(accountID)
+	if err != nil {
+		t.Fatalf("ListUnindexed() error = %v", err)
+	}
+	if got := len(files); got != 1 {
+		t.Fatalf("len(ListUnindexed()) = %d, want 1", got)
+	}
+	if files[0].ParentID != nil {
+		t.Fatalf("expected only root files, got child %q", files[0].Name)
+	}
+	if files[0].Name != "root-unindexed" {
+		t.Fatalf("ListUnindexed() returned %q, want root-unindexed", files[0].Name)
+	}
+}
+
 func TestListRootOwnedDefaultsToRecentFirst(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

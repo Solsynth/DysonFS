@@ -760,7 +760,7 @@ func (s *FileService) ListOwned(accountID uuid.UUID) ([]database.CloudFile, erro
 
 func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, error) {
 	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ? AND indexed = false", accountID).Find(&files).Error; err != nil {
+	if err := s.db.Preload("Object").Where("account_id = ? AND indexed = false AND parent_id IS NULL", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
 	if err := s.populateFilesMetadata(files); err != nil {
