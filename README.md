@@ -198,6 +198,32 @@ Request body:
 - `permission` is typically `read`, `write`, or `manage`
 - Send the full desired list; omitted rows are removed
 
+### Batch File Operations
+
+Batch operations use `POST /api/files/<operation>/batch` with a JSON body.
+
+Move files into a parent:
+
+```json
+{
+  "file_ids": ["..."],
+  "parent_id": "..."
+}
+```
+
+Available operations:
+
+- `POST /api/files/recycle/batch`
+- `POST /api/files/restore/batch`
+- `POST /api/files/delete/batch`
+- `POST /api/files/move/batch`
+
+Notes:
+
+- `file_ids` is required for every batch operation
+- `parent_id` is optional for `move`; omit it or set it to `null` to move files back to the root
+- `POST /api/files/batches/delete` remains as a compatibility alias for batch recycle
+
 ### File Listings
 
 List responses include extra metadata for navigation and access UI:

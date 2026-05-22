@@ -45,6 +45,10 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
 		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
 		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
+		f.POST("/recycle/batch", func(c *gin.Context) { batchRecycleFiles(c, files, bus, dispatcher) })
+		f.POST("/restore/batch", func(c *gin.Context) { batchRestoreFiles(c, files, bus, dispatcher) })
+		f.POST("/delete/batch", func(c *gin.Context) { batchDeleteFiles(c, files, bus, dispatcher) })
+		f.POST("/move/batch", func(c *gin.Context) { batchMoveFiles(c, files, bus, dispatcher) })
 		f.POST("/batches/delete", func(c *gin.Context) { batchRecycleFiles(c, files, bus, dispatcher) })
 		f.DELETE("/:id", func(c *gin.Context) { deleteFile(c, files, bus, dispatcher) })
 		f.DELETE("/me/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus, dispatcher) })
@@ -693,22 +697,199 @@ func batchRecycleFiles(c *gin.Context, files *service.FileService, bus *eventbus
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	var req struct {
-		IDs []string `json:"ids"`
-	}
+	var req batchFileIDsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	count, err := files.RecycleBatch(req.IDs)
+	ids := req.normalizedIDs()
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_ids is required"})
+		return
+	}
+	batchFiles, err := loadBatchFilesForAccount(files, result.Account.GetId(), ids, false)
+	if err != nil {
+		handleBatchFileLookupError(c, err)
+		return
+	}
+	count, err := files.RecycleBatch(ids)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	for _, id := range req.IDs {
-		publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "recycle", FileID: id, AccountID: result.Account.GetId()})
+	for _, file := range batchFiles {
+		publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "recycle", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
 	}
 	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+func batchRestoreFiles(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req batchFileIDsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := req.normalizedIDs()
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_ids is required"})
+		return
+	}
+	batchFiles, err := loadBatchFilesForAccount(files, result.Account.GetId(), ids, false)
+	if err != nil {
+		handleBatchFileLookupError(c, err)
+		return
+	}
+	count, err := files.RestoreBatch(ids)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, file := range batchFiles {
+		publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "restore", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
+	}
+	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+func batchDeleteFiles(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req batchFileIDsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := req.normalizedIDs()
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_ids is required"})
+		return
+	}
+	batchFiles, err := loadBatchFilesForAccount(files, result.Account.GetId(), ids, true)
+	if err != nil {
+		handleBatchFileLookupError(c, err)
+		return
+	}
+	count := int64(0)
+	for _, file := range batchFiles {
+		if err := files.PurgeFile(file.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "delete", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
+		count++
+	}
+	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+func batchMoveFiles(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req batchMoveFilesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := req.normalizedIDs()
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_ids is required"})
+		return
+	}
+	batchFiles, err := loadBatchFilesForAccount(files, result.Account.GetId(), ids, false)
+	if err != nil {
+		handleBatchFileLookupError(c, err)
+		return
+	}
+	count, err := files.MoveBatch(ids, req.ParentID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, file := range batchFiles {
+		publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "move", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
+	}
+	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+type batchFileIDsRequest struct {
+	FileIDs []string `json:"file_ids"`
+	IDs     []string `json:"ids"`
+}
+
+func (req batchFileIDsRequest) normalizedIDs() []string {
+	seen := make(map[string]struct{}, len(req.FileIDs)+len(req.IDs))
+	ids := make([]string, 0, len(req.FileIDs)+len(req.IDs))
+	appendIDs := func(values []string) {
+		for _, raw := range values {
+			id := strings.TrimSpace(raw)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	appendIDs(req.FileIDs)
+	appendIDs(req.IDs)
+	return ids
+}
+
+type batchMoveFilesRequest struct {
+	FileIDs  []string `json:"file_ids"`
+	IDs      []string `json:"ids"`
+	ParentID *string  `json:"parent_id"`
+}
+
+func (req batchMoveFilesRequest) normalizedIDs() []string {
+	return batchFileIDsRequest{FileIDs: req.FileIDs, IDs: req.IDs}.normalizedIDs()
+}
+
+func loadBatchFilesForAccount(files *service.FileService, accountID string, ids []string, includeDeleted bool) ([]database.CloudFile, error) {
+	query := files.DB().DB
+	if includeDeleted {
+		query = query.Unscoped()
+	}
+	var batchFiles []database.CloudFile
+	if err := query.Where("id IN ?", ids).Find(&batchFiles).Error; err != nil {
+		return nil, err
+	}
+	if len(batchFiles) != len(ids) {
+		return nil, errBatchFileNotFound
+	}
+	for _, file := range batchFiles {
+		if file.AccountID.String() != accountID {
+			return nil, errBatchFileForbidden
+		}
+	}
+	return batchFiles, nil
+}
+
+var (
+	errBatchFileNotFound  = errors.New("file not found")
+	errBatchFileForbidden = errors.New("forbidden")
+)
+
+func handleBatchFileLookupError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, errBatchFileNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	case errors.Is(err, errBatchFileForbidden):
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
 }
 
 func purgeMyRecycleBin(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {

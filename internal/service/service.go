@@ -924,10 +924,14 @@ func (s *FileService) MarkDerived(parentID string, kind string) error {
 }
 
 func (s *FileService) DeleteFile(id string) error {
+	affectedIDs, err := s.loadDescendantIDs([]string{id})
+	if err != nil {
+		return err
+	}
 	if err := s.db.Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
 		return err
 	}
-	s.InvalidateFilePermissionCache(context.Background(), id)
+	s.invalidatePermissionCaches(context.Background(), affectedIDs)
 	return nil
 }
 
@@ -936,6 +940,7 @@ func (s *FileService) RecycleFile(id string) error {
 }
 
 func (s *FileService) RecycleBatch(ids []string) (int64, error) {
+	ids = normalizeFileIDs(ids)
 	if len(ids) == 0 {
 		return 0, nil
 	}
@@ -947,9 +952,22 @@ func (s *FileService) RestoreFile(id string) error {
 	return s.db.Model(&database.CloudFile{}).Where("id = ?", id).Update("is_marked_recycle", false).Error
 }
 
+func (s *FileService) RestoreBatch(ids []string) (int64, error) {
+	ids = normalizeFileIDs(ids)
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx := s.db.Model(&database.CloudFile{}).Where("id IN ?", ids).Update("is_marked_recycle", false)
+	return tx.RowsAffected, tx.Error
+}
+
 func (s *FileService) PurgeFile(id string) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("database not configured")
+	}
+	affectedIDs, err := s.loadDescendantIDs([]string{id})
+	if err != nil {
+		return err
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		var file database.CloudFile
@@ -973,8 +991,119 @@ func (s *FileService) PurgeFile(id string) error {
 	}); err != nil {
 		return err
 	}
-	s.InvalidateFilePermissionCache(context.Background(), id)
+	s.invalidatePermissionCaches(context.Background(), affectedIDs)
 	return nil
+}
+
+func (s *FileService) PurgeBatch(ids []string) (int64, error) {
+	ids = normalizeFileIDs(ids)
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var count int64
+	for _, id := range ids {
+		if err := s.PurgeFile(id); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func (s *FileService) MoveBatch(ids []string, parentID *string) (int64, error) {
+	ids = normalizeFileIDs(ids)
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var resolvedParentID *string
+	if parentID != nil {
+		trimmed := strings.TrimSpace(*parentID)
+		if trimmed != "" {
+			resolvedParentID = &trimmed
+		}
+	}
+	if resolvedParentID != nil {
+		descendantIDs, err := s.loadDescendantIDs(ids)
+		if err != nil {
+			return 0, err
+		}
+		for _, descendantID := range descendantIDs {
+			if descendantID == *resolvedParentID {
+				return 0, fmt.Errorf("parent_id cannot reference a moved file or its descendant")
+			}
+		}
+	}
+	var parentValue any
+	if resolvedParentID != nil {
+		parentValue = *resolvedParentID
+	}
+	tx := s.db.Model(&database.CloudFile{}).Where("id IN ?", ids).Updates(map[string]any{"parent_id": parentValue})
+	if tx.Error != nil {
+		return tx.RowsAffected, tx.Error
+	}
+	descendantIDs, err := s.loadDescendantIDs(ids)
+	if err != nil {
+		return tx.RowsAffected, err
+	}
+	s.invalidatePermissionCaches(context.Background(), descendantIDs)
+	return tx.RowsAffected, nil
+}
+
+func (s *FileService) loadDescendantIDs(fileIDs []string) ([]string, error) {
+	fileIDs = normalizeFileIDs(fileIDs)
+	if len(fileIDs) == 0 {
+		return []string{}, nil
+	}
+
+	const query = `WITH RECURSIVE descendants AS (
+		SELECT id, parent_id
+		FROM cloud_files
+		WHERE id IN ?
+
+		UNION
+
+		SELECT cf.id, cf.parent_id
+		FROM cloud_files cf
+		JOIN descendants d ON cf.parent_id = d.id
+		WHERE cf.deleted_at IS NULL
+	)
+	SELECT DISTINCT id
+	FROM descendants`
+
+	type descendantRow struct {
+		ID string
+	}
+
+	var rows []descendantRow
+	if err := s.db.DB.Raw(query, fileIDs).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.ID) == "" {
+			continue
+		}
+		ids = append(ids, row.ID)
+	}
+	return ids, nil
+}
+
+func (s *FileService) invalidatePermissionCaches(ctx context.Context, fileIDs []string) {
+	if s == nil || s.cache == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(fileIDs))
+	for _, fileID := range fileIDs {
+		fileID = strings.TrimSpace(fileID)
+		if fileID == "" {
+			continue
+		}
+		if _, ok := seen[fileID]; ok {
+			continue
+		}
+		seen[fileID] = struct{}{}
+		s.InvalidateFilePermissionCache(ctx, fileID)
+	}
 }
 
 func (s *FileService) purgeObjectIfDereferenced(tx *gorm.DB, file *database.CloudFile, objectID string) error {
@@ -1063,6 +1192,23 @@ func (s *FileService) deleteObjectFromBackends(ctx context.Context, file *databa
 		}
 	}
 	return nil
+}
+
+func normalizeFileIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *FileService) backendForStorageTarget(storageID, poolID *string) (storage.Backend, error) {

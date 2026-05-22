@@ -294,6 +294,90 @@ func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
 	}
 }
 
+func TestRestoreBatch(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	firstID := database.NewID()
+	secondID := database.NewID()
+	for _, fileID := range []string{firstID, secondID} {
+		if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.txt", AccountID: accountID, IsMarkedRecycle: true}).Error; err != nil {
+			t.Fatalf("create file %s: %v", fileID, err)
+		}
+	}
+
+	count, err := svc.RestoreBatch([]string{firstID, secondID})
+	if err != nil {
+		t.Fatalf("RestoreBatch() error = %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("RestoreBatch() count = %d, want 2", count)
+	}
+	for _, fileID := range []string{firstID, secondID} {
+		var file database.CloudFile
+		if err := db.First(&file, "id = ?", fileID).Error; err != nil {
+			t.Fatalf("load file %s: %v", fileID, err)
+		}
+		if file.IsMarkedRecycle {
+			t.Fatalf("file %s still marked recycled", fileID)
+		}
+	}
+}
+
+func TestMoveBatch(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	parentID := database.NewID()
+	childID := database.NewID()
+	siblingID := database.NewID()
+	cycleParentID := database.NewID()
+	cycleChildID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: parentID, Name: "parent", AccountID: accountID, IsFolder: true}).Error; err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: childID, Name: "child", AccountID: accountID, ParentID: ptr(parentID)}).Error; err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: siblingID, Name: "sibling", AccountID: accountID, ParentID: ptr(parentID)}).Error; err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: cycleParentID, Name: "cycle-parent", AccountID: accountID, IsFolder: true}).Error; err != nil {
+		t.Fatalf("create cycle parent: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: cycleChildID, Name: "cycle-child", AccountID: accountID, ParentID: ptr(cycleParentID)}).Error; err != nil {
+		t.Fatalf("create cycle child: %v", err)
+	}
+
+	count, err := svc.MoveBatch([]string{childID, siblingID}, nil)
+	if err != nil {
+		t.Fatalf("MoveBatch() error = %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("MoveBatch() count = %d, want 2", count)
+	}
+	for _, fileID := range []string{childID, siblingID} {
+		var file database.CloudFile
+		if err := db.First(&file, "id = ?", fileID).Error; err != nil {
+			t.Fatalf("load file %s: %v", fileID, err)
+		}
+		if file.ParentID != nil {
+			t.Fatalf("file %s parent_id = %v, want nil", fileID, *file.ParentID)
+		}
+	}
+
+	if _, err := svc.MoveBatch([]string{cycleParentID}, ptr(cycleChildID)); err == nil {
+		t.Fatal("MoveBatch() cycle error = nil, want error")
+	}
+	var parent database.CloudFile
+	if err := db.First(&parent, "id = ?", cycleParentID).Error; err != nil {
+		t.Fatalf("reload parent: %v", err)
+	}
+	if parent.ParentID != nil {
+		t.Fatalf("parent moved unexpectedly: %+v", parent.ParentID)
+	}
+}
+
 func TestQuotaUsageCountsBytes(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.QuotaRecord{})
 	svc := NewQuotaService(&database.DB{DB: db})
