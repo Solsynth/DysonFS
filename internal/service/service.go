@@ -948,14 +948,131 @@ func (s *FileService) RestoreFile(id string) error {
 }
 
 func (s *FileService) PurgeFile(id string) error {
-	if err := s.db.Unscoped().Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
-		return err
+	if s == nil || s.db == nil {
+		return fmt.Errorf("database not configured")
 	}
-	if err := s.db.Where("file_id = ?", id).Delete(&database.FilePermission{}).Error; err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		var file database.CloudFile
+		if err := tx.Unscoped().Preload("Object").First(&file, "id = ?", id).Error; err != nil {
+			return err
+		}
+		objectID := ""
+		if file.ObjectID != nil {
+			objectID = strings.TrimSpace(*file.ObjectID)
+		}
+		if err := tx.Unscoped().Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if err := tx.Unscoped().Delete(&database.FilePermission{}, "file_id = ?", id).Error; err != nil {
+			return err
+		}
+		if objectID == "" {
+			return nil
+		}
+		return s.purgeObjectIfDereferenced(tx, &file, objectID)
+	}); err != nil {
 		return err
 	}
 	s.InvalidateFilePermissionCache(context.Background(), id)
 	return nil
+}
+
+func (s *FileService) purgeObjectIfDereferenced(tx *gorm.DB, file *database.CloudFile, objectID string) error {
+	var refCount int64
+	if err := tx.Model(&database.CloudFile{}).Where("object_id = ? AND deleted_at IS NULL", objectID).Count(&refCount).Error; err != nil {
+		return err
+	}
+	if refCount > 0 {
+		return nil
+	}
+
+	var object database.FileObject
+	if err := tx.Unscoped().First(&object, "id = ?", objectID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+
+	var replicas []database.FileReplica
+	if err := tx.Unscoped().Where("object_id = ?", objectID).Find(&replicas).Error; err != nil {
+		return err
+	}
+
+	storageKey := firstNonEmptyPtr(object.StorageKey, file.StorageKey, file.ObjectID)
+	if storageKey != nil && strings.TrimSpace(*storageKey) != "" {
+		if err := s.deleteObjectFromBackends(context.Background(), file, replicas, *storageKey); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Unscoped().Delete(&database.FileReplica{}, "object_id = ?", objectID).Error; err != nil {
+		return err
+	}
+	return tx.Unscoped().Delete(&database.FileObject{}, "id = ?", objectID).Error
+}
+
+func (s *FileService) deleteObjectFromBackends(ctx context.Context, file *database.CloudFile, replicas []database.FileReplica, storageKey string) error {
+	if s == nil {
+		return fmt.Errorf("file service not configured")
+	}
+	if strings.TrimSpace(storageKey) == "" {
+		return nil
+	}
+
+	type backendTarget struct {
+		storageID *string
+		poolID    *string
+	}
+	targets := make([]backendTarget, 0, len(replicas)+1)
+	seen := make(map[string]struct{})
+	addTarget := func(storageID, poolID *string) {
+		storageKey := ""
+		if storageID != nil {
+			storageKey = "storage:" + strings.TrimSpace(*storageID)
+		}
+		poolKey := ""
+		if poolID != nil {
+			poolKey = "pool:" + strings.TrimSpace(*poolID)
+		}
+		key := storageKey + "|" + poolKey
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		targets = append(targets, backendTarget{storageID: storageID, poolID: poolID})
+	}
+
+	for _, replica := range replicas {
+		addTarget(replica.StorageID, replica.PoolID)
+	}
+	if len(targets) == 0 && file != nil {
+		addTarget(file.StorageID, file.PoolID)
+	}
+	if len(targets) == 0 {
+		targets = append(targets, backendTarget{})
+	}
+
+	for _, target := range targets {
+		backend, err := s.backendForStorageTarget(target.storageID, target.poolID)
+		if err != nil {
+			return err
+		}
+		if err := backend.Delete(ctx, storageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *FileService) backendForStorageTarget(storageID, poolID *string) (storage.Backend, error) {
+	if storageID != nil && strings.TrimSpace(*storageID) != "" {
+		return s.BackendForPoolID(storageID)
+	}
+	if poolID != nil && strings.TrimSpace(*poolID) != "" {
+		return s.BackendForPoolID(poolID)
+	}
+	return s.stor, nil
 }
 
 func (s *FileService) PurgeRecycleBin(accountID uuid.UUID) (int64, error) {

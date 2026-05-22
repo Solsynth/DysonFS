@@ -632,11 +632,12 @@ func deleteFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, d
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
-	if err := files.DeleteFile(file.ID); err != nil {
+	if err := files.PurgeFile(file.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	publishFileAction(c.Request.Context(), bus, dispatcher, eventbus.FileActionEvent{Action: "delete", FileID: file.ID, AccountID: result.Account.GetId(), Name: file.Name})
+	_ = bus
+	_ = dispatcher
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

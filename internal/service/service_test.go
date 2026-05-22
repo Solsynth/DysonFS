@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -18,18 +18,18 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 	gen "src.solsynth.dev/sosys/go/proto"
-	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 type stubProfileClient struct {
 	account *gen.DyAccount
-	calls int
+	calls   int
 }
 
 func (s *stubProfileClient) GetAccount(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error) {
@@ -198,6 +198,102 @@ func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 	}
 }
 
+func TestPurgeFileDeletesDereferencedObjectAndRemote(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}, &database.FilePermission{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = poolID
+
+	objectID := database.NewID()
+	storageKey := objectID
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 5, MimeType: "text/plain", Hash: "hash", StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	fileID := database.NewID()
+	accountID := uuid.New()
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := db.Create(&database.FileReplica{ID: database.NewID(), ObjectID: objectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true}).Error; err != nil {
+		t.Fatalf("create replica: %v", err)
+	}
+	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: fileID, SubjectType: "private", Permission: "read"}).Error; err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader("hello"), "text/plain"); err != nil {
+		t.Fatalf("put remote object: %v", err)
+	}
+
+	if err := svc.PurgeFile(fileID); err != nil {
+		t.Fatalf("PurgeFile() error = %v", err)
+	}
+
+	if err := db.Unscoped().First(&database.CloudFile{}, "id = ?", fileID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("cloud file still exists, err = %v", err)
+	}
+	if err := db.Unscoped().First(&database.FileObject{}, "id = ?", objectID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("file object still exists, err = %v", err)
+	}
+	var replicaCount int64
+	if err := db.Unscoped().Model(&database.FileReplica{}).Where("object_id = ?", objectID).Count(&replicaCount).Error; err != nil {
+		t.Fatalf("count replicas: %v", err)
+	}
+	if replicaCount != 0 {
+		t.Fatalf("replica count = %d, want 0", replicaCount)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, storageKey)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remote object still exists, stat err = %v", err)
+	}
+}
+
+func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}, &database.FilePermission{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = poolID
+
+	objectID := database.NewID()
+	storageKey := objectID
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 5, MimeType: "text/plain", Hash: "hash", StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	firstFileID := database.NewID()
+	secondFileID := database.NewID()
+	accountID := uuid.New()
+	for _, fileID := range []string{firstFileID, secondFileID} {
+		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+			t.Fatalf("create file %s: %v", fileID, err)
+		}
+	}
+	if err := db.Create(&database.FileReplica{ID: database.NewID(), ObjectID: objectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true}).Error; err != nil {
+		t.Fatalf("create replica: %v", err)
+	}
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader("hello"), "text/plain"); err != nil {
+		t.Fatalf("put remote object: %v", err)
+	}
+
+	if err := svc.PurgeFile(firstFileID); err != nil {
+		t.Fatalf("PurgeFile() error = %v", err)
+	}
+
+	if err := db.Unscoped().First(&database.CloudFile{}, "id = ?", firstFileID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("first file still exists, err = %v", err)
+	}
+	if err := db.First(&database.CloudFile{}, "id = ?", secondFileID).Error; err != nil {
+		t.Fatalf("second file missing: %v", err)
+	}
+	if err := db.First(&database.FileObject{}, "id = ?", objectID).Error; err != nil {
+		t.Fatalf("shared object missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, storageKey)); err != nil {
+		t.Fatalf("remote object missing: %v", err)
+	}
+}
+
 func TestQuotaUsageCountsBytes(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.QuotaRecord{})
 	svc := NewQuotaService(&database.DB{DB: db})
@@ -279,9 +375,9 @@ func TestCheckUploadQuota(t *testing.T) {
 
 func TestBaseQuotaFromAccount(t *testing.T) {
 	tests := []struct {
-		name string
+		name    string
 		account *gen.DyAccount
-		want int64
+		want    int64
 	}{
 		{name: "level 0 no perk", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 0}}, want: 512},
 		{name: "level 10 no perk", account: &gen.DyAccount{Profile: &gen.DyAccountProfile{Level: 10}}, want: 1024},
@@ -860,7 +956,8 @@ func blankImage(w, h int) *image.RGBA {
 
 func openTestDB(t *testing.T, models ...any) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}

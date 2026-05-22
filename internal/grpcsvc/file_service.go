@@ -156,7 +156,7 @@ func (s *fileServiceServer) DeleteFile(_ context.Context, req *gen.DyDeleteFileR
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
 	if req.GetPurge() {
-		if err := s.files.DB().Unscoped().Delete(&database.CloudFile{}, "id = ?", req.GetId()).Error; err != nil {
+		if err := s.files.PurgeFile(req.GetId()); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	} else if err := s.files.DeleteFile(req.GetId()); err != nil {
