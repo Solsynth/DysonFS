@@ -202,11 +202,35 @@ Request body:
 
 Batch operations use `POST /api/files/<operation>/batch` with a JSON body.
 
+Recycle files:
+
+```json
+{
+  "file_ids": ["file-id-1", "file-id-2"]
+}
+```
+
+Restore files:
+
+```json
+{
+  "file_ids": ["file-id-1", "file-id-2"]
+}
+```
+
+Purge files:
+
+```json
+{
+  "file_ids": ["file-id-1", "file-id-2"]
+}
+```
+
 Move files into a parent:
 
 ```json
 {
-  "file_ids": ["..."],
+  "file_ids": ["file-id-1", "file-id-2"],
   "parent_id": "..."
 }
 ```
@@ -222,7 +246,6 @@ Notes:
 
 - `file_ids` is required for every batch operation
 - `parent_id` is optional for `move`; omit it or set it to `null` to move files back to the root
-- `POST /api/files/batches/delete` remains as a compatibility alias for batch recycle
 
 ### File Listings
 

@@ -49,7 +49,6 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.POST("/restore/batch", func(c *gin.Context) { batchRestoreFiles(c, files, bus, dispatcher) })
 		f.POST("/delete/batch", func(c *gin.Context) { batchDeleteFiles(c, files, bus, dispatcher) })
 		f.POST("/move/batch", func(c *gin.Context) { batchMoveFiles(c, files, bus, dispatcher) })
-		f.POST("/batches/delete", func(c *gin.Context) { batchRecycleFiles(c, files, bus, dispatcher) })
 		f.DELETE("/:id", func(c *gin.Context) { deleteFile(c, files, bus, dispatcher) })
 		f.DELETE("/me/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus, dispatcher) })
 		f.DELETE("/recycle", func(c *gin.Context) { purgeMyRecycleBin(c, files, bus, dispatcher) })
