@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/nats-io/nats.go"
-
+	"src.solsynth.dev/sosys/filesystem/internal/logging"
 )
 
 type Bus struct{ Conn *nats.Conn }
@@ -39,10 +39,13 @@ func (b *Bus) SubscribeFileUploaded(handler func(FileUploadedEvent) error) (*nat
 	return b.Conn.Subscribe("file_uploaded", func(msg *nats.Msg) {
 		var evt FileUploadedEvent
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			logging.Log.Error().Err(err).Str("subject", msg.Subject).Msg("failed to decode file uploaded event")
 			return
 		}
 		if handler != nil {
-			_ = handler(evt)
+			if err := handler(evt); err != nil {
+				logging.Log.Error().Err(err).Str("subject", msg.Subject).Str("fileId", evt.FileID).Str("taskId", evt.TaskID).Msg("file uploaded handler failed")
+			}
 		}
 	})
 }
@@ -54,10 +57,13 @@ func (b *Bus) SubscribeFileAction(handler func(FileActionEvent) error) (*nats.Su
 	return b.Conn.Subscribe("file_action", func(msg *nats.Msg) {
 		var evt FileActionEvent
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			logging.Log.Error().Err(err).Str("subject", msg.Subject).Msg("failed to decode file action event")
 			return
 		}
 		if handler != nil {
-			_ = handler(evt)
+			if err := handler(evt); err != nil {
+				logging.Log.Error().Err(err).Str("subject", msg.Subject).Str("fileId", evt.FileID).Str("action", evt.Action).Msg("file action handler failed")
+			}
 		}
 	})
 }

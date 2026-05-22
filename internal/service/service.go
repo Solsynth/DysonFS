@@ -3,8 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,13 +31,13 @@ import (
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
-	"gorm.io/datatypes"
-	"gorm.io/gorm"
-	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
-	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
+	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 )
 
 type PoolConfig struct {
@@ -116,6 +116,7 @@ type FileService struct {
 }
 
 const systemPoolName = "system"
+const compressedImageTargetBytes = 100 * 1024
 
 func NewFileService(db *database.DB, stor storage.Backend) *FileService {
 	return &FileService{db: db, stor: stor}
@@ -1424,6 +1425,9 @@ func (s *FileService) imageVariantRepairReason(file *database.CloudFile) string 
 	if child, err := s.getDerivedChild(file.ID, "system.thumbnail"); err != nil || child == nil {
 		reasons = append(reasons, "missing thumbnail variant")
 	}
+	if child, err := s.getDerivedChild(file.ID, "system.compression.low"); err != nil || child == nil {
+		reasons = append(reasons, "missing compressed variant")
+	}
 	if len(reasons) == 0 {
 		return ""
 	}
@@ -1485,20 +1489,13 @@ func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.C
 	if err := s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBuf, "image/webp", ".thumbnail"); err != nil {
 		return err
 	}
-	if img.Width() >= 1024 || img.Height() >= 1024 {
-		compressed, err := vips.NewImageFromFile(path)
-		if err != nil {
+	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)
+	if err != nil {
+		return err
+	}
+	if len(compBuf) > 0 {
+		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
 			return err
-		}
-		defer compressed.Close()
-		compBuf, err := exportSmallerWebp(compressed, origBuf)
-		if err != nil {
-			return err
-		}
-		if len(compBuf) > 0 {
-			if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -1582,56 +1579,72 @@ func (s *FileService) rebuildImageVariantsFromPath(ctx context.Context, file *da
 	if err := s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBuf, "image/webp", "thumbnail.webp"); err != nil {
 		return err
 	}
-	if img.Width() >= 1024 || img.Height() >= 1024 {
-		compressed, err := vips.NewImageFromFile(path)
-		if err != nil {
+	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)
+	if err != nil {
+		return err
+	}
+	if len(compBuf) > 0 {
+		if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
 			return err
-		}
-		defer compressed.Close()
-		compBuf, err := exportSmallerWebp(compressed, origBuf)
-		if err != nil {
-			return err
-		}
-		if len(compBuf) > 0 {
-			if err := s.persistReanalysisVariant(ctx, file, "system.compression.low", compBuf, "image/webp", ".compressed"); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
 }
 
-func exportSmallerWebp(img *vips.ImageRef, original []byte) ([]byte, error) {
+func exportCompressedWebp(img *vips.ImageRef, original []byte, targetBytes int) ([]byte, error) {
 	if img == nil {
 		return nil, nil
 	}
+	maxEdge := img.Width()
+	if img.Height() > maxEdge {
+		maxEdge = img.Height()
+	}
+	if maxEdge <= 0 {
+		return nil, nil
+	}
+
 	steps := []struct {
-		scale   float64
+		maxEdge int
 		quality int
 	}{
-		{0.5, 80},
-		{0.35, 72},
-		{0.25, 65},
+		{maxEdge, 82},
+		{1920, 80},
+		{1600, 76},
+		{1280, 72},
+		{960, 68},
+		{720, 64},
+		{512, 60},
+		{384, 55},
 	}
+	var smallest []byte
 	for _, step := range steps {
 		candidate, err := img.Copy()
 		if err != nil {
 			return nil, err
 		}
-		if err := candidate.Resize(step.scale, vips.KernelLanczos3); err != nil {
-			candidate.Close()
-			return nil, err
+		if step.maxEdge > 0 && maxEdge > step.maxEdge {
+			scale := float64(step.maxEdge) / float64(maxEdge)
+			if err := candidate.Resize(scale, vips.KernelLanczos3); err != nil {
+				candidate.Close()
+				return nil, err
+			}
 		}
 		buf, _, err := candidate.ExportWebp(&vips.WebpExportParams{Quality: step.quality, StripMetadata: true})
 		candidate.Close()
 		if err != nil {
 			return nil, err
 		}
-		if len(buf) < len(original) {
+		if len(smallest) == 0 || len(buf) < len(smallest) {
+			smallest = buf
+		}
+		if len(buf) <= targetBytes {
 			return buf, nil
 		}
 	}
-	return nil, nil
+	if len(original) <= targetBytes {
+		return original, nil
+	}
+	return smallest, nil
 }
 
 func (s *FileService) rebuildVideoThumbnailFromPath(ctx context.Context, file *database.CloudFile, path string) error {
@@ -2242,9 +2255,9 @@ type QuotaSummary struct {
 }
 
 type UsageSummary struct {
-	UsedQuota      int64 `json:"used_quota"`
-	TotalQuota     int64 `json:"total_quota"`
-	TotalFileCount int64 `json:"total_file_count"`
+	UsedQuota       int64 `json:"used_quota"`
+	TotalQuota      int64 `json:"total_quota"`
+	TotalFileCount  int64 `json:"total_file_count"`
 	TotalUsageBytes int64 `json:"total_usage_bytes"`
 }
 

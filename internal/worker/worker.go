@@ -28,6 +28,8 @@ type Worker struct {
 	tempDir string
 }
 
+const compressedImageTargetBytes = 100 * 1024
+
 func New(bus *eventbus.Bus, files *service.FileService, stor storage.Backend, db *database.DB, tempDir string) *Worker {
 	return &Worker{bus: bus, files: files, stor: stor, db: db, tempDir: tempDir}
 }
@@ -112,6 +114,13 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 	if w.files == nil {
 		return fmt.Errorf("file service not configured")
 	}
+	logging.Log.Info().
+		Str("fileId", evt.FileID).
+		Str("taskId", evt.TaskID).
+		Str("contentType", evt.ContentType).
+		Str("processingPath", evt.ProcessingFilePath).
+		Bool("isTempFile", evt.IsTempFile).
+		Msg("processing uploaded file")
 	parent, err := w.files.GetFile(evt.FileID)
 	if err != nil {
 		return err
@@ -147,6 +156,10 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 	if evt.IsTempFile && evt.ProcessingFilePath != "" {
 		_ = os.Remove(path)
 	}
+	logging.Log.Info().
+		Str("fileId", evt.FileID).
+		Str("taskId", evt.TaskID).
+		Msg("uploaded file processing completed")
 	return nil
 }
 
@@ -259,24 +272,17 @@ func (w *Worker) processImageStill(path string, evt eventbus.FileUploadedEvent, 
 		return err
 	}
 
-	if img.Width() >= 1024 || img.Height() >= 1024 {
-		compressed, err := vips.NewImageFromFile(path)
-		if err != nil {
+	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)
+	if err != nil {
+		return err
+	}
+	if len(compBuf) > 0 {
+		compKey := storageKey(parent.ID, ".compressed")
+		if err := w.stor.Put(context.Background(), compKey, bytes.NewReader(compBuf), "image/webp"); err != nil {
 			return err
 		}
-		defer compressed.Close()
-		compBuf, err := exportSmallerWebp(compressed, origBuf)
-		if err != nil {
+		if err := w.upsertChild(parent, evt, "system.compression.low", compKey, "image/webp", compBuf); err != nil {
 			return err
-		}
-		if len(compBuf) > 0 {
-			compKey := storageKey(parent.ID, ".compressed")
-			if err := w.stor.Put(context.Background(), compKey, bytes.NewReader(compBuf), "image/webp"); err != nil {
-				return err
-			}
-			if err := w.upsertChild(parent, evt, "system.compression.low", compKey, "image/webp", compBuf); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -286,37 +292,60 @@ func (w *Worker) processImageStill(path string, evt eventbus.FileUploadedEvent, 
 	return nil
 }
 
-func exportSmallerWebp(img *vips.ImageRef, original []byte) ([]byte, error) {
+func exportCompressedWebp(img *vips.ImageRef, original []byte, targetBytes int) ([]byte, error) {
 	if img == nil {
 		return nil, nil
 	}
+	maxEdge := img.Width()
+	if img.Height() > maxEdge {
+		maxEdge = img.Height()
+	}
+	if maxEdge <= 0 {
+		return nil, nil
+	}
+
 	steps := []struct {
-		scale   float64
+		maxEdge int
 		quality int
 	}{
-		{0.5, 80},
-		{0.35, 72},
-		{0.25, 65},
+		{maxEdge, 82},
+		{1920, 80},
+		{1600, 76},
+		{1280, 72},
+		{960, 68},
+		{720, 64},
+		{512, 60},
+		{384, 55},
 	}
+	var smallest []byte
 	for _, step := range steps {
 		candidate, err := img.Copy()
 		if err != nil {
 			return nil, err
 		}
-		if err := candidate.Resize(step.scale, vips.KernelLanczos3); err != nil {
-			candidate.Close()
-			return nil, err
+		if step.maxEdge > 0 && maxEdge > step.maxEdge {
+			scale := float64(step.maxEdge) / float64(maxEdge)
+			if err := candidate.Resize(scale, vips.KernelLanczos3); err != nil {
+				candidate.Close()
+				return nil, err
+			}
 		}
 		buf, _, err := candidate.ExportWebp(&vips.WebpExportParams{Quality: step.quality, StripMetadata: true})
 		candidate.Close()
 		if err != nil {
 			return nil, err
 		}
-		if len(buf) < len(original) {
+		if len(smallest) == 0 || len(buf) < len(smallest) {
+			smallest = buf
+		}
+		if len(buf) <= targetBytes {
 			return buf, nil
 		}
 	}
-	return nil, nil
+	if len(original) <= targetBytes {
+		return original, nil
+	}
+	return smallest, nil
 }
 
 func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {
@@ -330,6 +359,7 @@ func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, paren
 		Output(thumbPath, ffmpeg.KwArgs{"vframes": 1, "q:v": 2}).
 		OverWriteOutput()
 	if err := stream.Run(); err != nil {
+		logging.Log.Error().Err(err).Str("fileId", parent.ID).Str("path", path).Msg("video thumbnail extraction failed")
 		return err
 	}
 	defer os.Remove(thumbPath)

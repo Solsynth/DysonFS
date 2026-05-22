@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
+	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/worker"
 )
 
@@ -29,7 +30,9 @@ func (d *Bundled) PublishFileUploaded(ctx context.Context, evt eventbus.FileUplo
 		return nil
 	}
 	go func() {
-		_ = d.worker().ProcessUploadedFile(ctx, evt)
+		if err := d.worker().ProcessUploadedFile(ctx, evt); err != nil {
+			logging.Log.Error().Err(err).Str("fileId", evt.FileID).Str("taskId", evt.TaskID).Msg("bundled upload processing failed")
+		}
 	}()
 	return nil
 }
@@ -39,7 +42,9 @@ func (d *Bundled) PublishFileAction(_ context.Context, evt eventbus.FileActionEv
 		return nil
 	}
 	go func() {
-		_ = d.worker().HandleFileAction(evt)
+		if err := d.worker().HandleFileAction(evt); err != nil {
+			logging.Log.Error().Err(err).Str("fileId", evt.FileID).Str("action", evt.Action).Msg("bundled file action failed")
+		}
 	}()
 	return nil
 }

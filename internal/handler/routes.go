@@ -22,9 +22,9 @@ import (
 	"src.solsynth.dev/sosys/go/pkg/auth"
 	gen "src.solsynth.dev/sosys/go/proto"
 
-	"github.com/rs/zerolog"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 )
 
 func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
@@ -116,7 +116,7 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 // @Produce json
 // @Param id path string true "File ID"
 // @Param download query bool false "Download"
-// @Param original query bool false "Prefer original variant"
+// @Param original query bool false "Prefer original source object"
 // @Param thumbnail query bool false "Prefer thumbnail variant"
 // @Success 307
 // @Failure 404 {object} map[string]any
@@ -138,6 +138,10 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 	} else if variant := c.Query("original"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
 		if original, err := resolveDerivedFile(files, file.ID, "system.original"); err == nil {
 			file = original
+		}
+	} else if file.Object != nil && strings.HasPrefix(file.Object.MimeType, "image/") {
+		if compressed, err := resolveDerivedFile(files, file.ID, "system.compression.low"); err == nil {
+			file = compressed
 		}
 	}
 	result, _, ok := auth.GetAuth(c)
@@ -929,7 +933,10 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		Str("objectId", object.ID).
 		Msg("direct upload stored")
 	_ = tasks
-	_ = publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: createdFile.ID, ContentType: object.MimeType, StorageKey: object.ID, ProcessingFilePath: tempPath, IsTempFile: true})
+	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: createdFile.ID, ContentType: object.MimeType, StorageKey: object.ID, ProcessingFilePath: tempPath, IsTempFile: true}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, createdFile)
 }
 
@@ -1071,7 +1078,7 @@ func publishFileUploaded(ctx context.Context, bus *eventbus.Bus, dispatcher disp
 	if bus != nil {
 		return bus.PublishFileUploaded(ctx, evt)
 	}
-	return nil
+	return fmt.Errorf("no upload event sink configured")
 }
 
 func publishFileAction(ctx context.Context, bus *eventbus.Bus, dispatcher dispatch.Dispatcher, evt eventbus.FileActionEvent) {
