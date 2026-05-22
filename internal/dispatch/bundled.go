@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
@@ -27,8 +28,9 @@ func NewBundled(workers []*worker.Worker) *Bundled {
 
 func (d *Bundled) PublishFileUploaded(ctx context.Context, evt eventbus.FileUploadedEvent) error {
 	if len(d.workers) == 0 {
-		return nil
+		return fmt.Errorf("bundled dispatcher has no workers")
 	}
+	logging.Log.Info().Str("fileId", evt.FileID).Str("taskId", evt.TaskID).Int("workers", len(d.workers)).Msg("bundled upload processing dispatched")
 	go func() {
 		if err := d.worker().ProcessUploadedFile(ctx, evt); err != nil {
 			logging.Log.Error().Err(err).Str("fileId", evt.FileID).Str("taskId", evt.TaskID).Msg("bundled upload processing failed")

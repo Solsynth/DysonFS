@@ -17,7 +17,7 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
-func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) *gin.Engine {
+func NewRouter(cfg *config.Config, mode string, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
@@ -74,6 +74,6 @@ func NewRouter(cfg *config.Config, files *service.FileService, tasks *service.Ta
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 
 	handler.RegisterRoutes(r, cfg, files, tasks, quota, bus, dispatcher)
-	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true, "mode": "master"}) })
+	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true, "mode": mode}) })
 	return r
 }

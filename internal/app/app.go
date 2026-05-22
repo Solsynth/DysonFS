@@ -29,22 +29,22 @@ import (
 )
 
 type App struct {
-	cfg        *config.Config
-	mode       string
-	db         *database.DB
-	bus        *eventbus.Bus
-	redis      *redis.Client
-	stor       storage.Backend
-	files      *service.FileService
-	tasks      *service.TaskService
-	quota      *service.QuotaService
-	worker     *worker.Worker
-	dispatcher dispatch.Dispatcher
-	httpSrv    *http.Server
-	grpcSrv    *grpc.Server
+	cfg         *config.Config
+	mode        string
+	db          *database.DB
+	bus         *eventbus.Bus
+	redis       *redis.Client
+	stor        storage.Backend
+	files       *service.FileService
+	tasks       *service.TaskService
+	quota       *service.QuotaService
+	worker      *worker.Worker
+	dispatcher  dispatch.Dispatcher
+	httpSrv     *http.Server
+	grpcSrv     *grpc.Server
 	profileConn *grpc.ClientConn
-	natsConn   *nats.Conn
-	logger     zerolog.Logger
+	natsConn    *nats.Conn
+	logger      zerolog.Logger
 }
 
 func (a *App) Files() *service.FileService { return a.files }
@@ -163,7 +163,7 @@ func (a *App) Stop(ctx context.Context) error {
 }
 
 func (a *App) startMaster(ctx context.Context) error {
-	r := server.NewRouter(a.cfg, a.files, a.tasks, a.quota, a.bus, nil)
+	r := server.NewRouter(a.cfg, a.mode, a.files, a.tasks, a.quota, a.bus, nil)
 	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
 
 	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
@@ -199,7 +199,7 @@ func (a *App) startWorker(context.Context) error {
 
 func (a *App) startBundled(ctx context.Context) error {
 	go func() { _ = a.worker.Start(ctx) }()
-	r := server.NewRouter(a.cfg, a.files, a.tasks, a.quota, nil, a.dispatcher)
+	r := server.NewRouter(a.cfg, a.mode, a.files, a.tasks, a.quota, nil, a.dispatcher)
 	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
 	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
 	if err != nil {
