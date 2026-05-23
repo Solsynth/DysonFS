@@ -132,7 +132,7 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		return
 	}
 	if variant := c.Query("thumbnail"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
-		if thumb, err := resolveDerivedFile(files, file.ID, "system.thumbnail"); err == nil {
+		if thumb, err := resolveOpenVariant(files, file, "system.thumbnail"); err == nil {
 			file = thumb
 		} else {
 			c.JSON(http.StatusNotFound, gin.H{"error": "thumbnail not available"})
@@ -145,7 +145,7 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 			}
 		}
 	} else if file.Object != nil && strings.HasPrefix(file.Object.MimeType, "image/") {
-		if compressed, err := resolveDerivedFile(files, file.ID, "system.compression.low"); err == nil {
+		if compressed, err := resolveOpenVariant(files, file, "system.compression.low"); err == nil {
 			file = compressed
 		}
 	}
@@ -187,6 +187,43 @@ func resolveDerivedFile(files *service.FileService, parentID, kind string) (*dat
 		}
 	}
 	return nil, fmt.Errorf("derived file %s not found", kind)
+}
+
+func resolveOpenVariant(files *service.FileService, file *database.CloudFile, kind string) (*database.CloudFile, error) {
+	if derived, err := resolveDerivedFile(files, file.ID, kind); err == nil {
+		return derived, nil
+	}
+	if legacy := legacyDerivedFile(file, kind); legacy != nil {
+		return legacy, nil
+	}
+	return nil, fmt.Errorf("derived file %s not found", kind)
+}
+
+func legacyDerivedFile(file *database.CloudFile, kind string) *database.CloudFile {
+	if file == nil || file.Object == nil {
+		return nil
+	}
+
+	var suffix string
+	switch kind {
+	case "system.thumbnail":
+		if !file.Object.HasThumbnail {
+			return nil
+		}
+		suffix = ".thumbnail"
+	case "system.compression.low":
+		if !file.Object.HasCompression {
+			return nil
+		}
+		suffix = ".compressed"
+	default:
+		return nil
+	}
+
+	legacy := *file
+	storageKey := file.ID + suffix
+	legacy.StorageKey = &storageKey
+	return &legacy
 }
 
 func listChildren(c *gin.Context, files *service.FileService) {
