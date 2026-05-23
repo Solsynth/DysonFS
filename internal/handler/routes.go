@@ -139,8 +139,10 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 			return
 		}
 	} else if variant := c.Query("original"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
-		if original, err := resolveDerivedFile(files, file.ID, "system.original"); err == nil {
-			file = original
+		if file.ParentID != nil {
+			if parent, err := files.GetFile(*file.ParentID); err == nil {
+				file = parent
+			}
 		}
 	} else if file.Object != nil && strings.HasPrefix(file.Object.MimeType, "image/") {
 		if compressed, err := resolveDerivedFile(files, file.ID, "system.compression.low"); err == nil {
