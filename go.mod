@@ -6,6 +6,7 @@ require (
 	github.com/bbrks/go-blurhash v1.2.0
 	github.com/davidbyttow/govips/v2 v2.17.0
 	github.com/gabriel-vasile/mimetype v1.4.9
+	github.com/getsentry/sentry-go v0.46.2
 	github.com/gin-gonic/gin v1.10.1
 	github.com/google/uuid v1.6.0
 	github.com/minio/minio-go/v7 v7.0.86

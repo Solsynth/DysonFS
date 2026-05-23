@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/viper"
@@ -23,6 +24,14 @@ type Config struct {
 	Files    FileConfig     `mapstructure:"files"`
 	Pools    []PoolConfig   `mapstructure:"pools"`
 	S3       S3Config       `mapstructure:"s3"`
+	Sentry   SentryConfig   `mapstructure:"sentry"`
+}
+
+type SentryConfig struct {
+	DSN              string  `mapstructure:"dsn"`
+	TracesSampleRate float64 `mapstructure:"tracesSampleRate"`
+	Environment      string  `mapstructure:"environment"`
+	Release          string  `mapstructure:"release"`
 }
 
 type AppConfig struct {
@@ -177,6 +186,10 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("files.gatewayUrl", "http://localhost:8080")
 	viper.SetDefault("files.accessSecret", "dyson-network-default-access-token-secret-change-in-production")
 	viper.SetDefault("s3.secure", true)
+	viper.SetDefault("sentry.dsn", "")
+	viper.SetDefault("sentry.tracesSampleRate", 0.01)
+	viper.SetDefault("sentry.environment", "")
+	viper.SetDefault("sentry.release", "")
 
 	if configPath != "" {
 		if err := viper.ReadInConfig(); err != nil {
@@ -196,6 +209,9 @@ func Load(configPath string) (*Config, error) {
 
 func applyEnvAliases() {
 	_ = time.Second
+	if v := os.Getenv("SENTRY_DSN"); v != "" {
+		viper.Set("sentry.dsn", v)
+	}
 	if v := viper.GetString("CONFIG_MODE"); v != "" {
 		switch v {
 		case "master":

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"src.solsynth.dev/sosys/filesystem/internal/app"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
@@ -17,6 +18,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/migratelegacy"
 	"src.solsynth.dev/sosys/filesystem/internal/repairlegacy"
+	sentryutil "src.solsynth.dev/sosys/filesystem/internal/sentry"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 )
 
@@ -49,6 +51,12 @@ func main() {
 	if err != nil {
 		logging.Log.Fatal().Err(err).Msg("failed to load config")
 	}
+
+	if err := sentryutil.Init(cfg.Sentry); err != nil {
+		logging.Log.Warn().Err(err).Msg("sentry init failed")
+	}
+	defer sentryutil.Flush(2 * time.Second)
+	defer sentryutil.Recover()
 
 	mode := positionalMode
 	if mode == "" {
