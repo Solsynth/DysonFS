@@ -132,7 +132,7 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		return
 	}
 	if variant := c.Query("thumbnail"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
-		if thumb, err := resolveOpenVariant(files, file, "system.thumbnail"); err == nil {
+		if thumb, err := resolveOpenVariant(c.Request.Context(), files, file, "system.thumbnail"); err == nil {
 			file = thumb
 		} else {
 			c.JSON(http.StatusNotFound, gin.H{"error": "thumbnail not available"})
@@ -145,7 +145,7 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 			}
 		}
 	} else if file.Object != nil && strings.HasPrefix(file.Object.MimeType, "image/") {
-		if compressed, err := resolveOpenVariant(files, file, "system.compression.low"); err == nil {
+		if compressed, err := resolveOpenVariant(c.Request.Context(), files, file, "system.compression.low"); err == nil {
 			file = compressed
 		}
 	}
@@ -189,14 +189,85 @@ func resolveDerivedFile(files *service.FileService, parentID, kind string) (*dat
 	return nil, fmt.Errorf("derived file %s not found", kind)
 }
 
-func resolveOpenVariant(files *service.FileService, file *database.CloudFile, kind string) (*database.CloudFile, error) {
+func resolveOpenVariant(ctx context.Context, files *service.FileService, file *database.CloudFile, kind string) (*database.CloudFile, error) {
 	if derived, err := resolveDerivedFile(files, file.ID, kind); err == nil {
-		return derived, nil
+		normalizeDerivedStorageKey(file.ID, derived, kind)
+		ok, err := derivedVariantAvailable(ctx, files, derived)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return derived, nil
+		}
 	}
 	if legacy := legacyDerivedFile(file, kind); legacy != nil {
+		ok, err := derivedVariantAvailable(ctx, files, legacy)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 		return legacy, nil
+		}
 	}
 	return nil, fmt.Errorf("derived file %s not found", kind)
+}
+
+func derivedVariantAvailable(ctx context.Context, files *service.FileService, file *database.CloudFile) (bool, error) {
+	if files == nil || file == nil || file.StorageKey == nil || strings.TrimSpace(*file.StorageKey) == "" {
+		return false, nil
+	}
+	backend, err := files.BackendForFile(file)
+	if err != nil {
+		return false, err
+	}
+	if _, err := backend.Stat(ctx, *file.StorageKey); err != nil {
+		if isMissingStorageError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func isMissingStorageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "not found") || strings.Contains(text, "no such file") || strings.Contains(text, "no such key") || strings.Contains(text, "object does not exist") {
+		return true
+	}
+	return errors.Is(err, os.ErrNotExist)
+}
+
+func normalizeDerivedStorageKey(parentID string, file *database.CloudFile, kind string) {
+	if file == nil {
+		return
+	}
+
+	var suffix string
+	switch kind {
+	case "system.thumbnail":
+		suffix = ".thumbnail"
+	case "system.compression.low":
+		suffix = ".compressed"
+	default:
+		return
+	}
+
+	legacyKey := parentID + suffix
+	if file.ObjectID != nil {
+		wrongKey := *file.ObjectID + suffix
+		if file.StorageKey != nil && *file.StorageKey == wrongKey {
+			file.StorageKey = &legacyKey
+		}
+		if file.Object != nil && file.Object.StorageKey != nil && *file.Object.StorageKey == wrongKey {
+			file.Object.StorageKey = &legacyKey
+		}
+	}
+	if file.StorageKey == nil && file.Object != nil && file.Object.StorageKey != nil {
+		file.StorageKey = file.Object.StorageKey
+	}
 }
 
 func legacyDerivedFile(file *database.CloudFile, kind string) *database.CloudFile {
