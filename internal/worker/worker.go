@@ -247,13 +247,6 @@ func (w *Worker) processImageStill(path string, evt eventbus.FileUploadedEvent, 
 	if err != nil {
 		return err
 	}
-	origKey := storageKey(parent.ID, "original.webp")
-	if err := w.stor.Put(context.Background(), origKey, bytes.NewReader(origBuf), "image/webp"); err != nil {
-		return err
-	}
-	if err := w.upsertChild(parent, evt, "system.original", origKey, "image/webp", origBuf); err != nil {
-		return err
-	}
 
 	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)
 	if err != nil {

@@ -1723,9 +1723,6 @@ func (s *FileService) imageVariantRepairReason(file *database.CloudFile) string 
 		return ""
 	}
 	var reasons []string
-	if child, err := s.getDerivedChild(file.ID, "system.original"); err != nil || child == nil {
-		reasons = append(reasons, "missing original variant")
-	}
 	if child, err := s.getDerivedChild(file.ID, "system.compression.low"); err != nil || child == nil {
 		reasons = append(reasons, "missing compressed variant")
 	}
@@ -1773,9 +1770,6 @@ func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.C
 	}
 	origBuf, _, err := img.ExportWebp(&vips.WebpExportParams{Lossless: true, StripMetadata: true})
 	if err != nil {
-		return err
-	}
-	if err := s.persistReanalysisVariant(ctx, file, "system.original", origBuf, "image/webp", "original.webp"); err != nil {
 		return err
 	}
 	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)
@@ -1851,9 +1845,6 @@ func (s *FileService) rebuildImageVariantsFromPath(ctx context.Context, file *da
 	}
 	origBuf, _, err := img.ExportWebp(&vips.WebpExportParams{Lossless: true, StripMetadata: true})
 	if err != nil {
-		return err
-	}
-	if err := s.persistReanalysisVariant(ctx, file, "system.original", origBuf, "image/webp", "original.webp"); err != nil {
 		return err
 	}
 	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)
