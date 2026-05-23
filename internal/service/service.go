@@ -924,11 +924,18 @@ func (s *FileService) MarkDerived(parentID string, kind string) error {
 }
 
 func (s *FileService) DeleteFile(id string) error {
+	var file database.CloudFile
+	if err := s.db.Select("id", "parent_id", "application_type").First(&file, "id = ?", id).Error; err != nil {
+		return err
+	}
 	affectedIDs, err := s.loadDescendantIDs([]string{id})
 	if err != nil {
 		return err
 	}
 	if err := s.db.Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
+		return err
+	}
+	if err := s.touchDerivedParentFlags(&file); err != nil {
 		return err
 	}
 	s.invalidatePermissionCaches(context.Background(), affectedIDs)
@@ -981,6 +988,9 @@ func (s *FileService) PurgeFile(id string) error {
 		if err := tx.Unscoped().Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
 			return err
 		}
+		if err := s.touchDerivedParentFlagsTx(tx, &file); err != nil {
+			return err
+		}
 		if err := tx.Unscoped().Delete(&database.FilePermission{}, "file_id = ?", id).Error; err != nil {
 			return err
 		}
@@ -1008,6 +1018,37 @@ func (s *FileService) PurgeBatch(ids []string) (int64, error) {
 		count++
 	}
 	return count, nil
+}
+
+func (s *FileService) touchDerivedParentFlags(file *database.CloudFile) error {
+	if s == nil || s.db == nil || s.db.DB == nil {
+		return nil
+	}
+	return s.touchDerivedParentFlagsTx(s.db.DB, file)
+}
+
+func (s *FileService) touchDerivedParentFlagsTx(tx *gorm.DB, file *database.CloudFile) error {
+	if tx == nil || file == nil || file.ParentID == nil || file.ApplicationType == nil {
+		return nil
+	}
+	kind := strings.TrimSpace(*file.ApplicationType)
+	if kind != "system.thumbnail" && !strings.HasPrefix(kind, "system.compression") {
+		return nil
+	}
+	parentID := strings.TrimSpace(*file.ParentID)
+	if parentID == "" {
+		return nil
+	}
+	var thumb, comp int64
+	if err := tx.Model(&database.CloudFile{}).Where("parent_id = ? and application_type = ?", parentID, "system.thumbnail").Count(&thumb).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&database.CloudFile{}).Where("parent_id = ? and application_type LIKE ?", parentID, "system.compression%").Count(&comp).Error; err != nil {
+		return err
+	}
+	return tx.Model(&database.FileObject{}).
+		Where("id = (SELECT object_id FROM cloud_files WHERE id = ?)", parentID).
+		Updates(map[string]any{"has_thumbnail": thumb > 0, "has_compression": comp > 0}).Error
 }
 
 func (s *FileService) MoveBatch(ids []string, parentID *string) (int64, error) {
@@ -1685,9 +1726,6 @@ func (s *FileService) imageVariantRepairReason(file *database.CloudFile) string 
 	if child, err := s.getDerivedChild(file.ID, "system.original"); err != nil || child == nil {
 		reasons = append(reasons, "missing original variant")
 	}
-	if child, err := s.getDerivedChild(file.ID, "system.thumbnail"); err != nil || child == nil {
-		reasons = append(reasons, "missing thumbnail variant")
-	}
 	if child, err := s.getDerivedChild(file.ID, "system.compression.low"); err != nil || child == nil {
 		reasons = append(reasons, "missing compressed variant")
 	}
@@ -1738,18 +1776,6 @@ func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.C
 		return err
 	}
 	if err := s.persistReanalysisVariant(ctx, file, "system.original", origBuf, "image/webp", "original.webp"); err != nil {
-		return err
-	}
-	thumb, err := vips.NewThumbnailFromFile(path, 512, 512, vips.InterestingAttention)
-	if err != nil {
-		return err
-	}
-	defer thumb.Close()
-	thumbBuf, _, err := thumb.ExportWebp(&vips.WebpExportParams{Quality: 82, StripMetadata: true})
-	if err != nil {
-		return err
-	}
-	if err := s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBuf, "image/webp", ".thumbnail"); err != nil {
 		return err
 	}
 	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)
@@ -1828,18 +1854,6 @@ func (s *FileService) rebuildImageVariantsFromPath(ctx context.Context, file *da
 		return err
 	}
 	if err := s.persistReanalysisVariant(ctx, file, "system.original", origBuf, "image/webp", "original.webp"); err != nil {
-		return err
-	}
-	thumb, err := vips.NewThumbnailFromFile(path, 512, 512, vips.InterestingAttention)
-	if err != nil {
-		return err
-	}
-	defer thumb.Close()
-	thumbBuf, _, err := thumb.ExportWebp(&vips.WebpExportParams{Quality: 82, StripMetadata: true})
-	if err != nil {
-		return err
-	}
-	if err := s.persistReanalysisVariant(ctx, file, "system.thumbnail", thumbBuf, "image/webp", "thumbnail.webp"); err != nil {
 		return err
 	}
 	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)

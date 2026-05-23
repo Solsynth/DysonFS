@@ -255,23 +255,6 @@ func (w *Worker) processImageStill(path string, evt eventbus.FileUploadedEvent, 
 		return err
 	}
 
-	thumb, err := vips.NewThumbnailFromFile(path, 512, 512, vips.InterestingAttention)
-	if err != nil {
-		return err
-	}
-	defer thumb.Close()
-	thumbBuf, _, err := thumb.ExportWebp(&vips.WebpExportParams{Quality: 82, StripMetadata: true})
-	if err != nil {
-		return err
-	}
-	thumbKey := storageKey(parent.ID, ".thumbnail")
-	if err := w.stor.Put(context.Background(), thumbKey, bytes.NewReader(thumbBuf), "image/webp"); err != nil {
-		return err
-	}
-	if err := w.upsertChild(parent, evt, "system.thumbnail", thumbKey, "image/webp", thumbBuf); err != nil {
-		return err
-	}
-
 	compBuf, err := exportCompressedWebp(img, origBuf, compressedImageTargetBytes)
 	if err != nil {
 		return err

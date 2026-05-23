@@ -177,6 +177,67 @@ func TestCreateDerivedFileCreatesReplicaUsingParentPool(t *testing.T) {
 	}
 }
 
+func TestDeleteDerivedFileUpdatesParentCompatibilityFlags(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
+	svc.defaultPoolID = poolID
+
+	parentObjectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: parentObjectID, Size: 12, MimeType: "image/webp", Hash: "parent-hash", Meta: datatypes.JSON([]byte(`{}`)), HasThumbnail: true, HasCompression: true}).Error; err != nil {
+		t.Fatalf("create parent object: %v", err)
+	}
+	parentID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: parentID, Name: "parent", AccountID: uuid.New(), PoolID: ptr(poolID), ObjectID: &parentObjectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create parent file: %v", err)
+	}
+
+	thumbObjectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: thumbObjectID, Size: 8, MimeType: "image/webp", Hash: "thumb-hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create thumbnail object: %v", err)
+	}
+	thumbKey := parentID + ".thumbnail"
+	thumbFile, err := svc.CreateDerivedFile(uuid.New(), parentID, "parent", thumbObjectID, "system.thumbnail", &thumbKey)
+	if err != nil {
+		t.Fatalf("create thumbnail file: %v", err)
+	}
+
+	compObjectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: compObjectID, Size: 8, MimeType: "image/webp", Hash: "comp-hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create compression object: %v", err)
+	}
+	compKey := parentID + ".compressed"
+	compFile, err := svc.CreateDerivedFile(uuid.New(), parentID, "parent", compObjectID, "system.compression.low", &compKey)
+	if err != nil {
+		t.Fatalf("create compression file: %v", err)
+	}
+
+	if err := svc.DeleteFile(thumbFile.ID); err != nil {
+		t.Fatalf("DeleteFile(thumbnail) error = %v", err)
+	}
+	var parentObject database.FileObject
+	if err := db.First(&parentObject, "id = ?", parentObjectID).Error; err != nil {
+		t.Fatalf("reload parent object after thumbnail delete: %v", err)
+	}
+	if parentObject.HasThumbnail {
+		t.Fatal("HasThumbnail = true, want false after deleting last thumbnail child")
+	}
+	if !parentObject.HasCompression {
+		t.Fatal("HasCompression = false, want true while compression child remains")
+	}
+
+	if err := svc.DeleteFile(compFile.ID); err != nil {
+		t.Fatalf("DeleteFile(compression) error = %v", err)
+	}
+	if err := db.First(&parentObject, "id = ?", parentObjectID).Error; err != nil {
+		t.Fatalf("reload parent object after compression delete: %v", err)
+	}
+	if parentObject.HasCompression {
+		t.Fatal("HasCompression = true, want false after deleting last compression child")
+	}
+}
+
 func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
 	tmp := t.TempDir()
