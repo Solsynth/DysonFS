@@ -1122,6 +1122,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		ExpiredAt       *string `json:"expired_at"`
 		ChunkSize       int64   `json:"chunk_size"`
 		ParentID        *string `json:"parent_id"`
+		OverwriteID     *string `json:"overwrite_id"`
 		Usage           *string `json:"usage"`
 		ApplicationType *string `json:"application_type"`
 		ContentType     string  `json:"content_type"`
@@ -1133,6 +1134,35 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	if req.FileSize <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file_size must be greater than zero"})
 		return
+	}
+	if req.OverwriteID != nil {
+		target, err := files.GetFile(strings.TrimSpace(*req.OverwriteID))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		if target.IsFolder {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot overwrite folder"})
+			return
+		}
+		if !result.Account.GetIsSuperuser() && target.AccountID.String() != result.Account.GetId() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		trimmedID := strings.TrimSpace(*req.OverwriteID)
+		req.OverwriteID = &trimmedID
+		req.FileName = target.Name
+		req.ParentID = target.ParentID
+		req.Description = target.Description
+		if target.ExpiredAt != nil {
+			expiredAtValue := target.ExpiredAt.Format(time.RFC3339)
+			req.ExpiredAt = &expiredAtValue
+		} else {
+			req.ExpiredAt = nil
+		}
+		req.Usage = target.Usage
+		req.ApplicationType = target.ApplicationType
+		req.Index = target.Indexed
 	}
 	if strings.TrimSpace(req.FileName) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file_name is required"})
@@ -1186,7 +1216,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		Int("chunks", chunks).
 		Str("contentType", req.ContentType).
 		Msg("creating upload task")
-	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, ApplicationType: req.ApplicationType, Indexed: req.Index}
+	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, OverwriteID: req.OverwriteID, ApplicationType: req.ApplicationType, Indexed: req.Index}
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, resolvedPoolID, name, req.ContentType, req.ChunkSize, chunks)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1215,6 +1245,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	description := optionalStringPtr(c.PostForm("description"))
 	hash := optionalStringPtr(c.PostForm("hash"))
 	parentID := optionalStringPtr(c.PostForm("parent_id"))
+	overwriteID := optionalStringPtr(c.PostForm("overwrite_id"))
 	usage := optionalStringPtr(c.PostForm("usage"))
 	appType := optionalStringPtr(c.PostForm("application_type"))
 	indexed := optionalBool(c.PostForm("index"))
@@ -1223,6 +1254,30 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	var overwriteTarget *database.CloudFile
+	if overwriteID != nil {
+		overwriteTarget, err = files.GetFile(strings.TrimSpace(*overwriteID))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		if overwriteTarget.IsFolder {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot overwrite folder"})
+			return
+		}
+		if !result.Account.GetIsSuperuser() && overwriteTarget.AccountID.String() != result.Account.GetId() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		fileHeader.Filename = overwriteTarget.Name
+		description = overwriteTarget.Description
+		parentID = overwriteTarget.ParentID
+		usage = overwriteTarget.Usage
+		appType = overwriteTarget.ApplicationType
+		indexed = overwriteTarget.Indexed
+		expiredAt = overwriteTarget.ExpiredAt
+	}
+
 	account, err := quota.EnrichedAccount(c.Request.Context(), result.Account)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1277,7 +1332,12 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	storageKey := &object.ID
-	createdFile, err := files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
+	var createdFile *database.CloudFile
+	if overwriteTarget != nil {
+		createdFile, err = files.OverwriteFile(overwriteTarget.ID, object.ID, storageKey)
+	} else {
+		createdFile, err = files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1404,7 +1464,12 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	_ = ctx
 	storageKey := &object.ID
-	created, err := files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
+	var created *database.CloudFile
+	if task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
+		created, err = files.OverwriteFile(strings.TrimSpace(*task.OverwriteID), object.ID, storageKey)
+	} else {
+		created, err = files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

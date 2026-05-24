@@ -78,6 +78,7 @@ Both direct upload and chunked upload creation accept the same metadata payload:
   "expired_at": "2026-05-17T12:34:56Z",
   "chunk_size": 5242880,
   "parent_id": "...",
+  "overwrite_id": "...",
   "usage": "...",
   "application_type": "..."
 }
@@ -85,10 +86,34 @@ Both direct upload and chunked upload creation accept the same metadata payload:
 
 - `direct` upload uses multipart form data with the same field names, plus `file`
 - `parent_id` is optional and can still be resolved server-side when omitted
+- `overwrite_id` is optional; when set, the upload replaces the content of an existing file instead of creating a new `cloud_files` row
+- overwrite keeps the existing file record and swaps in a new `file_object` after analysis completes
+- overwrite deletes stale derived children so thumbnails/compressed variants can be regenerated from the new source
 - `hash` is stored on the created file/task when provided
 - upload quota is checked before task creation or direct upload processing
 - quota refusal returns `403 Forbidden`
 - if `pool_id` is omitted, the quota check uses the resolved default pool
+
+Direct overwrite example:
+
+```bash
+curl -X POST "http://localhost:8080/api/files/upload/direct" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "file=@./edited.txt" \
+  -F "overwrite_id=FILE_ID"
+```
+
+Chunked overwrite task creation example:
+
+```json
+{
+  "overwrite_id": "FILE_ID",
+  "file_name": "ignored-on-overwrite",
+  "file_size": 12345,
+  "content_type": "text/plain",
+  "chunk_size": 5242880
+}
+```
 
 ### Quota And Billing
 
@@ -197,6 +222,19 @@ Request body:
 - `subject_type` can be `public`, `private`, `account`, or `scope`
 - `permission` is typically `read`, `write`, or `manage`
 - Send the full desired list; omitted rows are removed
+
+### File Update Operations
+
+Rename a file with `PATCH /api/files/:id`:
+
+```json
+{
+  "name": "renamed-file.txt"
+}
+```
+
+- rename updates only the file name
+- rename currently requires the file owner or a superuser
 
 ### Batch File Operations
 

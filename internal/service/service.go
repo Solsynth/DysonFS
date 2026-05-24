@@ -2190,6 +2190,78 @@ func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, descr
 	return file, nil
 }
 
+func (s *FileService) OverwriteFile(fileID string, objectID string, storageKey *string) (*database.CloudFile, error) {
+	if s == nil || s.db == nil || s.db.DB == nil {
+		return nil, fmt.Errorf("database not configured")
+	}
+	fileID = strings.TrimSpace(fileID)
+	objectID = strings.TrimSpace(objectID)
+	if fileID == "" {
+		return nil, fmt.Errorf("file id is required")
+	}
+	if objectID == "" {
+		return nil, fmt.Errorf("object id is required")
+	}
+	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
+		var file database.CloudFile
+		if err := tx.Preload("Object").First(&file, "id = ? AND deleted_at IS NULL", fileID).Error; err != nil {
+			return err
+		}
+		if file.IsFolder {
+			return fmt.Errorf("cannot overwrite folder")
+		}
+
+		var newObject database.FileObject
+		if err := tx.First(&newObject, "id = ?", objectID).Error; err != nil {
+			return err
+		}
+
+		resolvedStorageKey := firstNonEmptyPtr(storageKey, newObject.StorageKey)
+		updates := map[string]any{
+			"object_id":   objectID,
+			"storage_key": nil,
+		}
+		if resolvedStorageKey != nil {
+			updates["storage_key"] = *resolvedStorageKey
+		}
+		if err := tx.Model(&database.CloudFile{}).Where("id = ?", file.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := s.createPrimaryReplica(tx, objectID, s.resolvedPoolID(firstNonEmptyPtr(file.PoolID, file.StorageID))); err != nil {
+			return err
+		}
+
+		var derived []database.CloudFile
+		if err := tx.Preload("Object").Where("parent_id = ? AND deleted_at IS NULL", file.ID).Find(&derived).Error; err != nil {
+			return err
+		}
+		for i := range derived {
+			child := derived[i]
+			if err := tx.Delete(&database.CloudFile{}, "id = ?", child.ID).Error; err != nil {
+				return err
+			}
+			if err := s.touchDerivedParentFlagsTx(tx, &child); err != nil {
+				return err
+			}
+			if child.ObjectID != nil && strings.TrimSpace(*child.ObjectID) != "" {
+				if err := s.purgeObjectIfDereferenced(tx, &child, strings.TrimSpace(*child.ObjectID)); err != nil {
+					return err
+				}
+			}
+		}
+
+		if file.ObjectID != nil && strings.TrimSpace(*file.ObjectID) != "" && strings.TrimSpace(*file.ObjectID) != objectID {
+			if err := s.purgeObjectIfDereferenced(tx, &file, strings.TrimSpace(*file.ObjectID)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return s.GetFile(fileID)
+}
+
 func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, name string, objectID string, appType string, storageKey *string) (*database.CloudFile, error) {
 	pt := parentID
 	typeName := appType
@@ -2393,15 +2465,16 @@ func (s *TaskService) DB() *database.DB { return s.db }
 
 func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload *database.PersistentTask, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
 	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
-	if payload != nil {
-		task.Description = payload.Description
-		task.Hash = payload.Hash
-		task.ExpiredAt = payload.ExpiredAt
-		task.Usage = payload.Usage
-		task.ApplicationType = payload.ApplicationType
-		task.ParentID = payload.ParentID
-		task.Indexed = payload.Indexed
-	}
+		if payload != nil {
+			task.Description = payload.Description
+			task.Hash = payload.Hash
+			task.ExpiredAt = payload.ExpiredAt
+			task.Usage = payload.Usage
+			task.ApplicationType = payload.ApplicationType
+			task.ParentID = payload.ParentID
+			task.OverwriteID = payload.OverwriteID
+			task.Indexed = payload.Indexed
+		}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err
 	}

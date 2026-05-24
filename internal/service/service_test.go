@@ -445,6 +445,153 @@ func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
 	}
 }
 
+func TestOverwriteFileSwapsObjectAndDeletesDereferencedSource(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = poolID
+
+	accountID := uuid.New()
+	oldObjectID := database.NewID()
+	oldStorageKey := oldObjectID
+	newObjectID := database.NewID()
+	newStorageKey := newObjectID
+	fileID := database.NewID()
+	derivedObjectID := database.NewID()
+	derivedStorageKey := fileID + ".compressed"
+	derivedType := "system.compression.low"
+
+	for _, object := range []database.FileObject{
+		{ID: oldObjectID, Size: 5, MimeType: "text/plain", Hash: "old-hash", StorageKey: &oldStorageKey, Meta: datatypes.JSON([]byte(`{}`))},
+		{ID: newObjectID, Size: 7, MimeType: "text/plain", Hash: "new-hash", StorageKey: &newStorageKey, Meta: datatypes.JSON([]byte(`{}`))},
+		{ID: derivedObjectID, Size: 3, MimeType: "image/webp", Hash: "derived-hash", StorageKey: &derivedStorageKey, Meta: datatypes.JSON([]byte(`{}`))},
+	} {
+		if err := db.Create(&object).Error; err != nil {
+			t.Fatalf("create object %s: %v", object.ID, err)
+		}
+	}
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &oldObjectID, StorageKey: &oldStorageKey, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
+		t.Fatalf("create derived file: %v", err)
+	}
+	for _, replica := range []database.FileReplica{
+		{ID: database.NewID(), ObjectID: oldObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
+		{ID: database.NewID(), ObjectID: derivedObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
+	} {
+		if err := db.Create(&replica).Error; err != nil {
+			t.Fatalf("create replica %s: %v", replica.ObjectID, err)
+		}
+	}
+	if err := stor.Put(context.Background(), oldStorageKey, strings.NewReader("hello"), "text/plain"); err != nil {
+		t.Fatalf("put old object: %v", err)
+	}
+	if err := stor.Put(context.Background(), derivedStorageKey, strings.NewReader("cmp"), "image/webp"); err != nil {
+		t.Fatalf("put derived object: %v", err)
+	}
+
+	updated, err := svc.OverwriteFile(fileID, newObjectID, &newStorageKey)
+	if err != nil {
+		t.Fatalf("OverwriteFile() error = %v", err)
+	}
+	if updated.ObjectID == nil || *updated.ObjectID != newObjectID {
+		t.Fatalf("updated.ObjectID = %v, want %q", updated.ObjectID, newObjectID)
+	}
+	if updated.StorageKey == nil || *updated.StorageKey != newStorageKey {
+		t.Fatalf("updated.StorageKey = %v, want %q", updated.StorageKey, newStorageKey)
+	}
+	if err := db.Unscoped().First(&database.FileObject{}, "id = ?", oldObjectID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("old object still exists, err = %v", err)
+	}
+	if err := db.Unscoped().First(&database.FileObject{}, "id = ?", derivedObjectID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("derived object still exists, err = %v", err)
+	}
+	var derivedCount int64
+	if err := db.Model(&database.CloudFile{}).Where("parent_id = ? AND deleted_at IS NULL", fileID).Count(&derivedCount).Error; err != nil {
+		t.Fatalf("count derived files: %v", err)
+	}
+	if derivedCount != 0 {
+		t.Fatalf("derived count = %d, want 0", derivedCount)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, oldStorageKey)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old remote object still exists, err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, derivedStorageKey)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("derived remote object still exists, err = %v", err)
+	}
+	if err := db.First(&database.FileObject{}, "id = ?", newObjectID).Error; err != nil {
+		t.Fatalf("new object missing: %v", err)
+	}
+	var newReplicaCount int64
+	if err := db.Model(&database.FileReplica{}).Where("object_id = ? AND deleted_at IS NULL", newObjectID).Count(&newReplicaCount).Error; err != nil {
+		t.Fatalf("count new replicas: %v", err)
+	}
+	if newReplicaCount != 1 {
+		t.Fatalf("new replica count = %d, want 1", newReplicaCount)
+	}
+}
+
+func TestOverwriteFileKeepsSharedPreviousObject(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = poolID
+
+	accountID := uuid.New()
+	sharedObjectID := database.NewID()
+	sharedStorageKey := sharedObjectID
+	newObjectID := database.NewID()
+	newStorageKey := newObjectID
+	firstFileID := database.NewID()
+	secondFileID := database.NewID()
+
+	for _, object := range []database.FileObject{
+		{ID: sharedObjectID, Size: 5, MimeType: "text/plain", Hash: "shared-hash", StorageKey: &sharedStorageKey, Meta: datatypes.JSON([]byte(`{}`))},
+		{ID: newObjectID, Size: 7, MimeType: "text/plain", Hash: "new-hash", StorageKey: &newStorageKey, Meta: datatypes.JSON([]byte(`{}`))},
+	} {
+		if err := db.Create(&object).Error; err != nil {
+			t.Fatalf("create object %s: %v", object.ID, err)
+		}
+	}
+	for _, fileID := range []string{firstFileID, secondFileID} {
+		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &sharedObjectID, StorageKey: &sharedStorageKey, Indexed: true}).Error; err != nil {
+			t.Fatalf("create file %s: %v", fileID, err)
+		}
+	}
+	if err := db.Create(&database.FileReplica{ID: database.NewID(), ObjectID: sharedObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true}).Error; err != nil {
+		t.Fatalf("create shared replica: %v", err)
+	}
+	if err := stor.Put(context.Background(), sharedStorageKey, strings.NewReader("hello"), "text/plain"); err != nil {
+		t.Fatalf("put shared object: %v", err)
+	}
+
+	updated, err := svc.OverwriteFile(firstFileID, newObjectID, &newStorageKey)
+	if err != nil {
+		t.Fatalf("OverwriteFile() error = %v", err)
+	}
+	if updated.ObjectID == nil || *updated.ObjectID != newObjectID {
+		t.Fatalf("updated.ObjectID = %v, want %q", updated.ObjectID, newObjectID)
+	}
+	if err := db.First(&database.FileObject{}, "id = ?", sharedObjectID).Error; err != nil {
+		t.Fatalf("shared object missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, sharedStorageKey)); err != nil {
+		t.Fatalf("shared remote object missing: %v", err)
+	}
+	var reloaded database.CloudFile
+	if err := db.First(&reloaded, "id = ?", secondFileID).Error; err != nil {
+		t.Fatalf("reload second file: %v", err)
+	}
+	if reloaded.ObjectID == nil || *reloaded.ObjectID != sharedObjectID {
+		t.Fatalf("second file object = %v, want %q", reloaded.ObjectID, sharedObjectID)
+	}
+}
+
 func TestRestoreBatch(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{})
 	svc := NewFileService(&database.DB{DB: db}, nil)
@@ -1226,6 +1373,30 @@ func TestCanAccessFileDefaultsToPublicWithoutPermissions(t *testing.T) {
 func blankImage(w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	return img
+}
+
+func TestCreateUploadTaskPersistsOverwriteID(t *testing.T) {
+	db := openTestDB(t, &database.PersistentTask{})
+	tasks := NewTaskService(&database.DB{DB: db})
+	accountID := uuid.New()
+	overwriteID := database.NewID()
+	payload := &database.PersistentTask{OverwriteID: &overwriteID, Indexed: true}
+
+	task, err := tasks.CreateUploadTask(accountID, "upload", payload, 123, nil, "file.txt", "text/plain", 64, 2)
+	if err != nil {
+		t.Fatalf("CreateUploadTask() error = %v", err)
+	}
+	if task.OverwriteID == nil || *task.OverwriteID != overwriteID {
+		t.Fatalf("task.OverwriteID = %v, want %q", task.OverwriteID, overwriteID)
+	}
+
+	loaded, err := tasks.GetUploadTask(task.TaskID)
+	if err != nil {
+		t.Fatalf("GetUploadTask() error = %v", err)
+	}
+	if loaded.OverwriteID == nil || *loaded.OverwriteID != overwriteID {
+		t.Fatalf("loaded.OverwriteID = %v, want %q", loaded.OverwriteID, overwriteID)
+	}
 }
 
 func openTestDB(t *testing.T, models ...any) *gorm.DB {

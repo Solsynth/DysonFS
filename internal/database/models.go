@@ -288,6 +288,7 @@ type PersistentTask struct {
 	FileSize        *int64         `json:"file_size"`
 	PoolID          *string        `gorm:"size:36" json:"pool_id"`
 	ParentID        *string        `gorm:"size:36" json:"parent_id"`
+	OverwriteID     *string        `gorm:"size:36" json:"overwrite_id"`
 	Description     *string        `json:"description"`
 	Hash            *string        `json:"hash"`
 	ExpiredAt       *time.Time     `json:"expired_at"`
