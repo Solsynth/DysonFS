@@ -932,7 +932,7 @@ func (s *FileService) DeleteFile(id string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.db.Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
+	if err := s.db.Delete(&database.CloudFile{}, "id IN ?", affectedIDs).Error; err != nil {
 		return err
 	}
 	if err := s.touchDerivedParentFlags(&file); err != nil {
@@ -972,7 +972,7 @@ func (s *FileService) PurgeFile(id string) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("database not configured")
 	}
-	affectedIDs, err := s.loadDescendantIDs([]string{id})
+	affectedIDs, err := s.loadDescendantIDsIncludingDeleted([]string{id})
 	if err != nil {
 		return err
 	}
@@ -981,23 +981,37 @@ func (s *FileService) PurgeFile(id string) error {
 		if err := tx.Unscoped().Preload("Object").First(&file, "id = ?", id).Error; err != nil {
 			return err
 		}
-		objectID := ""
-		if file.ObjectID != nil {
-			objectID = strings.TrimSpace(*file.ObjectID)
+		var files []database.CloudFile
+		if err := tx.Unscoped().Where("id IN ?", affectedIDs).Find(&files).Error; err != nil {
+			return err
 		}
-		if err := tx.Unscoped().Delete(&database.CloudFile{}, "id = ?", id).Error; err != nil {
+		if err := tx.Unscoped().Delete(&database.CloudFile{}, "id IN ?", affectedIDs).Error; err != nil {
 			return err
 		}
 		if err := s.touchDerivedParentFlagsTx(tx, &file); err != nil {
 			return err
 		}
-		if err := tx.Unscoped().Delete(&database.FilePermission{}, "file_id = ?", id).Error; err != nil {
+		if err := tx.Unscoped().Delete(&database.FilePermission{}, "file_id IN ?", affectedIDs).Error; err != nil {
 			return err
 		}
-		if objectID == "" {
-			return nil
+		seenObjectIDs := make(map[string]struct{}, len(files))
+		for _, descendant := range files {
+			if descendant.ObjectID == nil {
+				continue
+			}
+			objectID := strings.TrimSpace(*descendant.ObjectID)
+			if objectID == "" {
+				continue
+			}
+			if _, ok := seenObjectIDs[objectID]; ok {
+				continue
+			}
+			seenObjectIDs[objectID] = struct{}{}
+			if err := s.purgeObjectIfDereferenced(tx, &descendant, objectID); err != nil {
+				return err
+			}
 		}
-		return s.purgeObjectIfDereferenced(tx, &file, objectID)
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -1091,12 +1105,24 @@ func (s *FileService) MoveBatch(ids []string, parentID *string) (int64, error) {
 }
 
 func (s *FileService) loadDescendantIDs(fileIDs []string) ([]string, error) {
+	return s.loadDescendantIDsWithDeleted(fileIDs, false)
+}
+
+func (s *FileService) loadDescendantIDsIncludingDeleted(fileIDs []string) ([]string, error) {
+	return s.loadDescendantIDsWithDeleted(fileIDs, true)
+}
+
+func (s *FileService) loadDescendantIDsWithDeleted(fileIDs []string, includeDeleted bool) ([]string, error) {
 	fileIDs = normalizeFileIDs(fileIDs)
 	if len(fileIDs) == 0 {
 		return []string{}, nil
 	}
 
-	const query = `WITH RECURSIVE descendants AS (
+	recursiveFilter := "WHERE cf.deleted_at IS NULL"
+	if includeDeleted {
+		recursiveFilter = ""
+	}
+	query := `WITH RECURSIVE descendants AS (
 		SELECT id, parent_id
 		FROM cloud_files
 		WHERE id IN ?
@@ -1106,7 +1132,7 @@ func (s *FileService) loadDescendantIDs(fileIDs []string) ([]string, error) {
 		SELECT cf.id, cf.parent_id
 		FROM cloud_files cf
 		JOIN descendants d ON cf.parent_id = d.id
-		WHERE cf.deleted_at IS NULL
+		` + recursiveFilter + `
 	)
 	SELECT DISTINCT id
 	FROM descendants`

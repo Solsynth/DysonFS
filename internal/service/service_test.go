@@ -309,6 +309,96 @@ func TestPurgeFileDeletesDereferencedObjectAndRemote(t *testing.T) {
 	}
 }
 
+func TestPurgeFileDeletesDescendantsAndTheirObjects(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}, &database.FilePermission{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = poolID
+
+	accountID := uuid.New()
+	rootID := database.NewID()
+	childID := database.NewID()
+	grandchildID := database.NewID()
+	childObjectID := database.NewID()
+	grandchildObjectID := database.NewID()
+	childStorageKey := childObjectID
+	grandchildStorageKey := grandchildObjectID
+
+	if err := db.Create(&database.CloudFile{ID: rootID, Name: "root", AccountID: accountID, PoolID: ptr(poolID), IsFolder: true, Indexed: true}).Error; err != nil {
+		t.Fatalf("create root folder: %v", err)
+	}
+	if err := db.Create(&database.FileObject{ID: childObjectID, Size: 5, MimeType: "text/plain", Hash: "child-hash", StorageKey: &childStorageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create child object: %v", err)
+	}
+	if err := db.Create(&database.FileObject{ID: grandchildObjectID, Size: 7, MimeType: "text/plain", Hash: "grandchild-hash", StorageKey: &grandchildStorageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create grandchild object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: childID, Name: "child.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &rootID, ObjectID: &childObjectID, StorageKey: &childStorageKey, Indexed: true}).Error; err != nil {
+		t.Fatalf("create child file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: grandchildID, Name: "grandchild.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &childID, ObjectID: &grandchildObjectID, StorageKey: &grandchildStorageKey, Indexed: true}).Error; err != nil {
+		t.Fatalf("create grandchild file: %v", err)
+	}
+	for _, replica := range []database.FileReplica{
+		{ID: database.NewID(), ObjectID: childObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
+		{ID: database.NewID(), ObjectID: grandchildObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
+	} {
+		if err := db.Create(&replica).Error; err != nil {
+			t.Fatalf("create replica for %s: %v", replica.ObjectID, err)
+		}
+	}
+	for _, perm := range []database.FilePermission{
+		{ID: database.NewID(), FileID: childID, SubjectType: "private", Permission: "read"},
+		{ID: database.NewID(), FileID: grandchildID, SubjectType: "private", Permission: "read"},
+	} {
+		if err := db.Create(&perm).Error; err != nil {
+			t.Fatalf("create permission for %s: %v", perm.FileID, err)
+		}
+	}
+	if err := stor.Put(context.Background(), childStorageKey, strings.NewReader("child"), "text/plain"); err != nil {
+		t.Fatalf("put child remote object: %v", err)
+	}
+	if err := stor.Put(context.Background(), grandchildStorageKey, strings.NewReader("grandchild"), "text/plain"); err != nil {
+		t.Fatalf("put grandchild remote object: %v", err)
+	}
+
+	if err := svc.PurgeFile(rootID); err != nil {
+		t.Fatalf("PurgeFile(root) error = %v", err)
+	}
+
+	for _, fileID := range []string{rootID, childID, grandchildID} {
+		if err := db.Unscoped().First(&database.CloudFile{}, "id = ?", fileID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("cloud file %s still exists, err = %v", fileID, err)
+		}
+	}
+	for _, objectID := range []string{childObjectID, grandchildObjectID} {
+		if err := db.Unscoped().First(&database.FileObject{}, "id = ?", objectID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("file object %s still exists, err = %v", objectID, err)
+		}
+		var replicaCount int64
+		if err := db.Unscoped().Model(&database.FileReplica{}).Where("object_id = ?", objectID).Count(&replicaCount).Error; err != nil {
+			t.Fatalf("count replicas for %s: %v", objectID, err)
+		}
+		if replicaCount != 0 {
+			t.Fatalf("replica count for %s = %d, want 0", objectID, replicaCount)
+		}
+	}
+	var permissionCount int64
+	if err := db.Unscoped().Model(&database.FilePermission{}).Where("file_id IN ?", []string{childID, grandchildID}).Count(&permissionCount).Error; err != nil {
+		t.Fatalf("count permissions: %v", err)
+	}
+	if permissionCount != 0 {
+		t.Fatalf("permission count = %d, want 0", permissionCount)
+	}
+	for _, key := range []string{childStorageKey, grandchildStorageKey} {
+		if _, err := os.Stat(filepath.Join(tmp, key)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("remote object %s still exists, stat err = %v", key, err)
+		}
+	}
+}
+
 func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
