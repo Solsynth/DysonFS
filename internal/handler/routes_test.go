@@ -329,3 +329,94 @@ func openHandlerTestDB(t *testing.T, values ...any) *gorm.DB {
 	})
 	return db
 }
+
+func TestPatchFileRenamesOwnedFile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	file := database.CloudFile{ID: database.NewID(), Name: "before.txt", AccountID: accountID, Indexed: true}
+	if err := db.Create(&file).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	updated, err := files.GetFile(file.ID)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if updated.Name != "after.txt" {
+		t.Fatalf("updated.Name = %q, want %q", updated.Name, "after.txt")
+	}
+
+	var got database.CloudFile
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Name != "after.txt" {
+		t.Fatalf("response name = %q, want %q", got.Name, "after.txt")
+	}
+}
+
+func TestPatchFileRequiresAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	file := database.CloudFile{ID: database.NewID(), Name: "before.txt", AccountID: uuid.New(), Indexed: true}
+	if err := db.Create(&file).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	r := gin.New()
+	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestPatchFileRejectsForbiddenRename(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.New()
+	viewerID := uuid.New()
+	file := database.CloudFile{ID: database.NewID(), Name: "before.txt", AccountID: ownerID, Indexed: true}
+	if err := db.Create(&file).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	perm := database.FilePermission{ID: database.NewID(), FileID: file.ID, SubjectType: "account", SubjectID: viewerID.String(), Permission: "read"}
+	if err := db.Create(&perm).Error; err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(viewerID))
+	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+}

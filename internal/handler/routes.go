@@ -45,6 +45,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
 		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
 		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
+		f.PATCH("/:id", func(c *gin.Context) { patchFile(c, files) })
 		f.POST("/recycle/batch", func(c *gin.Context) { batchRecycleFiles(c, files, bus, dispatcher) })
 		f.POST("/restore/batch", func(c *gin.Context) { batchRestoreFiles(c, files, bus, dispatcher) })
 		f.POST("/delete/batch", func(c *gin.Context) { batchDeleteFiles(c, files, bus, dispatcher) })
@@ -762,6 +763,55 @@ func createFolder(c *gin.Context, files *service.FileService) {
 		return
 	}
 	c.JSON(http.StatusOK, folder)
+}
+
+func patchFile(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !result.Account.GetIsSuperuser() && file.AccountID.String() != result.Account.GetId() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	var req struct {
+		Name *string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Name == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	name := strings.TrimSpace(*req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	if err := files.DB().Model(&database.CloudFile{}).Where("id = ?", file.ID).Update("name", name).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	file.Name = name
+	file, err = files.GetFile(file.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	file.Name = name
+	file.PermissionStatus.Writable = true
+	c.JSON(http.StatusOK, file)
 }
 
 func deleteFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
