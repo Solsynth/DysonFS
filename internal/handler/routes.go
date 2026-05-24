@@ -206,7 +206,7 @@ func resolveOpenVariant(ctx context.Context, files *service.FileService, file *d
 			return nil, err
 		}
 		if ok {
-		return legacy, nil
+			return legacy, nil
 		}
 	}
 	return nil, fmt.Errorf("derived file %s not found", kind)
@@ -308,15 +308,15 @@ func listChildren(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
-	offset, take, query, order, orderDesc := parseListQuery(c, 0, 50)
+	filters := parseListQuery(c, 0, 50)
 	items, err := files.GetChildren(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	items = filterAndSortFiles(items, query, order, orderDesc)
+	items = filterAndSortFiles(items, filters)
 	total := len(items)
-	items = paginateFiles(items, offset, take)
+	items = paginateFiles(items, filters.Offset, filters.Take)
 	filtered := make([]database.CloudFile, 0, len(items))
 	for _, item := range items {
 		if !ok || files.CanAccessFile(result.Account, result.Session, &item, "read") {
@@ -538,15 +538,15 @@ func listRootIndexed(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	offset, take, query, order, orderDesc := parseListQuery(c, 0, 50)
+	filters := parseListQuery(c, 0, 50)
 	items, err := files.ListRoot(uuid.MustParse(result.Account.GetId()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	items = filterAndSortFiles(items, query, order, orderDesc)
+	items = filterAndSortFiles(items, filters)
 	total := len(items)
-	items = paginateFiles(items, offset, take)
+	items = paginateFiles(items, filters.Offset, filters.Take)
 	c.Header("X-Total", strconv.Itoa(total))
 	c.JSON(http.StatusOK, items)
 }
@@ -557,16 +557,16 @@ func listRootOwned(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	offset, take, query, order, orderDesc := parseListQuery(c, 0, 20)
+	filters := parseListQuery(c, 0, 20)
 	items, err := files.ListOwned(uuid.MustParse(result.Account.GetId()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	items = filterAndSortFiles(items, query, order, orderDesc)
+	items = filterAndSortFiles(items, filters)
 	items = rootOnly(items)
 	total := len(items)
-	items = paginateFiles(items, offset, take)
+	items = paginateFiles(items, filters.Offset, filters.Take)
 	c.Header("X-Total", strconv.Itoa(total))
 	c.JSON(http.StatusOK, items)
 }
@@ -579,55 +579,79 @@ func listUnindexed(c *gin.Context, files *service.FileService) {
 	}
 	pool := strings.TrimSpace(c.Query("pool"))
 	recycled := strings.EqualFold(c.Query("recycled"), "true") || c.Query("recycled") == "1"
-	offset, take, query, order, orderDesc := parseListQuery(c, 0, 20)
+	filters := parseListQuery(c, 0, 20)
 	items, err := files.ListUnindexed(uuid.MustParse(result.Account.GetId()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	items = filterAndSortUnindexed(items, pool, recycled, query, order, orderDesc)
+	items = filterAndSortUnindexed(items, pool, recycled, filters)
 	total := len(items)
-	items = paginateFiles(items, offset, take)
+	items = paginateFiles(items, filters.Offset, filters.Take)
 	c.Header("X-Total", strconv.Itoa(total))
 	c.JSON(http.StatusOK, items)
 }
 
-func parseListQuery(c *gin.Context, defaultOffset, defaultTake int) (offset, take int, query, order string, orderDesc bool) {
-	offset = defaultOffset
-	take = defaultTake
-	order = strings.TrimSpace(c.Query("order"))
-	if order == "" {
-		order = "date"
+type fileListFilters struct {
+	Offset          int
+	Take            int
+	Query           string
+	Order           string
+	OrderDesc       bool
+	Usage           string
+	ApplicationType string
+}
+
+func parseListQuery(c *gin.Context, defaultOffset, defaultTake int) fileListFilters {
+	filters := fileListFilters{
+		Offset:          defaultOffset,
+		Take:            defaultTake,
+		Order:           strings.TrimSpace(c.Query("order")),
+		OrderDesc:       true,
+		Usage:           strings.TrimSpace(c.Query("usage")),
+		ApplicationType: strings.TrimSpace(c.Query("application_type")),
 	}
-	orderDesc = true
+	if filters.Order == "" {
+		filters.Order = "date"
+	}
 	if v := strings.TrimSpace(c.Query("offset")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
+			filters.Offset = n
 		}
 	}
 	if v := strings.TrimSpace(c.Query("take")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			take = n
+			filters.Take = n
 		}
 	}
 	if v := strings.TrimSpace(c.Query("query")); v != "" {
-		query = v
+		filters.Query = v
 	}
 	if v := strings.TrimSpace(c.Query("orderDesc")); v != "" {
-		orderDesc = !(strings.EqualFold(v, "false") || v == "0")
+		filters.OrderDesc = !(strings.EqualFold(v, "false") || v == "0")
 	}
-	return offset, take, query, order, orderDesc
+	return filters
 }
 
-func filterAndSortFiles(items []database.CloudFile, query, order string, orderDesc bool) []database.CloudFile {
+func filterAndSortFiles(items []database.CloudFile, filters fileListFilters) []database.CloudFile {
 	filtered := make([]database.CloudFile, 0, len(items))
 	for _, item := range items {
-		if query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(query)) {
+		if filters.Query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(filters.Query)) {
 			continue
+		}
+		if filters.Usage != "" {
+			if item.Usage == nil || !strings.EqualFold(strings.TrimSpace(*item.Usage), filters.Usage) {
+				continue
+			}
+		}
+		if filters.ApplicationType != "" {
+			if item.ApplicationType == nil || !strings.EqualFold(strings.TrimSpace(*item.ApplicationType), filters.ApplicationType) {
+				continue
+			}
 		}
 		filtered = append(filtered, item)
 	}
-	sortFiles(filtered, order, orderDesc)
+	sortFiles(filtered, filters.Order, filters.OrderDesc)
 	return filtered
 }
 
@@ -641,7 +665,7 @@ func rootOnly(items []database.CloudFile) []database.CloudFile {
 	return filtered
 }
 
-func filterAndSortUnindexed(items []database.CloudFile, pool string, recycled bool, query, order string, orderDesc bool) []database.CloudFile {
+func filterAndSortUnindexed(items []database.CloudFile, pool string, recycled bool, filters fileListFilters) []database.CloudFile {
 	filtered := make([]database.CloudFile, 0, len(items))
 	for _, item := range items {
 		if item.IsMarkedRecycle != recycled {
@@ -655,12 +679,22 @@ func filterAndSortUnindexed(items []database.CloudFile, pool string, recycled bo
 				continue
 			}
 		}
-		if query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(query)) {
+		if filters.Query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(filters.Query)) {
 			continue
+		}
+		if filters.Usage != "" {
+			if item.Usage == nil || !strings.EqualFold(strings.TrimSpace(*item.Usage), filters.Usage) {
+				continue
+			}
+		}
+		if filters.ApplicationType != "" {
+			if item.ApplicationType == nil || !strings.EqualFold(strings.TrimSpace(*item.ApplicationType), filters.ApplicationType) {
+				continue
+			}
 		}
 		filtered = append(filtered, item)
 	}
-	sortFiles(filtered, order, orderDesc)
+	sortFiles(filtered, filters.Order, filters.OrderDesc)
 	return filtered
 }
 

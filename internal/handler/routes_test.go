@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,8 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
+	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
+	gen "src.solsynth.dev/sosys/go/proto"
 )
 
 func TestRegisterRoutesNoPanic(t *testing.T) {
@@ -201,6 +204,110 @@ func TestOpenFileFallsBackToOriginalWhenDerivedCompressionIsMissing(t *testing.T
 	}
 	if strings.Contains(location, missingDerivedKey) {
 		t.Fatalf("location = %q, should not contain missing key %q", location, missingDerivedKey)
+	}
+}
+
+func TestListRootOwnedFiltersByUsageAndApplicationType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	usageAvatar := "avatar"
+	usageBackup := "backup"
+	appImage := "image/png"
+	appText := "text/plain"
+
+	items := []database.CloudFile{
+		{ID: database.NewID(), Name: "avatar.png", AccountID: accountID, Indexed: true, Usage: &usageAvatar, ApplicationType: &appImage},
+		{ID: database.NewID(), Name: "notes.txt", AccountID: accountID, Indexed: true, Usage: &usageAvatar, ApplicationType: &appText},
+		{ID: database.NewID(), Name: "archive.png", AccountID: accountID, Indexed: true, Usage: &usageBackup, ApplicationType: &appImage},
+	}
+	for _, item := range items {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/me?usage=avatar&application_type=image/png", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if total := w.Header().Get("X-Total"); total != "1" {
+		t.Fatalf("X-Total = %q, want %q", total, "1")
+	}
+	var got []database.CloudFile
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(got))
+	}
+	if got[0].Name != "avatar.png" {
+		t.Fatalf("got file %q, want %q", got[0].Name, "avatar.png")
+	}
+}
+
+func TestListUnindexedFiltersByUsageAndApplicationType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	usageImport := "import"
+	usageExport := "export"
+	appZip := "application/zip"
+	appJSON := "application/json"
+
+	items := []database.CloudFile{
+		{ID: database.NewID(), Name: "import.zip", AccountID: accountID, Indexed: false, Usage: &usageImport, ApplicationType: &appZip},
+		{ID: database.NewID(), Name: "import.json", AccountID: accountID, Indexed: false, Usage: &usageImport, ApplicationType: &appJSON},
+		{ID: database.NewID(), Name: "export.zip", AccountID: accountID, Indexed: false, Usage: &usageExport, ApplicationType: &appZip},
+	}
+	for _, item := range items {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/unindexed?usage=import&application_type=application/zip", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if total := w.Header().Get("X-Total"); total != "1" {
+		t.Fatalf("X-Total = %q, want %q", total, "1")
+	}
+	var got []database.CloudFile
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(got))
+	}
+	if got[0].Name != "import.zip" {
+		t.Fatalf("got file %q, want %q", got[0].Name, "import.zip")
+	}
+}
+
+func testAuthMiddleware(accountID uuid.UUID) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		dyauth.WithAuth(c, &dyauth.AuthResult{
+			Account: &gen.DyAccount{Id: accountID.String()},
+			Session: &gen.DyAuthSession{Id: "session-1", AccountId: accountID.String()},
+		}, dyauth.TokenInfo{Token: "test-token"})
+		c.Next()
 	}
 }
 
