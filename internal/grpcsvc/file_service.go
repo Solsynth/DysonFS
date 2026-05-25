@@ -210,13 +210,13 @@ func toProtoCloudFile(file *database.CloudFile) *gen.DyCloudFile {
 		IsFolder:        file.IsFolder,
 		Usage:           file.Usage,
 		ApplicationType: file.ApplicationType,
+		MimeType:        file.ResponseMimeType(),
+		ContentType:     file.ResponseMimeType(),
 	}
 	if file.Object != nil {
-		resp.MimeType = file.Object.MimeType
 		resp.Hash = file.Object.Hash
 		resp.Size = file.Object.Size
 		resp.HasCompression = file.Object.HasCompression
-		resp.ContentType = file.Object.MimeType
 		resp.Object = &gen.DyFileObject{Id: file.Object.ID, Size: file.Object.Size, Meta: file.Object.Meta, MimeType: file.Object.MimeType, Hash: file.Object.Hash, HasCompression: file.Object.HasCompression, HasThumbnail: file.Object.HasThumbnail}
 	}
 	if file.ParentID != nil {

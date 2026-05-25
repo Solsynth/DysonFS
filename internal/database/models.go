@@ -10,6 +10,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const FolderMimeType = "folder/folder"
+
 type FilePool struct {
 	ID            string         `gorm:"primaryKey;size:36" json:"id"`
 	Name          string         `json:"name"`
@@ -140,7 +142,7 @@ func (f *CloudFile) MarshalJSON() ([]byte, error) {
 		"user_meta":           f.UserMeta,
 		"sensitive_marks":     f.LegacySensitiveMarks(),
 		"file_meta":           f.LegacyFileMeta(),
-		"mime_type":           f.legacyMimeType(),
+		"mime_type":           f.ResponseMimeType(),
 		"hash":                f.legacyHash(),
 		"expired_at":          f.ExpiredAt,
 		"size":                f.legacySize(),
@@ -166,14 +168,21 @@ func (f *CloudFile) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func (f *CloudFile) legacyMimeType() string {
+func (f *CloudFile) ResponseMimeType() string {
 	if f == nil {
 		return ""
+	}
+	if f.IsFolder {
+		return FolderMimeType
 	}
 	if f.Object != nil && f.Object.MimeType != "" {
 		return f.Object.MimeType
 	}
 	return ""
+}
+
+func (f *CloudFile) legacyMimeType() string {
+	return f.ResponseMimeType()
 }
 
 func (f *CloudFile) legacyHash() string {
