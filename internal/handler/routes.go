@@ -1123,6 +1123,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		ChunkSize       int64   `json:"chunk_size"`
 		ParentID        *string `json:"parent_id"`
 		OverwriteID     *string `json:"overwrite_id"`
+		FastMode        bool    `json:"fast_mode"`
 		Usage           *string `json:"usage"`
 		ApplicationType *string `json:"application_type"`
 		ContentType     string  `json:"content_type"`
@@ -1216,7 +1217,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		Int("chunks", chunks).
 		Str("contentType", req.ContentType).
 		Msg("creating upload task")
-	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, OverwriteID: req.OverwriteID, ApplicationType: req.ApplicationType, Indexed: req.Index}
+	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, OverwriteID: req.OverwriteID, FastMode: req.FastMode, ApplicationType: req.ApplicationType, Indexed: req.Index}
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, resolvedPoolID, name, req.ContentType, req.ChunkSize, chunks)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1246,6 +1247,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	hash := optionalStringPtr(c.PostForm("hash"))
 	parentID := optionalStringPtr(c.PostForm("parent_id"))
 	overwriteID := optionalStringPtr(c.PostForm("overwrite_id"))
+	fastMode := optionalBool(c.PostForm("fast_mode"))
 	usage := optionalStringPtr(c.PostForm("usage"))
 	appType := optionalStringPtr(c.PostForm("application_type"))
 	indexed := optionalBool(c.PostForm("index"))
@@ -1326,49 +1328,94 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		Str("tempPath", tempPath).
 		Msg("direct upload staged to disk")
 	defer os.Remove(tempPath)
-	object, err := files.DetectAndCreateObject(tempPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	storageKey := &object.ID
 	var createdFile *database.CloudFile
-	if overwriteTarget != nil {
-		createdFile, err = files.OverwriteFile(overwriteTarget.ID, object.ID, storageKey)
-	} else {
-		createdFile, err = files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if analysis, err := files.AnalyzeSourceFile(c.Request.Context(), tempPath, object.MimeType); err == nil {
-		if updated, err := files.StoreSourceAnalysis(createdFile.ID, analysis); err == nil {
+	var object *database.FileObject
+	analysis, analysisErr := files.AnalyzeSourceFile(c.Request.Context(), tempPath, fileHeader.Header.Get("Content-Type"))
+	if overwriteTarget != nil && fastMode {
+		if updated, applied, err := files.FastOverwriteFile(overwriteTarget.ID, tempPath, analysis); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else if applied {
 			createdFile = updated
-		} else {
-			logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to persist source analysis")
+			object = createdFile.Object
 		}
-	} else {
-		logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to analyze source file")
 	}
-	stage, err := os.Open(tempPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if createdFile == nil {
+		object, err = files.DetectAndCreateObject(tempPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		storageKey := &object.ID
+		if overwriteTarget != nil {
+			createdFile, err = files.OverwriteFile(overwriteTarget.ID, object.ID, storageKey)
+		} else {
+			createdFile, err = files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if analysisErr == nil {
+			if updated, err := files.StoreSourceAnalysis(createdFile.ID, analysis); err == nil {
+				createdFile = updated
+			} else {
+				logging.Log.Warn().Err(err).Str("fileId", createdFile.ID).Msg("failed to persist source analysis")
+			}
+		} else {
+			logging.Log.Warn().Err(analysisErr).Str("fileId", createdFile.ID).Msg("failed to analyze source file")
+		}
+	} else if object == nil {
+		object = createdFile.Object
+	}
+	if createdFile == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "overwrite failed"})
 		return
 	}
-	if err := files.Storage().Put(c.Request.Context(), object.ID, stage, fileHeader.Header.Get("Content-Type")); err != nil {
+	if object == nil || strings.TrimSpace(object.MimeType) == "" {
+		object, err = files.DetectAndCreateObject(tempPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if overwriteTarget == nil || !fastMode || (createdFile.ObjectID != nil && object != nil && *createdFile.ObjectID != object.ID) {
+		stage, err := os.Open(tempPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		storageTarget := object.ID
+		if createdFile.ObjectID != nil && strings.TrimSpace(*createdFile.ObjectID) != "" {
+			storageTarget = strings.TrimSpace(*createdFile.ObjectID)
+		}
+		if err := files.Storage().Put(c.Request.Context(), storageTarget, stage, fileHeader.Header.Get("Content-Type")); err != nil {
+			_ = stage.Close()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 		_ = stage.Close()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		if object != nil {
+			object.ID = storageTarget
+		}
 	}
-	_ = stage.Close()
 	logging.Log.Info().
 		Str("accountId", result.Account.GetId()).
 		Str("fileId", createdFile.ID).
-		Str("objectId", object.ID).
+		Str("objectId", deref(createdFile.ObjectID)).
 		Msg("direct upload stored")
 	_ = tasks
-	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: createdFile.ID, ContentType: object.MimeType, StorageKey: object.ID, ProcessingFilePath: tempPath, IsTempFile: true}); err != nil {
+	contentType := fileHeader.Header.Get("Content-Type")
+	if object != nil && strings.TrimSpace(object.MimeType) != "" {
+		contentType = object.MimeType
+	}
+	storageKey := deref(createdFile.ObjectID)
+	if createdFile.Object != nil && createdFile.Object.StorageKey != nil && strings.TrimSpace(*createdFile.Object.StorageKey) != "" {
+		storageKey = strings.TrimSpace(*createdFile.Object.StorageKey)
+	} else if createdFile.StorageKey != nil && strings.TrimSpace(*createdFile.StorageKey) != "" {
+		storageKey = strings.TrimSpace(*createdFile.StorageKey)
+	}
+	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: createdFile.ID, ContentType: contentType, StorageKey: storageKey, ProcessingFilePath: tempPath, IsTempFile: true}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1456,50 +1503,85 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		Int("chunks", task.ChunksCount).
 		Str("mergedPath", mergedPath).
 		Msg("upload chunks merged")
-	object, err := files.DetectAndCreateObject(mergedPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	_ = ctx
-	storageKey := &object.ID
 	var created *database.CloudFile
-	if task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
-		created, err = files.OverwriteFile(strings.TrimSpace(*task.OverwriteID), object.ID, storageKey)
-	} else {
-		created, err = files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if analysis, err := files.AnalyzeSourceFile(c.Request.Context(), mergedPath, object.MimeType); err == nil {
-		if updated, err := files.StoreSourceAnalysis(created.ID, analysis); err == nil {
+	var object *database.FileObject
+	analysis, analysisErr := files.AnalyzeSourceFile(c.Request.Context(), mergedPath, "")
+	if task.FastMode && task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
+		if updated, applied, err := files.FastOverwriteFile(strings.TrimSpace(*task.OverwriteID), mergedPath, analysis); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else if applied {
 			created = updated
-		} else {
-			logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to persist source analysis")
+			object = created.Object
 		}
-	} else {
-		logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to analyze source file")
 	}
-	stage, err := os.Open(mergedPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if created == nil {
+		object, err = files.DetectAndCreateObject(mergedPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		storageKey := &object.ID
+		if task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
+			created, err = files.OverwriteFile(strings.TrimSpace(*task.OverwriteID), object.ID, storageKey)
+		} else {
+			created, err = files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if analysisErr == nil {
+			if updated, err := files.StoreSourceAnalysis(created.ID, analysis); err == nil {
+				created = updated
+			} else {
+				logging.Log.Warn().Err(err).Str("fileId", created.ID).Msg("failed to persist source analysis")
+			}
+		} else {
+			logging.Log.Warn().Err(analysisErr).Str("fileId", created.ID).Msg("failed to analyze source file")
+		}
+	} else if object == nil {
+		object = created.Object
+	}
+	if created == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "overwrite failed"})
 		return
 	}
-	if err := files.Storage().Put(c.Request.Context(), object.ID, stage, object.MimeType); err != nil {
+	contentType := "application/octet-stream"
+	if object != nil && strings.TrimSpace(object.MimeType) != "" {
+		contentType = object.MimeType
+	}
+	if task.OverwriteID == nil || !task.FastMode || (created.ObjectID != nil && object != nil && *created.ObjectID != object.ID) {
+		stage, err := os.Open(mergedPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		storageTarget := deref(created.ObjectID)
+		if storageTarget == "" && object != nil {
+			storageTarget = object.ID
+		}
+		if err := files.Storage().Put(c.Request.Context(), storageTarget, stage, contentType); err != nil {
+			_ = stage.Close()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 		_ = stage.Close()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
 	}
-	_ = stage.Close()
 	logging.Log.Info().
 		Str("taskId", taskID).
 		Str("fileId", created.ID).
-		Str("objectId", object.ID).
+		Str("objectId", deref(created.ObjectID)).
 		Msg("upload stored")
-	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: object.MimeType, StorageKey: object.ID, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
+	storageKey := deref(created.ObjectID)
+	if created.Object != nil && created.Object.StorageKey != nil && strings.TrimSpace(*created.Object.StorageKey) != "" {
+		storageKey = strings.TrimSpace(*created.Object.StorageKey)
+	} else if created.StorageKey != nil && strings.TrimSpace(*created.StorageKey) != "" {
+		storageKey = strings.TrimSpace(*created.StorageKey)
+	}
+	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: contentType, StorageKey: storageKey, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

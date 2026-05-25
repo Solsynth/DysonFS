@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -589,6 +590,155 @@ func TestOverwriteFileKeepsSharedPreviousObject(t *testing.T) {
 	}
 	if reloaded.ObjectID == nil || *reloaded.ObjectID != sharedObjectID {
 		t.Fatalf("second file object = %v, want %q", reloaded.ObjectID, sharedObjectID)
+	}
+}
+
+func TestFastOverwriteFileUpdatesExistingObject(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = poolID
+
+	accountID := uuid.New()
+	objectID := database.NewID()
+	storageKey := objectID
+	fileID := database.NewID()
+	derivedObjectID := database.NewID()
+	derivedStorageKey := fileID + ".compressed"
+	derivedType := "system.compression.low"
+
+	for _, object := range []database.FileObject{
+		{ID: objectID, Size: 3, MimeType: "text/plain", Hash: "old-hash", StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{"width":1}`))},
+		{ID: derivedObjectID, Size: 4, MimeType: "image/webp", Hash: "derived-hash", StorageKey: &derivedStorageKey, Meta: datatypes.JSON([]byte(`{}`))},
+	} {
+		if err := db.Create(&object).Error; err != nil {
+			t.Fatalf("create object %s: %v", object.ID, err)
+		}
+	}
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
+		t.Fatalf("create derived file: %v", err)
+	}
+	for _, replica := range []database.FileReplica{
+		{ID: database.NewID(), ObjectID: objectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
+		{ID: database.NewID(), ObjectID: derivedObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
+	} {
+		if err := db.Create(&replica).Error; err != nil {
+			t.Fatalf("create replica %s: %v", replica.ObjectID, err)
+		}
+	}
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader("old"), "text/plain"); err != nil {
+		t.Fatalf("put source object: %v", err)
+	}
+	if err := stor.Put(context.Background(), derivedStorageKey, strings.NewReader("old-derived"), "image/webp"); err != nil {
+		t.Fatalf("put derived object: %v", err)
+	}
+	sourcePath := filepath.Join(tmp, "updated.txt")
+	if err := os.WriteFile(sourcePath, []byte("updated body"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	updated, applied, err := svc.FastOverwriteFile(fileID, sourcePath, &SourceAnalysis{Width: 10, Height: 20})
+	if err != nil {
+		t.Fatalf("FastOverwriteFile() error = %v", err)
+	}
+	if !applied {
+		t.Fatal("FastOverwriteFile() did not apply fast overwrite")
+	}
+	if updated.ObjectID == nil || *updated.ObjectID != objectID {
+		t.Fatalf("updated.ObjectID = %v, want %q", updated.ObjectID, objectID)
+	}
+
+	var object database.FileObject
+	if err := db.First(&object, "id = ?", objectID).Error; err != nil {
+		t.Fatalf("reload object: %v", err)
+	}
+	if object.Hash != ComputeHash([]byte("updated body")) {
+		t.Fatalf("object.Hash = %q, want updated hash", object.Hash)
+	}
+	if object.Size != int64(len("updated body")) {
+		t.Fatalf("object.Size = %d, want %d", object.Size, len("updated body"))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(object.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if int(meta["width"].(float64)) != 10 || int(meta["height"].(float64)) != 20 {
+		t.Fatalf("meta = %#v, want width=10 height=20", meta)
+	}
+	rc, _, err := stor.Get(context.Background(), storageKey)
+	if err != nil {
+		t.Fatalf("get overwritten object: %v", err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("read overwritten object: %v", err)
+	}
+	if string(body) != "updated body" {
+		t.Fatalf("body = %q, want %q", string(body), "updated body")
+	}
+	var derivedCount int64
+	if err := db.Model(&database.CloudFile{}).Where("parent_id = ? AND deleted_at IS NULL", fileID).Count(&derivedCount).Error; err != nil {
+		t.Fatalf("count derived files: %v", err)
+	}
+	if derivedCount != 0 {
+		t.Fatalf("derived count = %d, want 0", derivedCount)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, derivedStorageKey)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("derived remote object still exists, err = %v", err)
+	}
+}
+
+func TestFastOverwriteFileFallsBackWhenObjectShared(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	tmp := t.TempDir()
+	poolID := seedDefaultPool(t, db, tmp)
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+	svc.defaultPoolID = poolID
+
+	accountID := uuid.New()
+	objectID := database.NewID()
+	storageKey := objectID
+	firstFileID := database.NewID()
+	secondFileID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 3, MimeType: "text/plain", Hash: "old-hash", StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	for _, fileID := range []string{firstFileID, secondFileID} {
+		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+			t.Fatalf("create file %s: %v", fileID, err)
+		}
+	}
+	if err := db.Create(&database.FileReplica{ID: database.NewID(), ObjectID: objectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true}).Error; err != nil {
+		t.Fatalf("create replica: %v", err)
+	}
+	sourcePath := filepath.Join(tmp, "updated.txt")
+	if err := os.WriteFile(sourcePath, []byte("updated body"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	updated, applied, err := svc.FastOverwriteFile(firstFileID, sourcePath, nil)
+	if err != nil {
+		t.Fatalf("FastOverwriteFile() error = %v", err)
+	}
+	if applied {
+		t.Fatal("FastOverwriteFile() unexpectedly applied to shared object")
+	}
+	if updated != nil {
+		t.Fatalf("updated = %#v, want nil", updated)
+	}
+	var object database.FileObject
+	if err := db.First(&object, "id = ?", objectID).Error; err != nil {
+		t.Fatalf("reload object: %v", err)
+	}
+	if object.Hash != "old-hash" {
+		t.Fatalf("object.Hash = %q, want unchanged", object.Hash)
 	}
 }
 
@@ -1380,7 +1530,7 @@ func TestCreateUploadTaskPersistsOverwriteID(t *testing.T) {
 	tasks := NewTaskService(&database.DB{DB: db})
 	accountID := uuid.New()
 	overwriteID := database.NewID()
-	payload := &database.PersistentTask{OverwriteID: &overwriteID, Indexed: true}
+	payload := &database.PersistentTask{OverwriteID: &overwriteID, FastMode: true, Indexed: true}
 
 	task, err := tasks.CreateUploadTask(accountID, "upload", payload, 123, nil, "file.txt", "text/plain", 64, 2)
 	if err != nil {
@@ -1396,6 +1546,9 @@ func TestCreateUploadTaskPersistsOverwriteID(t *testing.T) {
 	}
 	if loaded.OverwriteID == nil || *loaded.OverwriteID != overwriteID {
 		t.Fatalf("loaded.OverwriteID = %v, want %q", loaded.OverwriteID, overwriteID)
+	}
+	if !loaded.FastMode {
+		t.Fatal("loaded.FastMode = false, want true")
 	}
 }
 

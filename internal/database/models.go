@@ -289,6 +289,7 @@ type PersistentTask struct {
 	PoolID          *string        `gorm:"size:36" json:"pool_id"`
 	ParentID        *string        `gorm:"size:36" json:"parent_id"`
 	OverwriteID     *string        `gorm:"size:36" json:"overwrite_id"`
+	FastMode        bool           `json:"fast_mode"`
 	Description     *string        `json:"description"`
 	Hash            *string        `json:"hash"`
 	ExpiredAt       *time.Time     `json:"expired_at"`

@@ -2262,6 +2262,161 @@ func (s *FileService) OverwriteFile(fileID string, objectID string, storageKey *
 	return s.GetFile(fileID)
 }
 
+func (s *FileService) CanFastOverwrite(fileID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("database not configured")
+	}
+	file, err := s.GetFile(strings.TrimSpace(fileID))
+	if err != nil {
+		return false, err
+	}
+	if file.IsFolder || file.ObjectID == nil || strings.TrimSpace(*file.ObjectID) == "" {
+		return false, nil
+	}
+	var refCount int64
+	if err := s.db.Model(&database.CloudFile{}).Where("object_id = ? AND deleted_at IS NULL", strings.TrimSpace(*file.ObjectID)).Count(&refCount).Error; err != nil {
+		return false, err
+	}
+	return refCount == 1, nil
+}
+
+func (s *FileService) FastOverwriteFile(fileID, sourcePath string, analysis *SourceAnalysis) (*database.CloudFile, bool, error) {
+	if s == nil || s.db == nil || s.db.DB == nil {
+		return nil, false, fmt.Errorf("database not configured")
+	}
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return nil, false, fmt.Errorf("file id is required")
+	}
+	if strings.TrimSpace(sourcePath) == "" {
+		return nil, false, fmt.Errorf("source path is required")
+	}
+	fastAllowed, err := s.CanFastOverwrite(fileID)
+	if err != nil || !fastAllowed {
+		return nil, false, err
+	}
+
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return nil, false, err
+	}
+	mimeType := "application/octet-stream"
+	if len(data) > 0 {
+		mimeType = mimetype.Detect(data).String()
+	}
+	hash := ComputeHash(data)
+	size := int64(len(data))
+
+	var updated *database.CloudFile
+	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
+		var file database.CloudFile
+		if err := tx.Preload("Object").First(&file, "id = ? AND deleted_at IS NULL", fileID).Error; err != nil {
+			return err
+		}
+		if file.IsFolder {
+			return fmt.Errorf("cannot overwrite folder")
+		}
+		if file.ObjectID == nil || strings.TrimSpace(*file.ObjectID) == "" || file.Object == nil {
+			return fmt.Errorf("file object missing")
+		}
+
+		objectID := strings.TrimSpace(*file.ObjectID)
+		var refCount int64
+		if err := tx.Model(&database.CloudFile{}).Where("object_id = ? AND deleted_at IS NULL", objectID).Count(&refCount).Error; err != nil {
+			return err
+		}
+		if refCount != 1 {
+			return nil
+		}
+
+		storageKey := firstNonEmptyPtr(file.Object.StorageKey, file.StorageKey, file.ObjectID)
+		if storageKey == nil || strings.TrimSpace(*storageKey) == "" {
+			return fmt.Errorf("storage key missing")
+		}
+		backend, err := s.BackendForFile(&file)
+		if err != nil {
+			return err
+		}
+		if err := backend.Put(context.Background(), *storageKey, bytes.NewReader(data), mimeType); err != nil {
+			return err
+		}
+
+		var meta datatypes.JSON
+		if file.Object != nil {
+			meta = file.Object.Meta
+		}
+		if analysis != nil {
+			updates := map[string]any{}
+			if analysis.Width > 0 {
+				updates["width"] = analysis.Width
+			}
+			if analysis.Height > 0 {
+				updates["height"] = analysis.Height
+			}
+			if analysis.Image != nil {
+				updates["width"] = analysis.Image.Width
+				updates["height"] = analysis.Image.Height
+				updates["blurhash"] = analysis.Image.Blurhash
+				updates["exif_version"] = 2
+				if len(analysis.Image.Exif) > 0 {
+					updates["exif"] = analysis.Image.Exif
+				}
+			}
+			if len(analysis.Media) > 0 {
+				updates["media"] = analysis.Media
+			}
+			merged, err := mergeJSONMeta(meta, updates)
+			if err != nil {
+				return err
+			}
+			meta = merged
+		}
+
+		if err := tx.Model(&database.FileObject{}).Where("id = ?", objectID).Updates(map[string]any{
+			"size":            size,
+			"mime_type":       mimeType,
+			"hash":            hash,
+			"meta":            meta,
+			"has_thumbnail":   false,
+			"has_compression": false,
+			"updated_at":      time.Now(),
+		}).Error; err != nil {
+			return err
+		}
+
+		var derived []database.CloudFile
+		if err := tx.Preload("Object").Where("parent_id = ? AND deleted_at IS NULL", file.ID).Find(&derived).Error; err != nil {
+			return err
+		}
+		for i := range derived {
+			child := derived[i]
+			if err := tx.Delete(&database.CloudFile{}, "id = ?", child.ID).Error; err != nil {
+				return err
+			}
+			if err := s.touchDerivedParentFlagsTx(tx, &child); err != nil {
+				return err
+			}
+			if child.ObjectID != nil && strings.TrimSpace(*child.ObjectID) != "" {
+				if err := s.purgeObjectIfDereferenced(tx, &child, strings.TrimSpace(*child.ObjectID)); err != nil {
+					return err
+				}
+			}
+		}
+		updated = &file
+		return nil
+	}); err != nil {
+		return nil, false, err
+	}
+	if updated == nil {
+		return nil, false, nil
+	}
+	result, err := s.GetFile(fileID)
+	if err != nil {
+		return nil, false, err
+	}
+	return result, true, nil
+}
+
 func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, name string, objectID string, appType string, storageKey *string) (*database.CloudFile, error) {
 	pt := parentID
 	typeName := appType
@@ -2465,16 +2620,17 @@ func (s *TaskService) DB() *database.DB { return s.db }
 
 func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload *database.PersistentTask, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
 	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
-		if payload != nil {
-			task.Description = payload.Description
-			task.Hash = payload.Hash
-			task.ExpiredAt = payload.ExpiredAt
-			task.Usage = payload.Usage
-			task.ApplicationType = payload.ApplicationType
-			task.ParentID = payload.ParentID
-			task.OverwriteID = payload.OverwriteID
-			task.Indexed = payload.Indexed
-		}
+	if payload != nil {
+		task.Description = payload.Description
+		task.Hash = payload.Hash
+		task.ExpiredAt = payload.ExpiredAt
+		task.Usage = payload.Usage
+		task.ApplicationType = payload.ApplicationType
+		task.ParentID = payload.ParentID
+		task.OverwriteID = payload.OverwriteID
+		task.FastMode = payload.FastMode
+		task.Indexed = payload.Indexed
+	}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err
 	}
