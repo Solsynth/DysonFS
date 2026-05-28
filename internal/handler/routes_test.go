@@ -334,6 +334,74 @@ func TestListUnindexedFiltersByUsageAndApplicationType(t *testing.T) {
 	}
 }
 
+func TestFileBreadcrumbReturnsRootToCurrent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+
+	root := database.CloudFile{ID: database.NewID(), Name: "root", AccountID: accountID, Indexed: true, IsFolder: true}
+	folder := database.CloudFile{ID: database.NewID(), Name: "folder", AccountID: accountID, Indexed: true, IsFolder: true, ParentID: &root.ID}
+	file := database.CloudFile{ID: database.NewID(), Name: "notes.txt", AccountID: accountID, Indexed: true, ParentID: &folder.ID}
+	for _, item := range []database.CloudFile{root, folder, file} {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create file tree: %v", err)
+		}
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/"+file.ID+"/breadcrumb", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var got []breadcrumbItem
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(items) = %d, want 3", len(got))
+	}
+	if got[0].ID != root.ID || got[1].ID != folder.ID || got[2].ID != file.ID {
+		t.Fatalf("breadcrumb order = %+v", got)
+	}
+	if !got[0].IsFolder || !got[1].IsFolder || got[2].IsFolder {
+		t.Fatalf("unexpected folder flags: %+v", got)
+	}
+}
+
+func TestFileBreadcrumbRequiresReadAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+
+	file := database.CloudFile{ID: database.NewID(), Name: "private.txt", AccountID: uuid.New(), Indexed: true}
+	if err := db.Create(&file).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	perm := database.FilePermission{ID: database.NewID(), FileID: file.ID, SubjectType: "account", SubjectID: uuid.New().String(), Permission: "read"}
+	if err := db.Create(&perm).Error; err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+
+	r := gin.New()
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/"+file.ID+"/breadcrumb", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
 func testAuthMiddleware(accountID uuid.UUID) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		dyauth.WithAuth(c, &dyauth.AuthResult{

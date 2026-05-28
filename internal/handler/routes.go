@@ -38,6 +38,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	{
 		f.GET("/:id", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
+		f.GET("/:id/breadcrumb", func(c *gin.Context) { fileBreadcrumb(c, files) })
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, []any{}) })
 		f.POST("/:id/edit", func(c *gin.Context) { createEditSession(c, wopi, files) })
@@ -122,6 +123,47 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 		return
 	}
 	c.JSON(http.StatusOK, file)
+}
+
+type breadcrumbItem struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	ParentID *string `json:"parent_id"`
+	IsFolder bool    `json:"is_folder"`
+}
+
+func fileBreadcrumb(c *gin.Context, files *service.FileService) {
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	result, _, ok := auth.GetAuth(c)
+	if !ok && !files.CanAccessFile(nil, nil, file, "read") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if ok && !files.CanAccessFile(result.Account, result.Session, file, "read") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	items, err := files.GetBreadcrumb(file.ID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp := make([]breadcrumbItem, 0, len(items))
+	for _, item := range items {
+		resp = append(resp, breadcrumbItem{
+			ID:       item.ID,
+			Name:     item.Name,
+			ParentID: item.ParentID,
+			IsFolder: item.IsFolder,
+		})
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func createEditSession(c *gin.Context, wopi *service.WOPIService, files *service.FileService) {

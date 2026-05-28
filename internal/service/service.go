@@ -289,6 +289,37 @@ func (s *FileService) GetFile(id string) (*database.CloudFile, error) {
 	return &file, nil
 }
 
+func (s *FileService) GetBreadcrumb(fileID string) ([]database.CloudFile, error) {
+	ids, err := s.loadAncestorIDs(fileID)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	var files []database.CloudFile
+	if err := s.db.Where("id IN ? AND deleted_at IS NULL", ids).Find(&files).Error; err != nil {
+		return nil, err
+	}
+
+	filesByID := make(map[string]database.CloudFile, len(files))
+	for _, file := range files {
+		filesByID[file.ID] = file
+	}
+
+	breadcrumb := make([]database.CloudFile, 0, len(ids))
+	for i := len(ids) - 1; i >= 0; i-- {
+		file, ok := filesByID[ids[i]]
+		if !ok {
+			return nil, gorm.ErrRecordNotFound
+		}
+		breadcrumb = append(breadcrumb, file)
+	}
+
+	return breadcrumb, nil
+}
+
 func (s *FileService) GetChildren(parentID string) ([]database.CloudFile, error) {
 	var files []database.CloudFile
 	if err := s.db.Preload("Object").Where("parent_id = ?", parentID).Where("deleted_at IS NULL").Find(&files).Error; err != nil {
