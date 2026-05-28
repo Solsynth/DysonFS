@@ -334,6 +334,158 @@ func TestListUnindexedFiltersByUsageAndApplicationType(t *testing.T) {
 	}
 }
 
+func TestListRootOwnedFiltersByContentTypeAndExtendedFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	poolID := database.NewID()
+	usageAvatar := "avatar"
+	appImage := "image/png"
+	now := time.Date(2026, time.May, 29, 12, 0, 0, 0, time.UTC)
+
+	object1 := database.NewID()
+	object2 := database.NewID()
+	object3 := database.NewID()
+	items := []database.FileObject{
+		{ID: object1, Size: 128, MimeType: "image/png", Hash: "hash-1", Meta: datatypes.JSON([]byte(`{}`)), HasThumbnail: true, HasCompression: true},
+		{ID: object2, Size: 96, MimeType: "image/png", Hash: "hash-2", Meta: datatypes.JSON([]byte(`{}`)), HasThumbnail: false, HasCompression: true},
+		{ID: object3, Size: 128, MimeType: "text/plain", Hash: "hash-3", Meta: datatypes.JSON([]byte(`{}`)), HasThumbnail: true, HasCompression: true},
+	}
+	for _, item := range items {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create object: %v", err)
+		}
+	}
+
+	filesToCreate := []database.CloudFile{
+		{
+			ID:              database.NewID(),
+			Name:            "avatar.png",
+			AccountID:       accountID,
+			PoolID:          &poolID,
+			ObjectID:        &object1,
+			Indexed:         true,
+			Usage:           &usageAvatar,
+			ApplicationType: &appImage,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+		{
+			ID:              database.NewID(),
+			Name:            "avatar-copy.png",
+			AccountID:       accountID,
+			PoolID:          &poolID,
+			ObjectID:        &object2,
+			Indexed:         true,
+			Usage:           &usageAvatar,
+			ApplicationType: &appImage,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+		{
+			ID:              database.NewID(),
+			Name:            "avatar.txt",
+			AccountID:       accountID,
+			PoolID:          &poolID,
+			ObjectID:        &object3,
+			Indexed:         true,
+			Usage:           &usageAvatar,
+			ApplicationType: &appImage,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+	}
+	for _, item := range filesToCreate {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/me?content_type=image/png&extension=png&pool_id="+poolID+"&has_thumbnail=1&has_compression=1&min_size=120&max_size=140&created_after=2026-05-28T00:00:00Z&updated_before=2026-05-30T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if total := w.Header().Get("X-Total"); total != "1" {
+		t.Fatalf("X-Total = %q, want %q", total, "1")
+	}
+	var got []database.CloudFile
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(got))
+	}
+	if got[0].Name != "avatar.png" {
+		t.Fatalf("got file %q, want %q", got[0].Name, "avatar.png")
+	}
+}
+
+func TestListUnindexedFiltersByMimeTypeAliasAndFlags(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	poolID := database.NewID()
+	usageImport := "import"
+	appZip := "application/zip"
+	recycled := true
+
+	object1 := database.NewID()
+	object2 := database.NewID()
+	objects := []database.FileObject{
+		{ID: object1, Size: 256, MimeType: "application/zip", Hash: "zip-1", Meta: datatypes.JSON([]byte(`{}`)), HasCompression: true},
+		{ID: object2, Size: 64, MimeType: "application/json", Hash: "json-1", Meta: datatypes.JSON([]byte(`{}`)), HasCompression: false},
+	}
+	for _, item := range objects {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create object: %v", err)
+		}
+	}
+
+	filesToCreate := []database.CloudFile{
+		{ID: database.NewID(), Name: "import.zip", AccountID: accountID, PoolID: &poolID, ObjectID: &object1, Indexed: false, IsMarkedRecycle: recycled, Usage: &usageImport, ApplicationType: &appZip},
+		{ID: database.NewID(), Name: "import.json", AccountID: accountID, PoolID: &poolID, ObjectID: &object2, Indexed: false, IsMarkedRecycle: recycled, Usage: &usageImport, ApplicationType: &appZip},
+	}
+	for _, item := range filesToCreate {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/unindexed?mime_type=application/zip&pool="+poolID+"&recycled=1&indexed=0&has_compression=1&extension=zip&min_size=200", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if total := w.Header().Get("X-Total"); total != "1" {
+		t.Fatalf("X-Total = %q, want %q", total, "1")
+	}
+	var got []database.CloudFile
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(got))
+	}
+	if got[0].Name != "import.zip" {
+		t.Fatalf("got file %q, want %q", got[0].Name, "import.zip")
+	}
+}
+
 func TestFileBreadcrumbReturnsRootToCurrent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})

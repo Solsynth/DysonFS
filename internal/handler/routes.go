@@ -789,20 +789,44 @@ type fileListFilters struct {
 	Offset          int
 	Take            int
 	Query           string
+	Name            string
+	Extension       string
 	Order           string
 	OrderDesc       bool
 	Usage           string
 	ApplicationType string
+	ContentType     string
+	PoolID          string
+	ParentID        string
+	Indexed         *bool
+	Recycled        *bool
+	IsFolder        *bool
+	HasThumbnail    *bool
+	HasCompression  *bool
+	MinSize         *int64
+	MaxSize         *int64
+	CreatedAfter    *time.Time
+	CreatedBefore   *time.Time
+	UpdatedAfter    *time.Time
+	UpdatedBefore   *time.Time
 }
 
 func parseListQuery(c *gin.Context, defaultOffset, defaultTake int) fileListFilters {
 	filters := fileListFilters{
 		Offset:          defaultOffset,
 		Take:            defaultTake,
+		Name:            strings.TrimSpace(c.Query("name")),
+		Extension:       strings.TrimPrefix(strings.ToLower(strings.TrimSpace(c.Query("extension"))), "."),
 		Order:           strings.TrimSpace(c.Query("order")),
 		OrderDesc:       true,
 		Usage:           strings.TrimSpace(c.Query("usage")),
 		ApplicationType: strings.TrimSpace(c.Query("application_type")),
+		ContentType:     strings.TrimSpace(c.Query("content_type")),
+		PoolID:          strings.TrimSpace(firstNonEmptyQuery(c, "pool_id", "pool")),
+		ParentID:        strings.TrimSpace(c.Query("parent_id")),
+	}
+	if filters.ContentType == "" {
+		filters.ContentType = strings.TrimSpace(c.Query("mime_type"))
 	}
 	if filters.Order == "" {
 		filters.Order = "date"
@@ -823,24 +847,25 @@ func parseListQuery(c *gin.Context, defaultOffset, defaultTake int) fileListFilt
 	if v := strings.TrimSpace(c.Query("orderDesc")); v != "" {
 		filters.OrderDesc = !(strings.EqualFold(v, "false") || v == "0")
 	}
+	filters.Indexed = parseOptionalBool(c, "indexed")
+	filters.Recycled = parseOptionalBool(c, "recycled")
+	filters.IsFolder = parseOptionalBool(c, "is_folder")
+	filters.HasThumbnail = parseOptionalBool(c, "has_thumbnail")
+	filters.HasCompression = parseOptionalBool(c, "has_compression")
+	filters.MinSize = parseOptionalInt64(c, "min_size")
+	filters.MaxSize = parseOptionalInt64(c, "max_size")
+	filters.CreatedAfter = parseOptionalTime(c, "created_after")
+	filters.CreatedBefore = parseOptionalTime(c, "created_before")
+	filters.UpdatedAfter = parseOptionalTime(c, "updated_after")
+	filters.UpdatedBefore = parseOptionalTime(c, "updated_before")
 	return filters
 }
 
 func filterAndSortFiles(items []database.CloudFile, filters fileListFilters) []database.CloudFile {
 	filtered := make([]database.CloudFile, 0, len(items))
 	for _, item := range items {
-		if filters.Query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(filters.Query)) {
+		if !matchesFileFilters(item, filters) {
 			continue
-		}
-		if filters.Usage != "" {
-			if item.Usage == nil || !strings.EqualFold(strings.TrimSpace(*item.Usage), filters.Usage) {
-				continue
-			}
-		}
-		if filters.ApplicationType != "" {
-			if item.ApplicationType == nil || !strings.EqualFold(strings.TrimSpace(*item.ApplicationType), filters.ApplicationType) {
-				continue
-			}
 		}
 		filtered = append(filtered, item)
 	}
@@ -861,34 +886,148 @@ func rootOnly(items []database.CloudFile) []database.CloudFile {
 func filterAndSortUnindexed(items []database.CloudFile, pool string, recycled bool, filters fileListFilters) []database.CloudFile {
 	filtered := make([]database.CloudFile, 0, len(items))
 	for _, item := range items {
-		if item.IsMarkedRecycle != recycled {
-			continue
-		}
 		if item.Indexed || item.IsFolder {
 			continue
 		}
-		if pool != "" {
-			if item.PoolID == nil || *item.PoolID != pool {
-				continue
-			}
+		if pool != "" && filters.PoolID == "" {
+			filters.PoolID = pool
 		}
-		if filters.Query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(filters.Query)) {
+		if filters.Recycled == nil {
+			filters.Recycled = &recycled
+		}
+		if !matchesFileFilters(item, filters) {
 			continue
-		}
-		if filters.Usage != "" {
-			if item.Usage == nil || !strings.EqualFold(strings.TrimSpace(*item.Usage), filters.Usage) {
-				continue
-			}
-		}
-		if filters.ApplicationType != "" {
-			if item.ApplicationType == nil || !strings.EqualFold(strings.TrimSpace(*item.ApplicationType), filters.ApplicationType) {
-				continue
-			}
 		}
 		filtered = append(filtered, item)
 	}
 	sortFiles(filtered, filters.Order, filters.OrderDesc)
 	return filtered
+}
+
+func matchesFileFilters(item database.CloudFile, filters fileListFilters) bool {
+	if filters.Query != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(filters.Query)) {
+		return false
+	}
+	if filters.Name != "" && !strings.EqualFold(strings.TrimSpace(item.Name), filters.Name) {
+		return false
+	}
+	if filters.Extension != "" {
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(item.Name)), ".")
+		if ext != filters.Extension {
+			return false
+		}
+	}
+	if filters.Usage != "" {
+		if item.Usage == nil || !strings.EqualFold(strings.TrimSpace(*item.Usage), filters.Usage) {
+			return false
+		}
+	}
+	if filters.ApplicationType != "" {
+		if item.ApplicationType == nil || !strings.EqualFold(strings.TrimSpace(*item.ApplicationType), filters.ApplicationType) {
+			return false
+		}
+	}
+	if filters.ContentType != "" && !strings.EqualFold(strings.TrimSpace(item.ResponseMimeType()), filters.ContentType) {
+		return false
+	}
+	if filters.PoolID != "" {
+		if item.PoolID == nil || !strings.EqualFold(strings.TrimSpace(*item.PoolID), filters.PoolID) {
+			return false
+		}
+	}
+	if filters.ParentID != "" {
+		if item.ParentID == nil || !strings.EqualFold(strings.TrimSpace(*item.ParentID), filters.ParentID) {
+			return false
+		}
+	}
+	if filters.Indexed != nil && item.Indexed != *filters.Indexed {
+		return false
+	}
+	if filters.Recycled != nil && item.IsMarkedRecycle != *filters.Recycled {
+		return false
+	}
+	if filters.IsFolder != nil && item.IsFolder != *filters.IsFolder {
+		return false
+	}
+	if filters.HasThumbnail != nil {
+		hasThumbnail := item.Object != nil && item.Object.HasThumbnail
+		if hasThumbnail != *filters.HasThumbnail {
+			return false
+		}
+	}
+	if filters.HasCompression != nil {
+		hasCompression := item.Object != nil && item.Object.HasCompression
+		if hasCompression != *filters.HasCompression {
+			return false
+		}
+	}
+	size := int64(0)
+	if item.Object != nil {
+		size = item.Object.Size
+	}
+	if filters.MinSize != nil && size < *filters.MinSize {
+		return false
+	}
+	if filters.MaxSize != nil && size > *filters.MaxSize {
+		return false
+	}
+	if filters.CreatedAfter != nil && item.CreatedAt.Before(*filters.CreatedAfter) {
+		return false
+	}
+	if filters.CreatedBefore != nil && item.CreatedAt.After(*filters.CreatedBefore) {
+		return false
+	}
+	if filters.UpdatedAfter != nil && item.UpdatedAt.Before(*filters.UpdatedAfter) {
+		return false
+	}
+	if filters.UpdatedBefore != nil && item.UpdatedAt.After(*filters.UpdatedBefore) {
+		return false
+	}
+	return true
+}
+
+func firstNonEmptyQuery(c *gin.Context, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(c.Query(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseOptionalBool(c *gin.Context, key string) *bool {
+	value := strings.TrimSpace(c.Query(key))
+	if value == "" {
+		return nil
+	}
+	parsed := strings.EqualFold(value, "true") || value == "1"
+	return &parsed
+}
+
+func parseOptionalInt64(c *gin.Context, key string) *int64 {
+	value := strings.TrimSpace(c.Query(key))
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}
+
+func parseOptionalTime(c *gin.Context, key string) *time.Time {
+	value := strings.TrimSpace(c.Query(key))
+	if value == "" {
+		return nil
+	}
+	layouts := []string{time.RFC3339, "2006-01-02"}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return &parsed
+		}
+	}
+	return nil
 }
 
 func sortFiles(items []database.CloudFile, order string, orderDesc bool) {

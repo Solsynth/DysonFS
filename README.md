@@ -127,6 +127,55 @@ Fast mode notes:
 - the server updates `hash`, `size`, `mime_type`, and analyzed metadata on that existing object
 - stale derived children are removed before worker regeneration
 
+### File List Filters
+
+These endpoints share the same list query parser:
+
+- `GET /api/files/me`
+- `GET /api/files/root/children`
+- `GET /api/files/:id/children`
+- `GET /api/files/unindexed`
+
+Base query params:
+
+- `offset`
+- `take`
+- `order`: `date`, `name`, `size`
+- `orderDesc`: `true|false` or `1|0`
+- `query`: case-insensitive substring match on file name
+- `name`: exact file name match
+- `extension`: file extension, with or without the leading `.`
+- `usage`
+- `application_type`
+- `content_type`: exact response MIME type match
+- `mime_type`: alias of `content_type`
+- `pool_id`
+- `parent_id`
+- `indexed`: `true|false` or `1|0`
+- `recycled`: `true|false` or `1|0`
+- `is_folder`: `true|false` or `1|0`
+- `has_thumbnail`: `true|false` or `1|0`
+- `has_compression`: `true|false` or `1|0`
+- `min_size`
+- `max_size`
+- `created_after`: RFC3339 or `YYYY-MM-DD`
+- `created_before`: RFC3339 or `YYYY-MM-DD`
+- `updated_after`: RFC3339 or `YYYY-MM-DD`
+- `updated_before`: RFC3339 or `YYYY-MM-DD`
+
+Notes:
+
+- `content_type` / `mime_type` matches the file response MIME type, which comes from the backing object or the folder sentinel type
+- `/api/files/unindexed` also accepts `pool` as an alias of `pool_id`
+- `/api/files/unindexed` defaults to `recycled=false` when the query param is omitted
+- size filters use the backing object size in bytes
+
+Example:
+
+```bash
+curl "http://localhost:8080/api/files/me?content_type=image/png&extension=png&has_thumbnail=1&min_size=1024"
+```
+
 ### WOPI / Collabora CODE
 
 DysonFS can expose WOPI host endpoints for Collabora Online / CODE.
