@@ -296,6 +296,9 @@ func authenticateWOPIRequest(c *gin.Context, wopi *service.WOPIService) (*servic
 		rawToken = strings.TrimSpace(c.PostForm("access_token"))
 	}
 	if rawToken == "" {
+		rawToken = bearerToken(c.GetHeader("Authorization"))
+	}
+	if rawToken == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing access token"})
 		return nil, false
 	}
@@ -305,6 +308,14 @@ func authenticateWOPIRequest(c *gin.Context, wopi *service.WOPIService) (*servic
 		return nil, false
 	}
 	return claims, true
+}
+
+func bearerToken(header string) string {
+	header = strings.TrimSpace(header)
+	if header == "" || len(header) < 7 || !strings.EqualFold(header[:7], "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(header[7:])
 }
 
 // @Summary Open file

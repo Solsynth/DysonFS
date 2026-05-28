@@ -812,3 +812,55 @@ func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 		t.Fatalf("putfile status = %d, want %d, body = %s", putRes.Code, http.StatusConflict, putRes.Body.String())
 	}
 }
+
+func TestWOPIEndpointsAcceptBearerAccessToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{}, &database.WOPILock{})
+	tmp := t.TempDir()
+	stor := storage.NewLocalBackend(tmp)
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	wopi := newTestWOPIService(t, files)
+
+	accountID := uuid.New()
+	objectID := database.NewID()
+	fileID := database.NewID()
+	key := objectID
+	if err := db.Create(&database.FileObject{ID: objectID, Size: int64(len("hello")), MimeType: "text/plain", Hash: "hash-1", StorageKey: &key, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "notes.txt", AccountID: accountID, ObjectID: &objectID, StorageKey: &key, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), "text/plain"); err != nil {
+		t.Fatalf("put source: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, wopi, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	editReq := httptest.NewRequest(http.MethodPost, "/api/files/"+fileID+"/edit", nil)
+	editRes := httptest.NewRecorder()
+	r.ServeHTTP(editRes, editReq)
+	if editRes.Code != http.StatusOK {
+		t.Fatalf("edit session status = %d, body = %s", editRes.Code, editRes.Body.String())
+	}
+	var session struct {
+		FormFields map[string]string `json:"form_fields"`
+	}
+	if err := json.Unmarshal(editRes.Body.Bytes(), &session); err != nil {
+		t.Fatalf("decode edit session: %v", err)
+	}
+	token := session.FormFields["access_token"]
+	if token == "" {
+		t.Fatal("access_token is empty")
+	}
+
+	infoReq := httptest.NewRequest(http.MethodGet, "/wopi/files/"+fileID, nil)
+	infoReq.Header.Set("Authorization", "Bearer "+token)
+	infoRes := httptest.NewRecorder()
+	r.ServeHTTP(infoRes, infoReq)
+	if infoRes.Code != http.StatusOK {
+		t.Fatalf("checkfileinfo status = %d, body = %s", infoRes.Code, infoRes.Body.String())
+	}
+}

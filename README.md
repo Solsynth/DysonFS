@@ -204,6 +204,7 @@ Launch endpoint:
 - `POST /api/files/:id/edit` creates a WOPI-backed editing session for the authenticated user
 - the response includes `action_url`, `method`, `form_fields`, and `wopi_src`
 - the client should POST `form_fields` to `action_url`, typically into an iframe or popup
+- Collabora callbacks may authenticate with either `access_token` form/query parameters or `Authorization: Bearer <access_token>`
 
 Example response:
 

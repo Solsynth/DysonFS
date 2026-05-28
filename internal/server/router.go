@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 
 	docs "src.solsynth.dev/sosys/filesystem/docs"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
@@ -28,6 +29,11 @@ func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi
 			log.Fatal().Err(err).Msg("failed to init authenticator")
 		}
 		r.Use(func(c *gin.Context) {
+			if isWOPICallbackRequest(c.Request) {
+				c.Next()
+				return
+			}
+
 			tokenInfo, ok := dyauth.ExtractToken(c.Request)
 			if ok {
 				log.Debug().
@@ -76,4 +82,18 @@ func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi
 	handler.RegisterRoutes(r, cfg, files, wopi, tasks, quota, bus, dispatcher)
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true, "mode": mode}) })
 	return r
+}
+
+func isWOPICallbackRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	if !strings.HasPrefix(r.URL.Path, "/wopi/") {
+		return false
+	}
+	if strings.TrimSpace(r.URL.Query().Get("access_token")) != "" {
+		return true
+	}
+	authz := strings.TrimSpace(r.Header.Get("Authorization"))
+	return strings.HasPrefix(strings.ToLower(authz), "bearer ")
 }
