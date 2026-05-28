@@ -36,6 +36,7 @@ type App struct {
 	redis       *redis.Client
 	stor        storage.Backend
 	files       *service.FileService
+	wopi        *service.WOPIService
 	tasks       *service.TaskService
 	quota       *service.QuotaService
 	worker      *worker.Worker
@@ -83,15 +84,20 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	}
 
 	files := service.NewFileService(db, stor)
+	files.SetAccessSecret(cfg.Files.AccessSecret)
 	if redisClient != nil {
 		files.SetCache(sharedcache.NewRedisCacheService(redisClient))
+	}
+	wopi, err := service.NewWOPIService(cfg.WOPI, files)
+	if err != nil {
+		return nil, err
 	}
 	quota := service.NewQuotaService(db)
 	quota.SetLevelingConfig(cfg.Quota.Leveling)
 	if redisClient != nil {
 		quota.SetCache(sharedcache.NewRedisCacheService(redisClient))
 	}
-	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: files, tasks: service.NewTaskService(db), quota: quota, natsConn: natsConn, logger: logging.Log}
+	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: files, wopi: wopi, tasks: service.NewTaskService(db), quota: quota, natsConn: natsConn, logger: logging.Log}
 	if cfg.Passport.Target != "" {
 		profileClient, profileConn, err := service.NewProfileClient(cfg.Passport)
 		if err != nil {
@@ -163,7 +169,7 @@ func (a *App) Stop(ctx context.Context) error {
 }
 
 func (a *App) startMaster(ctx context.Context) error {
-	r := server.NewRouter(a.cfg, a.mode, a.files, a.tasks, a.quota, a.bus, nil)
+	r := server.NewRouter(a.cfg, a.mode, a.files, a.wopi, a.tasks, a.quota, a.bus, nil)
 	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
 
 	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
@@ -199,7 +205,7 @@ func (a *App) startWorker(context.Context) error {
 
 func (a *App) startBundled(ctx context.Context) error {
 	go func() { _ = a.worker.Start(ctx) }()
-	r := server.NewRouter(a.cfg, a.mode, a.files, a.tasks, a.quota, nil, a.dispatcher)
+	r := server.NewRouter(a.cfg, a.mode, a.files, a.wopi, a.tasks, a.quota, nil, a.dispatcher)
 	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
 	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
 	if err != nil {

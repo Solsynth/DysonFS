@@ -52,6 +52,14 @@ preferredStorage = "local"
 gatewayUrl = "http://localhost:8080"
 accessSecret = "change-me"
 
+[wopi]
+enabled = false
+publicUrl = "https://files.example.com"
+collaboraUrl = "https://collabora.example.com"
+tokenTtl = "15m"
+requireProof = false
+proofCacheTtl = "1h"
+
 [[pools]]
 id = "01SYSTEMPOOLID00000000000000"
 name = "system"

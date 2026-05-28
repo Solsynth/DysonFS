@@ -127,6 +127,41 @@ Fast mode notes:
 - the server updates `hash`, `size`, `mime_type`, and analyzed metadata on that existing object
 - stale derived children are removed before worker regeneration
 
+### WOPI / Collabora CODE
+
+DysonFS can expose WOPI host endpoints for Collabora Online / CODE.
+
+Config:
+
+```toml
+[wopi]
+enabled = true
+publicUrl = "https://files.example.com"
+collaboraUrl = "https://collabora.example.com"
+tokenTtl = "15m"
+requireProof = false
+proofCacheTtl = "1h"
+```
+
+Notes:
+
+- `publicUrl` must be the externally reachable DysonFS base URL used by Collabora for WOPI callbacks
+- `collaboraUrl` must point at the Collabora server base URL
+- proof validation is not implemented yet; keep `requireProof = false`
+
+Launch endpoint:
+
+- `POST /api/files/:id/edit` creates a WOPI-backed editing session for the authenticated user
+- the response includes `actionUrl`, `method`, `formFields`, and `wopiSrc`
+- the client should POST `formFields` to `actionUrl`, typically into an iframe or popup
+
+WOPI endpoints:
+
+- `GET /wopi/files/:id`
+- `GET /wopi/files/:id/contents`
+- `POST /wopi/files/:id/contents`
+- `POST /wopi/files/:id`
+
 ### Quota And Billing
 
 Quota values are reported in MB.

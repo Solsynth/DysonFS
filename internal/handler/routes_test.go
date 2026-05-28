@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -23,6 +24,38 @@ import (
 	gen "src.solsynth.dev/sosys/go/proto"
 )
 
+func newTestWOPIService(t *testing.T, files *service.FileService) *service.WOPIService {
+	t.Helper()
+	discovery := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hosting/discovery" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<wopi-discovery>
+  <net-zone name="external-http">
+    <app name="writer">
+      <action ext="txt" name="view" urlsrc="https://collabora.example/browser/view?" />
+      <action ext="txt" name="edit" urlsrc="https://collabora.example/browser/edit?" />
+    </app>
+  </net-zone>
+</wopi-discovery>`))
+	}))
+	t.Cleanup(discovery.Close)
+	files.SetAccessSecret("test-secret")
+	wopi, err := service.NewWOPIService(config.WOPIConfig{
+		Enabled:      true,
+		PublicURL:    "https://fs.example.test",
+		CollaboraURL: discovery.URL,
+		TokenTTL:     15 * time.Minute,
+	}, files)
+	if err != nil {
+		t.Fatalf("NewWOPIService() error = %v", err)
+	}
+	return wopi
+}
+
 func TestRegisterRoutesNoPanic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -36,7 +69,7 @@ func TestRegisterRoutesNoPanic(t *testing.T) {
 		}
 	}()
 
-	RegisterRoutes(r, &config.Config{}, files, tasks, quota, (*eventbus.Bus)(nil), nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, (*eventbus.Bus)(nil), nil)
 }
 
 func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
@@ -60,7 +93,7 @@ func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+fileID+"?thumbnail=1", nil)
 	w := httptest.NewRecorder()
@@ -95,7 +128,7 @@ func TestOpenFileFallsBackToLegacyCompressionStorageKey(t *testing.T) {
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+fileID, nil)
 	w := httptest.NewRecorder()
@@ -140,7 +173,7 @@ func TestOpenFileNormalizesDerivedCompressionStorageKeyFromObjectID(t *testing.T
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+parentFileID, nil)
 	w := httptest.NewRecorder()
@@ -189,7 +222,7 @@ func TestOpenFileFallsBackToOriginalWhenDerivedCompressionIsMissing(t *testing.T
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+parentFileID, nil)
 	w := httptest.NewRecorder()
@@ -230,7 +263,7 @@ func TestListRootOwnedFiltersByUsageAndApplicationType(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/me?usage=avatar&application_type=image/png", nil)
 	w := httptest.NewRecorder()
@@ -277,7 +310,7 @@ func TestListUnindexedFiltersByUsageAndApplicationType(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/unindexed?usage=import&application_type=application/zip", nil)
 	w := httptest.NewRecorder()
@@ -342,7 +375,7 @@ func TestPatchFileRenamesOwnedFile(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -380,7 +413,7 @@ func TestPatchFileRequiresAuth(t *testing.T) {
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -409,7 +442,7 @@ func TestPatchFileRejectsForbiddenRename(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(viewerID))
-	RegisterRoutes(r, &config.Config{}, files, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -418,5 +451,144 @@ func TestPatchFileRejectsForbiddenRename(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+}
+
+func TestCreateEditSessionAndWOPIRoundTrip(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{}, &database.WOPILock{})
+	tmp := t.TempDir()
+	stor := storage.NewLocalBackend(tmp)
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	wopi := newTestWOPIService(t, files)
+
+	accountID := uuid.New()
+	objectID := database.NewID()
+	fileID := database.NewID()
+	key := objectID
+	if err := db.Create(&database.FileObject{ID: objectID, Size: int64(len("hello")), MimeType: "text/plain", Hash: "hash-1", StorageKey: &key, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "notes.txt", AccountID: accountID, ObjectID: &objectID, StorageKey: &key, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), "text/plain"); err != nil {
+		t.Fatalf("put source: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, wopi, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	editReq := httptest.NewRequest(http.MethodPost, "/api/files/"+fileID+"/edit", nil)
+	editRes := httptest.NewRecorder()
+	r.ServeHTTP(editRes, editReq)
+	if editRes.Code != http.StatusOK {
+		t.Fatalf("edit session status = %d, body = %s", editRes.Code, editRes.Body.String())
+	}
+	var session struct {
+		Action     string            `json:"action"`
+		ActionURL  string            `json:"actionUrl"`
+		FormFields map[string]string `json:"formFields"`
+	}
+	if err := json.Unmarshal(editRes.Body.Bytes(), &session); err != nil {
+		t.Fatalf("decode edit session: %v", err)
+	}
+	if session.Action != "edit" {
+		t.Fatalf("session.Action = %q, want edit", session.Action)
+	}
+	token := session.FormFields["access_token"]
+	if token == "" {
+		t.Fatal("access_token is empty")
+	}
+	if !strings.Contains(session.ActionURL, "WOPISrc=") {
+		t.Fatalf("actionUrl = %q, want WOPISrc", session.ActionURL)
+	}
+
+	infoReq := httptest.NewRequest(http.MethodGet, "/wopi/files/"+fileID+"?access_token="+token, nil)
+	infoRes := httptest.NewRecorder()
+	r.ServeHTTP(infoRes, infoReq)
+	if infoRes.Code != http.StatusOK {
+		t.Fatalf("checkfileinfo status = %d, body = %s", infoRes.Code, infoRes.Body.String())
+	}
+
+	lockReq := httptest.NewRequest(http.MethodPost, "/wopi/files/"+fileID+"?access_token="+token, nil)
+	lockReq.Header.Set("X-WOPI-Override", "LOCK")
+	lockReq.Header.Set("X-WOPI-Lock", "lock-1")
+	lockRes := httptest.NewRecorder()
+	r.ServeHTTP(lockRes, lockReq)
+	if lockRes.Code != http.StatusOK {
+		t.Fatalf("lock status = %d, body = %s", lockRes.Code, lockRes.Body.String())
+	}
+
+	putReq := httptest.NewRequest(http.MethodPost, "/wopi/files/"+fileID+"/contents?access_token="+token, strings.NewReader("hello world"))
+	putReq.Header.Set("Content-Type", "text/plain")
+	putReq.Header.Set("X-WOPI-Lock", "lock-1")
+	putRes := httptest.NewRecorder()
+	r.ServeHTTP(putRes, putReq)
+	if putRes.Code != http.StatusOK {
+		t.Fatalf("putfile status = %d, body = %s", putRes.Code, putRes.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/wopi/files/"+fileID+"/contents?access_token="+token, nil)
+	getRes := httptest.NewRecorder()
+	r.ServeHTTP(getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("getfile status = %d, body = %s", getRes.Code, getRes.Body.String())
+	}
+	if got := getRes.Body.String(); got != "hello world" {
+		t.Fatalf("getfile body = %q, want %q", got, "hello world")
+	}
+}
+
+func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{}, &database.WOPILock{})
+	tmp := t.TempDir()
+	stor := storage.NewLocalBackend(tmp)
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	wopi := newTestWOPIService(t, files)
+
+	accountID := uuid.New()
+	objectID := database.NewID()
+	fileID := database.NewID()
+	key := objectID
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 5, MimeType: "text/plain", Hash: "hash-1", StorageKey: &key, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "notes.txt", AccountID: accountID, ObjectID: &objectID, StorageKey: &key, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), "text/plain"); err != nil {
+		t.Fatalf("put source: %v", err)
+	}
+	if err := db.Create(&database.WOPILock{FileID: fileID, LockID: "lock-a", ExpiresAt: time.Now().Add(5 * time.Minute)}).Error; err != nil {
+		t.Fatalf("create lock: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, wopi, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	editReq := httptest.NewRequest(http.MethodPost, "/api/files/"+fileID+"/edit", nil)
+	editRes := httptest.NewRecorder()
+	r.ServeHTTP(editRes, editReq)
+	if editRes.Code != http.StatusOK {
+		t.Fatalf("edit session status = %d, body = %s", editRes.Code, editRes.Body.String())
+	}
+	var session struct {
+		FormFields map[string]string `json:"formFields"`
+	}
+	if err := json.Unmarshal(editRes.Body.Bytes(), &session); err != nil {
+		t.Fatalf("decode edit session: %v", err)
+	}
+
+	putReq := httptest.NewRequest(http.MethodPost, "/wopi/files/"+fileID+"/contents?access_token="+session.FormFields["access_token"], strings.NewReader("updated"))
+	putReq.Header.Set("Content-Type", "text/plain")
+	putReq.Header.Set("X-WOPI-Lock", "lock-b")
+	putRes := httptest.NewRecorder()
+	r.ServeHTTP(putRes, putReq)
+	if putRes.Code != http.StatusConflict {
+		t.Fatalf("putfile status = %d, want %d, body = %s", putRes.Code, http.StatusConflict, putRes.Body.String())
 	}
 }

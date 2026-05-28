@@ -113,6 +113,7 @@ type FileService struct {
 	stor          storage.Backend
 	cache         sharedcache.CacheService
 	defaultPoolID string
+	accessSecret  string
 }
 
 const systemPoolName = "system"
@@ -131,6 +132,10 @@ func (s *FileService) DB() *database.DB { return s.db }
 func (s *FileService) Storage() storage.Backend { return s.stor }
 
 func (s *FileService) SetStorage(stor storage.Backend) { s.stor = stor }
+
+func (s *FileService) SetAccessSecret(secret string) { s.accessSecret = secret }
+
+func (s *FileService) AccessSecret() string { return s.accessSecret }
 
 func (s *FileService) SeedPools(cfg *config.Config) (string, error) {
 	if len(cfg.Pools) == 0 {

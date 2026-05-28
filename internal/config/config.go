@@ -22,6 +22,7 @@ type Config struct {
 	Quota    QuotaConfig    `mapstructure:"quota"`
 	Mode     ModeConfig     `mapstructure:"mode"`
 	Files    FileConfig     `mapstructure:"files"`
+	WOPI     WOPIConfig     `mapstructure:"wopi"`
 	Pools    []PoolConfig   `mapstructure:"pools"`
 	S3       S3Config       `mapstructure:"s3"`
 	Sentry   SentryConfig   `mapstructure:"sentry"`
@@ -43,10 +44,10 @@ type HTTPConfig struct {
 }
 
 type GRPCConfig struct {
-	Port      string `mapstructure:"port"`
-	UseTLS    bool   `mapstructure:"useTLS"`
-	CertFile  string `mapstructure:"certFile"`
-	KeyFile   string `mapstructure:"keyFile"`
+	Port     string `mapstructure:"port"`
+	UseTLS   bool   `mapstructure:"useTLS"`
+	CertFile string `mapstructure:"certFile"`
+	KeyFile  string `mapstructure:"keyFile"`
 }
 
 type DatabaseConfig struct {
@@ -106,14 +107,23 @@ type FileConfig struct {
 	AccessSecret     string `mapstructure:"accessSecret"`
 }
 
+type WOPIConfig struct {
+	Enabled       bool          `mapstructure:"enabled"`
+	PublicURL     string        `mapstructure:"publicUrl"`
+	CollaboraURL  string        `mapstructure:"collaboraUrl"`
+	TokenTTL      time.Duration `mapstructure:"tokenTtl"`
+	RequireProof  bool          `mapstructure:"requireProof"`
+	ProofCacheTTL time.Duration `mapstructure:"proofCacheTtl"`
+}
+
 type PoolConfig struct {
-	ID            string   `mapstructure:"id"`
-	Name          string   `mapstructure:"name"`
-	Default       bool     `mapstructure:"default"`
-	Hidden        bool     `mapstructure:"hidden"`
-	Storage       StoragePoolConfig  `mapstructure:"storage"`
-	Billing       BillingPoolConfig  `mapstructure:"billing"`
-	Policy        PolicyPoolConfig    `mapstructure:"policy"`
+	ID      string            `mapstructure:"id"`
+	Name    string            `mapstructure:"name"`
+	Default bool              `mapstructure:"default"`
+	Hidden  bool              `mapstructure:"hidden"`
+	Storage StoragePoolConfig `mapstructure:"storage"`
+	Billing BillingPoolConfig `mapstructure:"billing"`
+	Policy  PolicyPoolConfig  `mapstructure:"policy"`
 }
 
 type StoragePoolConfig struct {
@@ -185,6 +195,12 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("files.preferredStorage", "local")
 	viper.SetDefault("files.gatewayUrl", "http://localhost:8080")
 	viper.SetDefault("files.accessSecret", "dyson-network-default-access-token-secret-change-in-production")
+	viper.SetDefault("wopi.enabled", false)
+	viper.SetDefault("wopi.publicUrl", "")
+	viper.SetDefault("wopi.collaboraUrl", "")
+	viper.SetDefault("wopi.tokenTtl", 15*time.Minute)
+	viper.SetDefault("wopi.requireProof", false)
+	viper.SetDefault("wopi.proofCacheTtl", 1*time.Hour)
 	viper.SetDefault("s3.secure", true)
 	viper.SetDefault("sentry.dsn", "")
 	viper.SetDefault("sentry.tracesSampleRate", 0.01)

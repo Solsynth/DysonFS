@@ -27,7 +27,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, wopi *service.WOPIService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	if bus != nil {
 		r.Use(func(c *gin.Context) {
 			c.Set("bus", bus)
@@ -40,6 +40,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, []any{}) })
+		f.POST("/:id/edit", func(c *gin.Context) { createEditSession(c, wopi, files) })
 		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files) })
 		f.GET("/:id/children", func(c *gin.Context) { listChildren(c, files) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
@@ -57,6 +58,14 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.POST("/:id/restore", func(c *gin.Context) { restoreFile(c, files, bus, dispatcher) })
 		f.GET("/:id/permissions", func(c *gin.Context) { getFilePermissions(c, files) })
 		f.PUT("/:id/permissions", func(c *gin.Context) { updateFilePermissions(c, files) })
+	}
+
+	w := r.Group("/wopi")
+	{
+		w.GET("/files/:id", func(c *gin.Context) { wopiCheckFileInfo(c, wopi) })
+		w.GET("/files/:id/contents", func(c *gin.Context) { wopiGetFile(c, wopi) })
+		w.POST("/files/:id/contents", func(c *gin.Context) { wopiPutFile(c, wopi) })
+		w.POST("/files/:id", func(c *gin.Context) { wopiLock(c, wopi) })
 	}
 
 	u := r.Group("/api/files/upload")
@@ -113,6 +122,147 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 		return
 	}
 	c.JSON(http.StatusOK, file)
+}
+
+func createEditSession(c *gin.Context, wopi *service.WOPIService, files *service.FileService) {
+	if wopi == nil || !wopi.Enabled() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "wopi is disabled"})
+		return
+	}
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !files.CanAccessFile(result.Account, result.Session, file, "read") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	session, err := wopi.CreateSession(c.Request.Context(), file.ID, result.Account, result.Session)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, service.ErrWOPIUnsupportedFile):
+			status = http.StatusBadRequest
+		case errors.Is(err, service.ErrWOPIUnauthorized):
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, session)
+}
+
+func wopiCheckFileInfo(c *gin.Context, wopi *service.WOPIService) {
+	claims, ok := authenticateWOPIRequest(c, wopi)
+	if !ok {
+		return
+	}
+	info, err := wopi.CheckFileInfo(c.Request.Context(), c.Param("id"), claims)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, info)
+}
+
+func wopiGetFile(c *gin.Context, wopi *service.WOPIService) {
+	_, ok := authenticateWOPIRequest(c, wopi)
+	if !ok {
+		return
+	}
+	reader, contentType, err := wopi.OpenContents(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	defer reader.Close()
+	c.Header("Content-Type", contentType)
+	c.Status(http.StatusOK)
+	_, _ = io.Copy(c.Writer, reader)
+}
+
+func wopiPutFile(c *gin.Context, wopi *service.WOPIService) {
+	claims, ok := authenticateWOPIRequest(c, wopi)
+	if !ok {
+		return
+	}
+	updated, err := wopi.SaveContents(c.Request.Context(), c.Param("id"), claims, c.GetHeader("X-WOPI-Lock"), c.Request.Body, c.GetHeader("Content-Type"))
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, service.ErrWOPIUnauthorized):
+			status = http.StatusForbidden
+		case errors.Is(err, service.ErrWOPIConflict):
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("X-WOPI-ItemVersion", fileVersionHeader(updated))
+	size := int64(0)
+	if updated.Object != nil {
+		size = updated.Object.Size
+	}
+	c.JSON(http.StatusOK, gin.H{"Name": updated.Name, "Size": size})
+}
+
+func wopiLock(c *gin.Context, wopi *service.WOPIService) {
+	claims, ok := authenticateWOPIRequest(c, wopi)
+	if !ok {
+		return
+	}
+	result, err := wopi.HandleLock(
+		c.Request.Context(),
+		c.Param("id"),
+		claims,
+		c.GetHeader("X-WOPI-Override"),
+		c.GetHeader("X-WOPI-Lock"),
+		firstNonEmpty(c.GetHeader("X-WOPI-OldLock"), c.GetHeader("X-WOPI-Oldlock")),
+	)
+	if result != nil && strings.TrimSpace(result.CurrentLock) != "" {
+		c.Header("X-WOPI-Lock", result.CurrentLock)
+	}
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, service.ErrWOPIUnauthorized):
+			status = http.StatusForbidden
+		case errors.Is(err, service.ErrWOPIConflict):
+			status = http.StatusConflict
+		case errors.Is(err, service.ErrWOPIInvalidLockOperation):
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusOK)
+}
+
+func authenticateWOPIRequest(c *gin.Context, wopi *service.WOPIService) (*service.WOPITokenClaims, bool) {
+	if wopi == nil || !wopi.Enabled() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "wopi is disabled"})
+		return nil, false
+	}
+	rawToken := strings.TrimSpace(c.Query("access_token"))
+	if rawToken == "" {
+		rawToken = strings.TrimSpace(c.PostForm("access_token"))
+	}
+	if rawToken == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing access token"})
+		return nil, false
+	}
+	claims, err := wopi.AuthenticateToken(rawToken, c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid access token"})
+		return nil, false
+	}
+	return claims, true
 }
 
 // @Summary Open file
@@ -1728,6 +1878,25 @@ func deref(v *string) string {
 		return ""
 	}
 	return *v
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func fileVersionHeader(file *database.CloudFile) string {
+	if file == nil {
+		return ""
+	}
+	if file.Object != nil && strings.TrimSpace(file.Object.Hash) != "" {
+		return strings.TrimSpace(file.Object.Hash)
+	}
+	return strconv.FormatInt(file.UpdatedAt.UnixMilli(), 10)
 }
 
 func optionalStringPtr(v string) *string {
