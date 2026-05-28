@@ -146,14 +146,66 @@ proofCacheTtl = "1h"
 Notes:
 
 - `publicUrl` must be the externally reachable DysonFS base URL used by Collabora for WOPI callbacks
+- DysonFS builds the WOPI callback base directly from `publicUrl`, for example `https://files.example.com/wopi/files/:id`
 - `collaboraUrl` must point at the Collabora server base URL
 - proof validation is not implemented yet; keep `requireProof = false`
 
 Launch endpoint:
 
 - `POST /api/files/:id/edit` creates a WOPI-backed editing session for the authenticated user
-- the response includes `actionUrl`, `method`, `formFields`, and `wopiSrc`
-- the client should POST `formFields` to `actionUrl`, typically into an iframe or popup
+- the response includes `action_url`, `method`, `form_fields`, and `wopi_src`
+- the client should POST `form_fields` to `action_url`, typically into an iframe or popup
+
+Example response:
+
+```json
+{
+  "action_url": "https://collabora.example.com/browser/edit?WOPISrc=https%3A%2F%2Ffiles.example.com%2Fwopi%2Ffiles%2FFILE_ID",
+  "action": "edit",
+  "method": "POST",
+  "form_fields": {
+    "access_token": "TOKEN",
+    "access_token_ttl": "1770000000000"
+  },
+  "wopi_src": "https://files.example.com/wopi/files/FILE_ID",
+  "expires_at": "2026-05-29T12:00:00Z"
+}
+```
+
+Example client flow:
+
+```html
+<iframe id="collabora-frame" name="collabora-frame"></iframe>
+<script>
+  async function openEditor(fileId, token) {
+    const response = await fetch(`/api/files/${fileId}/edit`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!response.ok) throw new Error("failed to create edit session");
+
+  const session = await response.json();
+  const form = document.createElement("form");
+  form.method = session.method || "POST";
+  form.action = session.action_url;
+  form.target = "collabora-frame";
+
+  for (const [key, value] of Object.entries(session.form_fields || {})) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = key;
+      input.value = value;
+      form.appendChild(input);
+    }
+
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }
+</script>
+```
 
 WOPI endpoints:
 

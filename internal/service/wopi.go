@@ -47,12 +47,12 @@ type WOPIService struct {
 }
 
 type WOPISession struct {
-	ActionURL  string            `json:"actionUrl"`
+	ActionURL  string            `json:"action_url"`
 	Action     string            `json:"action"`
 	Method     string            `json:"method"`
-	FormFields map[string]string `json:"formFields"`
-	WOPISrc    string            `json:"wopiSrc"`
-	ExpiresAt  time.Time         `json:"expiresAt"`
+	FormFields map[string]string `json:"form_fields"`
+	WOPISrc    string            `json:"wopi_src"`
+	ExpiresAt  time.Time         `json:"expires_at"`
 }
 
 type WOPITokenClaims struct {

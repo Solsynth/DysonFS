@@ -556,8 +556,8 @@ func TestCreateEditSessionAndWOPIRoundTrip(t *testing.T) {
 	}
 	var session struct {
 		Action     string            `json:"action"`
-		ActionURL  string            `json:"actionUrl"`
-		FormFields map[string]string `json:"formFields"`
+		ActionURL  string            `json:"action_url"`
+		FormFields map[string]string `json:"form_fields"`
 	}
 	if err := json.Unmarshal(editRes.Body.Bytes(), &session); err != nil {
 		t.Fatalf("decode edit session: %v", err)
@@ -645,7 +645,7 @@ func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 		t.Fatalf("edit session status = %d, body = %s", editRes.Code, editRes.Body.String())
 	}
 	var session struct {
-		FormFields map[string]string `json:"formFields"`
+		FormFields map[string]string `json:"form_fields"`
 	}
 	if err := json.Unmarshal(editRes.Body.Bytes(), &session); err != nil {
 		t.Fatalf("decode edit session: %v", err)
