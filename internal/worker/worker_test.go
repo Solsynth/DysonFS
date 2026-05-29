@@ -20,7 +20,7 @@ import (
 
 func TestProcessUploadedFileFallsBackToStorageWhenTempPathMissing(t *testing.T) {
 	tmp := t.TempDir()
-	db := openWorkerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openWorkerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	stor := storage.NewLocalBackend(tmp)
 	svc := service.NewFileService(&database.DB{DB: db}, stor)
 	svcDefaultPoolID := seedWorkerDefaultPool(t, db, tmp)

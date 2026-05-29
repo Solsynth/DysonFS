@@ -3,7 +3,6 @@ package migratelegacy
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,9 +22,8 @@ type Options struct {
 	SkipDerived     bool
 	ContinueOnError bool
 
-	SubjectTypeMap   map[int]string
-	PermissionMap    map[int]string
-	ReplicaStatusMap map[int]string
+	SubjectTypeMap map[int]string
+	PermissionMap  map[int]string
 }
 
 type Migrator struct {
@@ -40,7 +38,6 @@ type Summary struct {
 	FileObjects    int64
 	Files          int64
 	FilePerms      int64
-	FileReplicas   int64
 	DerivedFiles   int64
 	DerivedObjects int64
 	Skipped        int64
@@ -71,9 +68,6 @@ func OpenTargetAndSource(targetDSN, sourceDSN string, op Options) (*Migrator, er
 	if op.PermissionMap == nil {
 		op.PermissionMap = defaultPermissionMap()
 	}
-	if op.ReplicaStatusMap == nil {
-		op.ReplicaStatusMap = defaultReplicaStatusMap()
-	}
 	return &Migrator{src: src, dst: dst, op: op}, nil
 }
 
@@ -81,7 +75,7 @@ func (m *Migrator) Run(ctx context.Context) (Summary, error) {
 	_ = ctx
 	var summary Summary
 	if err := m.dst.AutoMigrate(
-		&database.FilePool{}, &database.FileObject{}, &database.CloudFile{}, &database.FileReplica{}, &database.FilePermission{}, &database.PoolPermission{}, &database.PersistentTask{}, &database.QuotaRecord{},
+		&database.FilePool{}, &database.FileObject{}, &database.CloudFile{}, &database.FilePermission{}, &database.PoolPermission{}, &database.PersistentTask{}, &database.QuotaRecord{},
 	); err != nil {
 		return summary, err
 	}
@@ -101,9 +95,6 @@ func (m *Migrator) Run(ctx context.Context) (Summary, error) {
 		return summary, err
 	}
 	if err := m.migrateFilePermissions(&summary); err != nil {
-		return summary, err
-	}
-	if err := m.migrateFileReplicas(&summary); err != nil {
 		return summary, err
 	}
 	if !m.op.SkipDerived {
@@ -221,20 +212,6 @@ type legacyFilePermission struct {
 }
 
 func (legacyFilePermission) TableName() string { return "file_permissions" }
-
-type legacyFileReplica struct {
-	ID        string     `gorm:"column:id;primaryKey"`
-	ObjectID  string     `gorm:"column:object_id"`
-	PoolID    *string    `gorm:"column:pool_id"`
-	StorageID string     `gorm:"column:storage_id"`
-	Status    int        `gorm:"column:status"`
-	IsPrimary bool       `gorm:"column:is_primary"`
-	CreatedAt time.Time  `gorm:"column:created_at"`
-	UpdatedAt time.Time  `gorm:"column:updated_at"`
-	DeletedAt *time.Time `gorm:"column:deleted_at"`
-}
-
-func (legacyFileReplica) TableName() string { return "file_replicas" }
 
 func (m *Migrator) migratePools(summary *Summary) error {
 	since := m.lastCreatedAt(&database.FilePool{})
@@ -418,34 +395,6 @@ func (m *Migrator) migrateFilePermissions(summary *Summary) error {
 	return nil
 }
 
-func (m *Migrator) migrateFileReplicas(summary *Summary) error {
-	since := m.lastCreatedAt(&database.FileReplica{})
-	var rows []legacyFileReplica
-	if err := m.src.Where("created_at > ?", since).Order("created_at asc").Find(&rows).Error; err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		fmt.Println("file_replicas: up to date")
-		return nil
-	}
-	fmt.Printf("file_replicas: migrating %d new records\n", len(rows))
-	for _, row := range rows {
-		rep := database.FileReplica{ID: row.ID, ObjectID: row.ObjectID, PoolID: row.PoolID, StorageID: &row.StorageID, Status: m.mapReplicaStatus(row), IsPrimary: row.IsPrimary, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
-		if row.DeletedAt != nil {
-			rep.DeletedAt = gorm.DeletedAt{Time: *row.DeletedAt, Valid: true}
-		}
-		if err := m.save(&rep).Error; err != nil {
-			if m.op.ContinueOnError {
-				summary.Failed++
-				continue
-			}
-			return err
-		}
-		summary.FileReplicas++
-	}
-	return nil
-}
-
 func (m *Migrator) migrateDerived(summary *Summary) error {
 	updates := []struct {
 		appType string
@@ -497,16 +446,6 @@ func (m *Migrator) mapFilePermission(row legacyFilePermission) (*database.FilePe
 	return perm, nil
 }
 
-func (m *Migrator) mapReplicaStatus(row legacyFileReplica) string {
-	if mapped, ok := m.op.ReplicaStatusMap[row.Status]; ok {
-		return mapped
-	}
-	if row.IsPrimary {
-		return "primary"
-	}
-	return strconv.Itoa(row.Status)
-}
-
 func (m *Migrator) save(value any) *gorm.DB {
 	if m.op.DryRun {
 		return &gorm.DB{Error: nil}
@@ -517,8 +456,7 @@ func (m *Migrator) save(value any) *gorm.DB {
 func defaultSubjectTypeMap() map[int]string {
 	return map[int]string{0: "private", 1: "account", 2: "scope", 3: "public"}
 }
-func defaultPermissionMap() map[int]string    { return map[int]string{0: "read", 1: "write", 2: "manage"} }
-func defaultReplicaStatusMap() map[int]string { return map[int]string{} }
+func defaultPermissionMap() map[int]string { return map[int]string{0: "read", 1: "write", 2: "manage"} }
 
 func parseUUID(v string) uuid.UUID {
 	if strings.TrimSpace(v) == "" {

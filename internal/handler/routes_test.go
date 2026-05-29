@@ -74,7 +74,7 @@ func TestRegisterRoutesNoPanic(t *testing.T) {
 
 func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)
@@ -109,7 +109,7 @@ func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
 
 func TestOpenFileFallsBackToLegacyCompressionStorageKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)
@@ -144,7 +144,7 @@ func TestOpenFileFallsBackToLegacyCompressionStorageKey(t *testing.T) {
 
 func TestOpenFileNormalizesDerivedCompressionStorageKeyFromObjectID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)
@@ -193,7 +193,7 @@ func TestOpenFileNormalizesDerivedCompressionStorageKeyFromObjectID(t *testing.T
 
 func TestOpenFileFallsBackToOriginalWhenDerivedCompressionIsMissing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)
@@ -242,7 +242,7 @@ func TestOpenFileFallsBackToOriginalWhenDerivedCompressionIsMissing(t *testing.T
 
 func TestListRootOwnedFiltersByUsageAndApplicationType(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 	accountID := uuid.New()
 	usageAvatar := "avatar"
@@ -289,7 +289,7 @@ func TestListRootOwnedFiltersByUsageAndApplicationType(t *testing.T) {
 
 func TestListUnindexedFiltersByUsageAndApplicationType(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 	accountID := uuid.New()
 	usageImport := "import"
@@ -336,7 +336,7 @@ func TestListUnindexedFiltersByUsageAndApplicationType(t *testing.T) {
 
 func TestListRootOwnedFiltersByContentTypeAndExtendedFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 	accountID := uuid.New()
 	poolID := database.NewID()
@@ -430,7 +430,7 @@ func TestListRootOwnedFiltersByContentTypeAndExtendedFields(t *testing.T) {
 
 func TestListUnindexedFiltersByMimeTypeAliasAndFlags(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 	accountID := uuid.New()
 	poolID := database.NewID()
@@ -488,7 +488,7 @@ func TestListUnindexedFiltersByMimeTypeAliasAndFlags(t *testing.T) {
 
 func TestFileBreadcrumbReturnsRootToCurrent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 	accountID := uuid.New()
 
@@ -530,7 +530,7 @@ func TestFileBreadcrumbReturnsRootToCurrent(t *testing.T) {
 
 func TestFileBreadcrumbRequiresReadAccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 
 	file := database.CloudFile{ID: database.NewID(), Name: "private.txt", AccountID: uuid.New(), Indexed: true}
@@ -585,7 +585,7 @@ func openHandlerTestDB(t *testing.T, values ...any) *gorm.DB {
 
 func TestPatchFileRenamesOwnedFile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 	accountID := uuid.New()
 	file := database.CloudFile{ID: database.NewID(), Name: "before.txt", AccountID: accountID, Indexed: true}
@@ -625,7 +625,7 @@ func TestPatchFileRenamesOwnedFile(t *testing.T) {
 
 func TestPatchFileRequiresAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 	file := database.CloudFile{ID: database.NewID(), Name: "before.txt", AccountID: uuid.New(), Indexed: true}
 	if err := db.Create(&file).Error; err != nil {
@@ -647,7 +647,7 @@ func TestPatchFileRequiresAuth(t *testing.T) {
 
 func TestPatchFileRejectsForbiddenRename(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, nil)
 	ownerID := uuid.New()
 	viewerID := uuid.New()
@@ -676,7 +676,7 @@ func TestPatchFileRejectsForbiddenRename(t *testing.T) {
 
 func TestCreateEditSessionAndWOPIRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{}, &database.WOPILock{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.WOPILock{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)
@@ -763,7 +763,7 @@ func TestCreateEditSessionAndWOPIRoundTrip(t *testing.T) {
 
 func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{}, &database.WOPILock{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.WOPILock{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)
@@ -815,7 +815,7 @@ func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 
 func TestWOPIEndpointsAcceptBearerAccessToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FileReplica{}, &database.FilePermission{}, &database.WOPILock{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.WOPILock{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)

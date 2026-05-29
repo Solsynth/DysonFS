@@ -111,7 +111,7 @@ func (s *stubProfileClient) GetAccountStatusBatch(context.Context, *gen.DyGetAcc
 }
 
 func TestCreateUploadedFileCreatesReplica(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
@@ -131,20 +131,17 @@ func TestCreateUploadedFileCreatesReplica(t *testing.T) {
 	if file.Description != nil {
 		t.Fatalf("file.Description = %v, want nil", *file.Description)
 	}
-	var replica database.FileReplica
-	if err := db.First(&replica, "object_id = ?", objectID).Error; err != nil {
-		t.Fatalf("load replica: %v", err)
+	var object database.FileObject
+	if err := db.First(&object, "id = ?", objectID).Error; err != nil {
+		t.Fatalf("load object: %v", err)
 	}
-	if replica.PoolID == nil || *replica.PoolID != poolID {
-		t.Fatalf("replica.PoolID = %v, want %q", replica.PoolID, poolID)
-	}
-	if replica.Status != "primary" || !replica.IsPrimary {
-		t.Fatalf("replica = %+v, want primary replica", replica)
+	if file.StorageKey == nil || *file.StorageKey != storageKey {
+		t.Fatalf("file.StorageKey = %v, want %q", file.StorageKey, storageKey)
 	}
 }
 
 func TestCreateDerivedFileCreatesReplicaUsingParentPool(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
@@ -169,17 +166,13 @@ func TestCreateDerivedFileCreatesReplicaUsingParentPool(t *testing.T) {
 	if file.PoolID == nil || *file.PoolID != poolID {
 		t.Fatalf("file.PoolID = %v, want %q", file.PoolID, poolID)
 	}
-	var replica database.FileReplica
-	if err := db.First(&replica, "object_id = ?", derivedObjectID).Error; err != nil {
-		t.Fatalf("load replica: %v", err)
-	}
-	if replica.PoolID == nil || *replica.PoolID != poolID {
-		t.Fatalf("replica.PoolID = %v, want %q", replica.PoolID, poolID)
+	if file.StorageKey == nil || *file.StorageKey != storageKey {
+		t.Fatalf("file.StorageKey = %v, want %q", file.StorageKey, storageKey)
 	}
 }
 
 func TestDeleteDerivedFileUpdatesParentCompatibilityFlags(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
@@ -240,7 +233,7 @@ func TestDeleteDerivedFileUpdatesParentCompatibilityFlags(t *testing.T) {
 }
 
 func TestCreateUploadedFilePersistsDescription(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
@@ -261,7 +254,7 @@ func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 }
 
 func TestPurgeFileDeletesDereferencedObjectAndRemote(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}, &database.FilePermission{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	stor := storage.NewLocalBackend(tmp)
@@ -277,9 +270,6 @@ func TestPurgeFileDeletesDereferencedObjectAndRemote(t *testing.T) {
 	accountID := uuid.New()
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
-	}
-	if err := db.Create(&database.FileReplica{ID: database.NewID(), ObjectID: objectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true}).Error; err != nil {
-		t.Fatalf("create replica: %v", err)
 	}
 	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: fileID, SubjectType: "private", Permission: "read"}).Error; err != nil {
 		t.Fatalf("create permission: %v", err)
@@ -298,20 +288,13 @@ func TestPurgeFileDeletesDereferencedObjectAndRemote(t *testing.T) {
 	if err := db.Unscoped().First(&database.FileObject{}, "id = ?", objectID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("file object still exists, err = %v", err)
 	}
-	var replicaCount int64
-	if err := db.Unscoped().Model(&database.FileReplica{}).Where("object_id = ?", objectID).Count(&replicaCount).Error; err != nil {
-		t.Fatalf("count replicas: %v", err)
-	}
-	if replicaCount != 0 {
-		t.Fatalf("replica count = %d, want 0", replicaCount)
-	}
 	if _, err := os.Stat(filepath.Join(tmp, storageKey)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("remote object still exists, stat err = %v", err)
 	}
 }
 
 func TestPurgeFileDeletesDescendantsAndTheirObjects(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}, &database.FilePermission{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	stor := storage.NewLocalBackend(tmp)
@@ -342,14 +325,6 @@ func TestPurgeFileDeletesDescendantsAndTheirObjects(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: grandchildID, Name: "grandchild.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &childID, ObjectID: &grandchildObjectID, StorageKey: &grandchildStorageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create grandchild file: %v", err)
 	}
-	for _, replica := range []database.FileReplica{
-		{ID: database.NewID(), ObjectID: childObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
-		{ID: database.NewID(), ObjectID: grandchildObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
-	} {
-		if err := db.Create(&replica).Error; err != nil {
-			t.Fatalf("create replica for %s: %v", replica.ObjectID, err)
-		}
-	}
 	for _, perm := range []database.FilePermission{
 		{ID: database.NewID(), FileID: childID, SubjectType: "private", Permission: "read"},
 		{ID: database.NewID(), FileID: grandchildID, SubjectType: "private", Permission: "read"},
@@ -378,13 +353,6 @@ func TestPurgeFileDeletesDescendantsAndTheirObjects(t *testing.T) {
 		if err := db.Unscoped().First(&database.FileObject{}, "id = ?", objectID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
 			t.Fatalf("file object %s still exists, err = %v", objectID, err)
 		}
-		var replicaCount int64
-		if err := db.Unscoped().Model(&database.FileReplica{}).Where("object_id = ?", objectID).Count(&replicaCount).Error; err != nil {
-			t.Fatalf("count replicas for %s: %v", objectID, err)
-		}
-		if replicaCount != 0 {
-			t.Fatalf("replica count for %s = %d, want 0", objectID, replicaCount)
-		}
 	}
 	var permissionCount int64
 	if err := db.Unscoped().Model(&database.FilePermission{}).Where("file_id IN ?", []string{childID, grandchildID}).Count(&permissionCount).Error; err != nil {
@@ -401,7 +369,7 @@ func TestPurgeFileDeletesDescendantsAndTheirObjects(t *testing.T) {
 }
 
 func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}, &database.FilePermission{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	stor := storage.NewLocalBackend(tmp)
@@ -420,9 +388,6 @@ func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
 		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 			t.Fatalf("create file %s: %v", fileID, err)
 		}
-	}
-	if err := db.Create(&database.FileReplica{ID: database.NewID(), ObjectID: objectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true}).Error; err != nil {
-		t.Fatalf("create replica: %v", err)
 	}
 	if err := stor.Put(context.Background(), storageKey, strings.NewReader("hello"), "text/plain"); err != nil {
 		t.Fatalf("put remote object: %v", err)
@@ -447,7 +412,7 @@ func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
 }
 
 func TestOverwriteFileSwapsObjectAndDeletesDereferencedSource(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	stor := storage.NewLocalBackend(tmp)
@@ -478,14 +443,6 @@ func TestOverwriteFileSwapsObjectAndDeletesDereferencedSource(t *testing.T) {
 	}
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
 		t.Fatalf("create derived file: %v", err)
-	}
-	for _, replica := range []database.FileReplica{
-		{ID: database.NewID(), ObjectID: oldObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
-		{ID: database.NewID(), ObjectID: derivedObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
-	} {
-		if err := db.Create(&replica).Error; err != nil {
-			t.Fatalf("create replica %s: %v", replica.ObjectID, err)
-		}
 	}
 	if err := stor.Put(context.Background(), oldStorageKey, strings.NewReader("hello"), "text/plain"); err != nil {
 		t.Fatalf("put old object: %v", err)
@@ -526,17 +483,17 @@ func TestOverwriteFileSwapsObjectAndDeletesDereferencedSource(t *testing.T) {
 	if err := db.First(&database.FileObject{}, "id = ?", newObjectID).Error; err != nil {
 		t.Fatalf("new object missing: %v", err)
 	}
-	var newReplicaCount int64
-	if err := db.Model(&database.FileReplica{}).Where("object_id = ? AND deleted_at IS NULL", newObjectID).Count(&newReplicaCount).Error; err != nil {
-		t.Fatalf("count new replicas: %v", err)
+	var newObject database.FileObject
+	if err := db.First(&newObject, "id = ?", newObjectID).Error; err != nil {
+		t.Fatalf("load new object: %v", err)
 	}
-	if newReplicaCount != 1 {
-		t.Fatalf("new replica count = %d, want 1", newReplicaCount)
+	if newObject.StorageKey == nil || *newObject.StorageKey != newStorageKey {
+		t.Fatalf("new object StorageKey = %v, want %q", newObject.StorageKey, newStorageKey)
 	}
 }
 
 func TestOverwriteFileKeepsSharedPreviousObject(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	stor := storage.NewLocalBackend(tmp)
@@ -563,9 +520,6 @@ func TestOverwriteFileKeepsSharedPreviousObject(t *testing.T) {
 		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &sharedObjectID, StorageKey: &sharedStorageKey, Indexed: true}).Error; err != nil {
 			t.Fatalf("create file %s: %v", fileID, err)
 		}
-	}
-	if err := db.Create(&database.FileReplica{ID: database.NewID(), ObjectID: sharedObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true}).Error; err != nil {
-		t.Fatalf("create shared replica: %v", err)
 	}
 	if err := stor.Put(context.Background(), sharedStorageKey, strings.NewReader("hello"), "text/plain"); err != nil {
 		t.Fatalf("put shared object: %v", err)
@@ -594,7 +548,7 @@ func TestOverwriteFileKeepsSharedPreviousObject(t *testing.T) {
 }
 
 func TestFastOverwriteFileUpdatesExistingObject(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	stor := storage.NewLocalBackend(tmp)
@@ -622,14 +576,6 @@ func TestFastOverwriteFileUpdatesExistingObject(t *testing.T) {
 	}
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
 		t.Fatalf("create derived file: %v", err)
-	}
-	for _, replica := range []database.FileReplica{
-		{ID: database.NewID(), ObjectID: objectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
-		{ID: database.NewID(), ObjectID: derivedObjectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true},
-	} {
-		if err := db.Create(&replica).Error; err != nil {
-			t.Fatalf("create replica %s: %v", replica.ObjectID, err)
-		}
 	}
 	if err := stor.Put(context.Background(), storageKey, strings.NewReader("old"), "text/plain"); err != nil {
 		t.Fatalf("put source object: %v", err)
@@ -695,7 +641,7 @@ func TestFastOverwriteFileUpdatesExistingObject(t *testing.T) {
 }
 
 func TestFastOverwriteFileFallsBackWhenObjectShared(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	stor := storage.NewLocalBackend(tmp)
@@ -714,9 +660,6 @@ func TestFastOverwriteFileFallsBackWhenObjectShared(t *testing.T) {
 		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 			t.Fatalf("create file %s: %v", fileID, err)
 		}
-	}
-	if err := db.Create(&database.FileReplica{ID: database.NewID(), ObjectID: objectID, PoolID: ptr(poolID), StorageID: ptr(poolID), Status: "primary", IsPrimary: true}).Error; err != nil {
-		t.Fatalf("create replica: %v", err)
 	}
 	sourcePath := filepath.Join(tmp, "updated.txt")
 	if err := os.WriteFile(sourcePath, []byte("updated body"), 0o644); err != nil {
@@ -992,14 +935,14 @@ func TestUpdateFilePermissionsAssignsIDs(t *testing.T) {
 func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testing.T) {
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	poolID := seedDefaultPool(t, db, tmp)
 	svc := NewFileService(&database.DB{DB: db}, stor)
 	svc.defaultPoolID = poolID
 	accountID := uuid.New()
 	objectID := database.NewID()
 	storageKey := objectID
-	if err := db.Create(&database.FileObject{ID: objectID, Size: 3, MimeType: "text/plain", Hash: "hash", StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 3, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
 		t.Fatalf("create object: %v", err)
 	}
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
@@ -1010,7 +953,7 @@ func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testi
 	}
 	missingID := database.NewID()
 	missingKey := missingID
-	if err := db.Create(&database.FileObject{ID: missingID, Size: 4, MimeType: "text/plain", Hash: "hash2", StorageKey: &missingKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+	if err := db.Create(&database.FileObject{ID: missingID, Size: 4, MimeType: "text/plain", Hash: "hash2", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
 		t.Fatalf("create missing object: %v", err)
 	}
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "missing.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &missingID, StorageKey: &missingKey, Indexed: true}).Error; err != nil {
@@ -1033,12 +976,12 @@ func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testi
 	if summary.Created != 1 {
 		t.Fatalf("summary.Created = %d, want 1", summary.Created)
 	}
-	var replicaCount int64
-	if err := db.Model(&database.FileReplica{}).Count(&replicaCount).Error; err != nil {
-		t.Fatalf("count replicas: %v", err)
+	var object database.FileObject
+	if err := db.First(&object, "id = ?", objectID).Error; err != nil {
+		t.Fatalf("load object: %v", err)
 	}
-	if replicaCount != 1 {
-		t.Fatalf("replica count = %d, want 1", replicaCount)
+	if object.StorageKey == nil || *object.StorageKey != storageKey {
+		t.Fatalf("object.StorageKey = %v, want %q", object.StorageKey, storageKey)
 	}
 }
 
@@ -1075,7 +1018,7 @@ func TestListOwnedReturnsAllUserFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
@@ -1157,7 +1100,7 @@ func TestListRootOwnedExcludesChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
@@ -1195,7 +1138,7 @@ func TestListUnindexedExcludesChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
@@ -1234,7 +1177,7 @@ func TestListRootOwnedDefaultsToRecentFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
@@ -1270,7 +1213,7 @@ func TestReanalyzeMissingImageMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{}); err != nil {
+	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FilePool{}); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
 
@@ -1331,7 +1274,7 @@ func TestReanalyzeMissingImageMetadata(t *testing.T) {
 }
 
 func TestStoreSourceAnalysisStoresSharedMediaDimensions(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	svc := NewFileService(&database.DB{DB: db}, nil)
 	objectID := database.NewID()
 	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "video/mp4", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
@@ -1374,7 +1317,7 @@ func TestStoreSourceAnalysisStoresSharedMediaDimensions(t *testing.T) {
 }
 
 func TestListReanalysisCandidatesIncludesVideoMetadataGaps(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	objectID := database.NewID()
 	storageKey := objectID
@@ -1401,7 +1344,7 @@ func TestListReanalysisCandidatesIncludesVideoMetadataGaps(t *testing.T) {
 }
 
 func TestReanalyzeFilesDeduplicatesAndUpdatesSourceMetadata(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FileReplica{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	svc := NewFileService(&database.DB{DB: db}, stor)

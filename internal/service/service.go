@@ -213,21 +213,6 @@ func (s *FileService) ResolvedPoolID(poolID *string) *string {
 	return s.resolvedPoolID(poolID)
 }
 
-func (s *FileService) createPrimaryReplica(tx *gorm.DB, objectID string, poolID *string) error {
-	if strings.TrimSpace(objectID) == "" {
-		return fmt.Errorf("object id is required")
-	}
-	replica := &database.FileReplica{
-		ID:        database.NewID(),
-		ObjectID:  objectID,
-		PoolID:    poolID,
-		StorageID: poolID,
-		Status:    "primary",
-		IsPrimary: true,
-	}
-	return tx.Create(replica).Error
-}
-
 func (s *FileService) BackendForPoolID(poolID *string) (storage.Backend, error) {
 	if poolID == nil || strings.TrimSpace(*poolID) == "" {
 		return s.stor, nil
@@ -1226,75 +1211,18 @@ func (s *FileService) purgeObjectIfDereferenced(tx *gorm.DB, file *database.Clou
 		return err
 	}
 
-	var replicas []database.FileReplica
-	if err := tx.Unscoped().Where("object_id = ?", objectID).Find(&replicas).Error; err != nil {
-		return err
-	}
-
 	storageKey := firstNonEmptyPtr(object.StorageKey, file.StorageKey, file.ObjectID)
 	if storageKey != nil && strings.TrimSpace(*storageKey) != "" {
-		if err := s.deleteObjectFromBackends(context.Background(), file, replicas, *storageKey); err != nil {
-			return err
-		}
-	}
-
-	if err := tx.Unscoped().Delete(&database.FileReplica{}, "object_id = ?", objectID).Error; err != nil {
-		return err
-	}
-	return tx.Unscoped().Delete(&database.FileObject{}, "id = ?", objectID).Error
-}
-
-func (s *FileService) deleteObjectFromBackends(ctx context.Context, file *database.CloudFile, replicas []database.FileReplica, storageKey string) error {
-	if s == nil {
-		return fmt.Errorf("file service not configured")
-	}
-	if strings.TrimSpace(storageKey) == "" {
-		return nil
-	}
-
-	type backendTarget struct {
-		storageID *string
-		poolID    *string
-	}
-	targets := make([]backendTarget, 0, len(replicas)+1)
-	seen := make(map[string]struct{})
-	addTarget := func(storageID, poolID *string) {
-		storageKey := ""
-		if storageID != nil {
-			storageKey = "storage:" + strings.TrimSpace(*storageID)
-		}
-		poolKey := ""
-		if poolID != nil {
-			poolKey = "pool:" + strings.TrimSpace(*poolID)
-		}
-		key := storageKey + "|" + poolKey
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		targets = append(targets, backendTarget{storageID: storageID, poolID: poolID})
-	}
-
-	for _, replica := range replicas {
-		addTarget(replica.StorageID, replica.PoolID)
-	}
-	if len(targets) == 0 && file != nil {
-		addTarget(file.StorageID, file.PoolID)
-	}
-	if len(targets) == 0 {
-		targets = append(targets, backendTarget{})
-	}
-
-	for _, target := range targets {
-		backend, err := s.backendForStorageTarget(target.storageID, target.poolID)
+		backend, err := s.backendForStorageTarget(file.StorageID, file.PoolID)
 		if err != nil {
 			return err
 		}
-		if err := backend.Delete(ctx, storageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := backend.Delete(context.Background(), *storageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
-	return nil
+
+	return tx.Unscoped().Delete(&database.FileObject{}, "id = ?", objectID).Error
 }
 
 func normalizeFileIDs(ids []string) []string {
@@ -2216,10 +2144,7 @@ func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, descr
 		file.FileMeta = datatypes.JSON([]byte(fmt.Sprintf(`{"hash":%q}`, strings.TrimSpace(*hash))))
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(file).Error; err != nil {
-			return err
-		}
-		return s.createPrimaryReplica(tx, objectID, resolvedPoolID)
+		return tx.Create(file).Error
 	}); err != nil {
 		return nil, err
 	}
@@ -2261,9 +2186,6 @@ func (s *FileService) OverwriteFile(fileID string, objectID string, storageKey *
 			updates["storage_key"] = *resolvedStorageKey
 		}
 		if err := tx.Model(&database.CloudFile{}).Where("id = ?", file.ID).Updates(updates).Error; err != nil {
-			return err
-		}
-		if err := s.createPrimaryReplica(tx, objectID, s.resolvedPoolID(firstNonEmptyPtr(file.PoolID, file.StorageID))); err != nil {
 			return err
 		}
 
@@ -2464,10 +2386,7 @@ func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, na
 		}
 		resolvedPoolID := s.resolvedPoolID(parent.PoolID)
 		file = &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
-		if err := tx.Create(file).Error; err != nil {
-			return err
-		}
-		return s.createPrimaryReplica(tx, objectID, resolvedPoolID)
+		return tx.Create(file).Error
 	}); err != nil {
 		return nil, err
 	}
@@ -2537,9 +2456,8 @@ func (s *FileService) repairMissingReplicas(ctx context.Context, limit int, appl
 func (s *FileService) loadMissingReplicaCandidates(limit int) ([]missingReplicaCandidate, error) {
 	query := s.db.Model(&database.FileObject{}).
 		Select("file_objects.id AS object_id, file_objects.storage_key AS object_storage_key, file_objects.created_at").
-		Joins("LEFT JOIN file_replicas ON file_replicas.object_id = file_objects.id AND file_replicas.deleted_at IS NULL").
 		Where("file_objects.deleted_at IS NULL").
-		Where("file_replicas.id IS NULL").
+		Where("file_objects.storage_key IS NULL OR file_objects.storage_key = ''").
 		Where("EXISTS (SELECT 1 FROM cloud_files WHERE cloud_files.object_id = file_objects.id AND cloud_files.deleted_at IS NULL)").
 		Order("file_objects.created_at asc")
 	if limit > 0 {
@@ -2590,13 +2508,13 @@ func (s *FileService) evaluateMissingReplicaCandidate(ctx context.Context, candi
 	if !apply {
 		return preview, false, nil
 	}
-	created, err := s.insertReplicaIfMissing(candidate.ObjectID, poolID)
+	created, err := s.ensureObjectStorageKey(candidate.ObjectID, storageKey)
 	if err != nil {
 		return preview, false, err
 	}
 	if !created {
 		preview.Status = "already-present"
-		preview.Detail = "replica was created by another process"
+		preview.Detail = "storage key was set by another process"
 		return preview, false, nil
 	}
 	return preview, true, nil
@@ -2610,17 +2528,17 @@ func (s *FileService) firstFileForObject(objectID string) (*database.CloudFile, 
 	return &file, nil
 }
 
-func (s *FileService) insertReplicaIfMissing(objectID string, poolID *string) (bool, error) {
+func (s *FileService) ensureObjectStorageKey(objectID string, storageKey string) (bool, error) {
 	created := false
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var count int64
-		if err := tx.Model(&database.FileReplica{}).Where("object_id = ? AND deleted_at IS NULL", objectID).Count(&count).Error; err != nil {
+		var object database.FileObject
+		if err := tx.First(&object, "id = ? AND deleted_at IS NULL", objectID).Error; err != nil {
 			return err
 		}
-		if count > 0 {
+		if object.StorageKey != nil && strings.TrimSpace(*object.StorageKey) != "" {
 			return nil
 		}
-		if err := s.createPrimaryReplica(tx, objectID, poolID); err != nil {
+		if err := tx.Model(&database.FileObject{}).Where("id = ?", objectID).Update("storage_key", storageKey).Error; err != nil {
 			return err
 		}
 		created = true

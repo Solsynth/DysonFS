@@ -232,18 +232,6 @@ func nullableDeletedAt(v gorm.DeletedAt) any {
 	return v.Time
 }
 
-type FileReplica struct {
-	ID        string         `gorm:"primaryKey;size:36" json:"id"`
-	ObjectID  string         `gorm:"size:36;index" json:"object_id"`
-	PoolID    *string        `gorm:"size:36" json:"pool_id"`
-	StorageID *string        `gorm:"size:36" json:"storage_id"`
-	Status    string         `json:"status"`
-	IsPrimary bool           `json:"is_primary"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-}
-
 type FilePermission struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
 	FileID      string         `gorm:"size:36;index;index:idx_file_permissions_file_permission_deleted,priority:1" json:"file_id"`
