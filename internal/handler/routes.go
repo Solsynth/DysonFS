@@ -91,6 +91,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	{
 		p.GET("", func(c *gin.Context) { listPools(c, files) })
 		p.POST("", func(c *gin.Context) { createPool(c, files) })
+		p.GET("/me", func(c *gin.Context) { listOwnedPools(c, files) })
 		p.GET("/:id", func(c *gin.Context) { getPool(c, files) })
 		p.PATCH("/:id", func(c *gin.Context) { updatePool(c, files) })
 		p.DELETE("/:id", func(c *gin.Context) { deletePool(c, files) })
@@ -601,6 +602,21 @@ func listPools(c *gin.Context, files *service.FileService) {
 		ctx.Session = result.Session
 	}
 	items, err := files.ListPools(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("X-Total", strconv.Itoa(len(items)))
+	c.JSON(http.StatusOK, items)
+}
+
+func listOwnedPools(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	items, err := files.ListOwnedPools(uuid.MustParse(result.Account.GetId()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

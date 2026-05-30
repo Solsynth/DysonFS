@@ -68,11 +68,14 @@ type PoolStorageConfig struct {
 type Pool struct {
 	ID            string            `json:"id"`
 	Name          string            `json:"name"`
+	Description   string            `json:"description"`
 	AccountID     uuid.UUID         `json:"account_id"`
 	StorageConfig PoolStorageConfig `json:"storage_config"`
 	BillingConfig PoolBillingConfig `json:"billing_config"`
 	PolicyConfig  PoolConfig        `json:"policy_config"`
 	IsHidden      bool              `json:"is_hidden"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
 type ReplicaRepairPreview struct {
@@ -327,7 +330,7 @@ func (s *FileService) GetPool(id string) (*Pool, error) {
 	_ = json.Unmarshal(pool.PolicyConfig, &policy)
 	_ = json.Unmarshal(pool.BillingConfig, &billing)
 	_ = json.Unmarshal(pool.StorageConfig, &storage)
-	return &Pool{ID: pool.ID, Name: pool.Name, AccountID: pool.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: pool.IsHidden}, nil
+	return &Pool{ID: pool.ID, Name: pool.Name, Description: pool.Description, AccountID: pool.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: pool.IsHidden, CreatedAt: pool.CreatedAt, UpdatedAt: pool.UpdatedAt}, nil
 }
 
 func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
@@ -343,10 +346,39 @@ func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
 		_ = json.Unmarshal(p.PolicyConfig, &policy)
 		_ = json.Unmarshal(p.BillingConfig, &billing)
 		_ = json.Unmarshal(p.StorageConfig, &storage)
-		pool := &Pool{ID: p.ID, Name: p.Name, AccountID: p.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: p.IsHidden}
+		pool := &Pool{ID: p.ID, Name: p.Name, Description: p.Description, AccountID: p.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: p.IsHidden, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
 		if s.CanUsePool(ctx, pool, "read") {
 			out = append(out, *pool)
 		}
+	}
+	return out, nil
+}
+
+func (s *FileService) ListOwnedPools(accountID uuid.UUID) ([]Pool, error) {
+	var pools []database.FilePool
+	if err := s.db.Where("account_id = ?", accountID).Find(&pools).Error; err != nil {
+		return nil, err
+	}
+	out := make([]Pool, 0, len(pools))
+	for _, p := range pools {
+		var policy PoolConfig
+		var billing PoolBillingConfig
+		var storage PoolStorageConfig
+		_ = json.Unmarshal(p.PolicyConfig, &policy)
+		_ = json.Unmarshal(p.BillingConfig, &billing)
+		_ = json.Unmarshal(p.StorageConfig, &storage)
+		out = append(out, Pool{
+			ID:            p.ID,
+			Name:          p.Name,
+			Description:   p.Description,
+			AccountID:     p.AccountID,
+			StorageConfig: storage,
+			BillingConfig: billing,
+			PolicyConfig:  policy,
+			IsHidden:      p.IsHidden,
+			CreatedAt:     p.CreatedAt,
+			UpdatedAt:     p.UpdatedAt,
+		})
 	}
 	return out, nil
 }
@@ -483,11 +515,14 @@ func (s *FileService) CreatePool(accountID uuid.UUID, name, description string, 
 	return &Pool{
 		ID:            pool.ID,
 		Name:          pool.Name,
+		Description:   pool.Description,
 		AccountID:     pool.AccountID,
 		StorageConfig: storageCfg,
 		BillingConfig: billingCfg,
 		PolicyConfig:  policyCfg,
 		IsHidden:      pool.IsHidden,
+		CreatedAt:     pool.CreatedAt,
+		UpdatedAt:     pool.UpdatedAt,
 	}, nil
 }
 
