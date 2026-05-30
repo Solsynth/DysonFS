@@ -25,7 +25,7 @@ import (
 
 const WebDAVAccountIDKey = "webdav_account_id"
 
-func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher, prefix string) {
 	accountID := ""
 
 	if id, ok := c.Get(WebDAVAccountIDKey); ok {
@@ -45,14 +45,23 @@ func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus,
 		}
 	}
 
-	prefix := "/webdav"
 	h := &webdav.Handler{
 		Prefix:     prefix,
 		FileSystem: &webdavFS{files: files, bus: bus, dispatcher: dispatcher, accountID: accountID},
 		LockSystem: &webdavLockSystem{files: files, accountID: accountID},
 		Logger: func(r *http.Request, err error) {
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Error().Err(err).Str("method", r.Method).Str("path", r.URL.Path).Msg("webdav error")
+				log.Error().Err(err).
+					Str("method", r.Method).
+					Str("path", r.URL.Path).
+					Str("accountId", accountID).
+					Msg("webdav error")
+			} else {
+				log.Debug().
+					Str("method", r.Method).
+					Str("path", r.URL.Path).
+					Str("accountId", accountID).
+					Msg("webdav request")
 			}
 		},
 	}
