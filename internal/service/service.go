@@ -1086,7 +1086,7 @@ func (s *FileService) touchDerivedParentFlagsTx(tx *gorm.DB, file *database.Clou
 		Updates(map[string]any{"has_thumbnail": thumb > 0, "has_compression": comp > 0}).Error
 }
 
-func (s *FileService) MoveBatch(ids []string, parentID *string) (int64, error) {
+func (s *FileService) MoveBatch(ids []string, parentID *string, indexed *bool) (int64, error) {
 	ids = normalizeFileIDs(ids)
 	if len(ids) == 0 {
 		return 0, nil
@@ -1113,7 +1113,11 @@ func (s *FileService) MoveBatch(ids []string, parentID *string) (int64, error) {
 	if resolvedParentID != nil {
 		parentValue = *resolvedParentID
 	}
-	tx := s.db.Model(&database.CloudFile{}).Where("id IN ?", ids).Updates(map[string]any{"parent_id": parentValue})
+	updates := map[string]any{"parent_id": parentValue}
+	if indexed != nil {
+		updates["indexed"] = *indexed
+	}
+	tx := s.db.Model(&database.CloudFile{}).Where("id IN ?", ids).Updates(updates)
 	if tx.Error != nil {
 		return tx.RowsAffected, tx.Error
 	}

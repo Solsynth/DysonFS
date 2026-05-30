@@ -81,11 +81,13 @@ Both direct upload and chunked upload creation accept the same metadata payload:
   "overwrite_id": "...",
   "fast_mode": true,
   "usage": "...",
-  "application_type": "..."
+  "application_type": "...",
+  "index": true
 }
 ```
 
 - `direct` upload uses multipart form data with the same field names, plus `file`
+- `index` controls whether the file is indexed; defaults to `false`, but automatically becomes `true` when `parent_id` points to an indexed folder
 - `parent_id` is optional and can still be resolved server-side when omitted
 - `overwrite_id` is optional; when set, the upload replaces the content of an existing file instead of creating a new `cloud_files` row
 - `fast_mode` is optional; when used with `overwrite_id`, the server tries to overwrite the existing backing object in place
@@ -418,7 +420,8 @@ Move files into a parent:
 ```json
 {
   "file_ids": ["file-id-1", "file-id-2"],
-  "parent_id": "..."
+  "parent_id": "...",
+  "indexed": true
 }
 ```
 
@@ -433,8 +436,16 @@ Notes:
 
 - `file_ids` is required for every batch operation
 - `parent_id` is optional for `move`; omit it or set it to `null` to move files back to the root
+- `indexed` is optional for `move`; set to `true` to mark files as indexed, `false` to mark as unindexed, or omit to leave unchanged
 
 ### File Listings
+
+Files have an `indexed` flag that controls visibility in the file tree:
+
+- **Indexed files** appear in `GET /api/files/root/children` and `GET /api/files/:id/children` (the normal folder browse experience)
+- **Unindexed files** only appear in `GET /api/files/unindexed` (a flat listing of orphaned uploads)
+- Folders are always indexed
+- The `indexed` flag can be set at upload time via the `index` field, or changed later via the move batch endpoint
 
 List responses include extra metadata for navigation and access UI:
 

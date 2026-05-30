@@ -1407,7 +1407,7 @@ func batchMoveFiles(c *gin.Context, files *service.FileService, bus *eventbus.Bu
 		handleBatchFileLookupError(c, err)
 		return
 	}
-	count, err := files.MoveBatch(ids, req.ParentID)
+	count, err := files.MoveBatch(ids, req.ParentID, req.Indexed)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1448,6 +1448,7 @@ type batchMoveFilesRequest struct {
 	FileIDs  []string `json:"file_ids"`
 	IDs      []string `json:"ids"`
 	ParentID *string  `json:"parent_id"`
+	Indexed  *bool    `json:"indexed"`
 }
 
 func (req batchMoveFilesRequest) normalizedIDs() []string {

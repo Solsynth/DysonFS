@@ -248,7 +248,7 @@ func (fs *webdavFS) Rename(ctx context.Context, oldName, newName string) error {
 		dstParentID = &dstParent.ID
 	}
 
-	if _, err := fs.files.MoveBatch([]string{src.ID}, dstParentID); err != nil {
+	if _, err := fs.files.MoveBatch([]string{src.ID}, dstParentID, nil); err != nil {
 		return err
 	}
 

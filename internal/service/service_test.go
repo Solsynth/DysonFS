@@ -740,7 +740,7 @@ func TestMoveBatch(t *testing.T) {
 		t.Fatalf("create cycle child: %v", err)
 	}
 
-	count, err := svc.MoveBatch([]string{childID, siblingID}, nil)
+	count, err := svc.MoveBatch([]string{childID, siblingID}, nil, nil)
 	if err != nil {
 		t.Fatalf("MoveBatch() error = %v", err)
 	}
@@ -757,7 +757,7 @@ func TestMoveBatch(t *testing.T) {
 		}
 	}
 
-	if _, err := svc.MoveBatch([]string{cycleParentID}, ptr(cycleChildID)); err == nil {
+	if _, err := svc.MoveBatch([]string{cycleParentID}, ptr(cycleChildID), nil); err == nil {
 		t.Fatal("MoveBatch() cycle error = nil, want error")
 	}
 	var parent database.CloudFile
@@ -766,6 +766,71 @@ func TestMoveBatch(t *testing.T) {
 	}
 	if parent.ParentID != nil {
 		t.Fatalf("parent moved unexpectedly: %+v", parent.ParentID)
+	}
+}
+
+func TestMoveBatchSetsIndexedFlag(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	parentID := database.NewID()
+	fileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: parentID, Name: "folder", AccountID: accountID, IsFolder: true, Indexed: true}).Error; err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "file.txt", AccountID: accountID, Indexed: false}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	boolPtr := func(v bool) *bool { return &v }
+
+	count, err := svc.MoveBatch([]string{fileID}, &parentID, boolPtr(true))
+	if err != nil {
+		t.Fatalf("MoveBatch() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("MoveBatch() count = %d, want 1", count)
+	}
+	var file database.CloudFile
+	if err := db.First(&file, "id = ?", fileID).Error; err != nil {
+		t.Fatalf("load file: %v", err)
+	}
+	if !file.Indexed {
+		t.Fatalf("file.Indexed = false, want true after moving to folder")
+	}
+	if file.ParentID == nil || *file.ParentID != parentID {
+		t.Fatalf("file.ParentID = %v, want %v", file.ParentID, parentID)
+	}
+
+	count, err = svc.MoveBatch([]string{fileID}, nil, boolPtr(false))
+	if err != nil {
+		t.Fatalf("MoveBatch() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("MoveBatch() count = %d, want 1", count)
+	}
+	if err := db.First(&file, "id = ?", fileID).Error; err != nil {
+		t.Fatalf("load file: %v", err)
+	}
+	if file.Indexed {
+		t.Fatalf("file.Indexed = true, want false after moving to root")
+	}
+	if file.ParentID != nil {
+		t.Fatalf("file.ParentID = %v, want nil", *file.ParentID)
+	}
+
+	count, err = svc.MoveBatch([]string{fileID}, &parentID, nil)
+	if err != nil {
+		t.Fatalf("MoveBatch() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("MoveBatch() count = %d, want 1", count)
+	}
+	if err := db.First(&file, "id = ?", fileID).Error; err != nil {
+		t.Fatalf("load file: %v", err)
+	}
+	if file.Indexed {
+		t.Fatalf("file.Indexed = true, want unchanged false when indexed param is nil")
 	}
 }
 
