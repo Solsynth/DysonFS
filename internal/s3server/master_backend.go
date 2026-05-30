@@ -2,7 +2,6 @@ package s3server
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -27,13 +26,13 @@ func NewMasterBackend(files *service.FileService, tempDir string) *MasterBackend
 }
 
 func (b *MasterBackend) ResolveS3Credentials(ctx context.Context, accessKey string) (string, *TokenInfo, error) {
-	hash := sha256.Sum256([]byte(accessKey))
-	hashHex := fmt.Sprintf("%x", hash)
-
 	var token database.S3Token
-	if err := b.files.DB().Where("access_key = ?", hashHex).First(&token).Error; err != nil {
+	if err := b.files.DB().Where("access_key = ?", accessKey).First(&token).Error; err != nil {
 		return "", nil, fmt.Errorf("invalid access key")
 	}
+
+	now := time.Now()
+	_ = b.files.DB().Model(&token).Update("last_used_at", &now)
 
 	info := &TokenInfo{
 		AccountID: token.AccountID.String(),

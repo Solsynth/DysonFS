@@ -372,8 +372,8 @@ func (n *StorageNode) BeforeCreate(tx *gorm.DB) error {
 type S3Token struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
 	AccountID   uuid.UUID      `gorm:"index" json:"account_id"`
-	AccessKey   string         `gorm:"size:64;uniqueIndex" json:"-"`
-	SecretKey   string         `gorm:"size:64" json:"-"`
+	AccessKey   string         `gorm:"size:128;uniqueIndex" json:"-"`
+	SecretKey   string         `gorm:"size:128" json:"-"`
 	Label       string         `gorm:"size:128" json:"label"`
 	PoolID      *string        `gorm:"size:36" json:"pool_id"`
 	LastUsedAt  *time.Time     `json:"last_used_at"`

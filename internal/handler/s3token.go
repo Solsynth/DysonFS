@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -47,14 +45,11 @@ func createS3Token(c *gin.Context, files *service.FileService) {
 	accessKeyRaw := database.NewID() + database.NewID()
 	secretKeyRaw := database.NewID() + database.NewID()
 
-	accessKeyHash := sha256.Sum256([]byte(accessKeyRaw))
-	secretKeyHash := sha256.Sum256([]byte(secretKeyRaw))
-
 	accountUUID := uuid.MustParse(result.Account.GetId())
 	token := database.S3Token{
 		AccountID: accountUUID,
-		AccessKey: fmt.Sprintf("%x", accessKeyHash),
-		SecretKey: fmt.Sprintf("%x", secretKeyHash),
+		AccessKey: accessKeyRaw,
+		SecretKey: secretKeyRaw,
 		Label:     strings.TrimSpace(req.Label),
 		PoolID:    req.PoolID,
 	}
