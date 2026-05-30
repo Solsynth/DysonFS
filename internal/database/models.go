@@ -257,9 +257,27 @@ type FileLock struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
+type WebDAVToken struct {
+	ID          string         `gorm:"primaryKey;size:36" json:"id"`
+	AccountID   uuid.UUID      `gorm:"index" json:"account_id"`
+	TokenHash   string         `gorm:"size:64;uniqueIndex" json:"-"`
+	Label       string         `gorm:"size:128" json:"label"`
+	LastUsedAt  *time.Time     `json:"last_used_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}
+
 func (l *FileLock) BeforeCreate(tx *gorm.DB) error {
 	if l.ID == "" {
 		l.ID = NewID()
+	}
+	return nil
+}
+
+func (t *WebDAVToken) BeforeCreate(tx *gorm.DB) error {
+	if t.ID == "" {
+		t.ID = NewID()
 	}
 	return nil
 }

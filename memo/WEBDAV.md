@@ -19,13 +19,50 @@ prefix = "/webdav"
 
 ## Authentication
 
-WebDAV clients authenticate using HTTP Basic Auth. The **username is ignored** and the **password is the token** (an API key or auth key created through the Solar Network auth system).
+WebDAV clients authenticate using HTTP Basic Auth. The **username is ignored** and the **password is a WebDAV token** created through the API.
 
 ```
 Authorization: Basic base64(username:token)
 ```
 
-The server decodes the Basic Auth header and converts it to a Bearer token for validation against the auth service.
+### Creating a Token
+
+```http
+POST /api/webdav/tokens HTTP/1.1
+Authorization: Bearer <session-token>
+Content-Type: application/json
+
+{
+  "label": "My MacBook"
+}
+```
+
+Response (token shown only once):
+
+```json
+{
+  "id": "01HZX...",
+  "label": "My MacBook",
+  "token": "01HZX...01HZX...",
+  "created_at": "2026-05-30T12:00:00Z"
+}
+```
+
+### Listing Tokens
+
+```http
+GET /api/webdav/tokens HTTP/1.1
+Authorization: Bearer <session-token>
+```
+
+### Revoking a Token
+
+```http
+DELETE /api/webdav/tokens/:id HTTP/1.1
+Authorization: Bearer <session-token>
+```
+
+Tokens are stored as SHA-256 hashes. The raw token is only returned at creation time and cannot be retrieved later.
 
 ## Supported Operations
 
@@ -55,7 +92,7 @@ Files can be locked via WebDAV's `LOCK` and `UNLOCK` methods. Locks are unified 
 1. Open Finder
 2. Go → Connect to Server (⌘K)
 3. Enter: `http://localhost:8080/webdav/`
-4. Enter credentials (username: anything, password: your token)
+4. Enter credentials (username: anything, password: your WebDAV token)
 
 ### Windows Explorer
 
@@ -63,7 +100,7 @@ Files can be locked via WebDAV's `LOCK` and `UNLOCK` methods. Locks are unified 
 2. Right-click "This PC" → "Map network drive"
 3. Enter: `http://localhost:8080/webdav/`
 4. Check "Connect using different credentials"
-5. Enter credentials (username: anything, password: your token)
+5. Enter credentials (username: anything, password: your WebDAV token)
 
 ### Linux (GVfs / Nautilus)
 
@@ -81,7 +118,7 @@ Create an rclone remote config:
 type = webdav
 url = http://localhost:8080/webdav/
 user = anything
-pass = your_token_base64_encoded
+pass = your_webdav_token
 ```
 
 Then mount:
@@ -116,3 +153,13 @@ Path resolution walks the file tree from root, matching each segment by name. On
 - **File size**: Limited by available disk space for temp files and pool quotas.
 - **Concurrent editing**: Use `LOCK`/`UNLOCK` to prevent conflicts. The unified lock system ensures WebDAV and WOPI locks don't conflict.
 - **Derived content**: Thumbnails and compressed variants are generated asynchronously after upload via the worker pipeline.
+
+## Write Behavior
+
+Overwrites (PUT) use an in-place pipeline for speed:
+
+1. Upload new content to the **same storage key** (no new object created)
+2. Update the FileObject's `size`
+3. Mark `needs_rehash = true` for deferred processing
+
+Hash computation, MIME detection, and derived content regeneration (thumbnails, compression) are handled asynchronously by the worker, debounced by 30 seconds. This keeps write latency minimal — especially important for auto-save workflows that patch every few seconds.

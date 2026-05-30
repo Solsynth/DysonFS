@@ -23,17 +23,26 @@ import (
 	"src.solsynth.dev/sosys/go/pkg/auth"
 )
 
+const WebDAVAccountIDKey = "webdav_account_id"
+
 func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
-	result, _, ok := auth.GetAuth(c)
-	if !ok {
-		c.Header("WWW-Authenticate", `Basic realm="DysonFS"`)
-		c.AbortWithStatus(http.StatusUnauthorized)
-		return
-	}
-	accountID, err := parseAccountID(result)
-	if err != nil {
-		c.AbortWithStatus(http.StatusUnauthorized)
-		return
+	accountID := ""
+
+	if id, ok := c.Get(WebDAVAccountIDKey); ok {
+		accountID = id.(string)
+	} else {
+		result, _, ok := auth.GetAuth(c)
+		if !ok {
+			c.Header("WWW-Authenticate", `Basic realm="DysonFS"`)
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		var err error
+		accountID, err = parseAccountID(result)
+		if err != nil {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
 	}
 
 	prefix := "/webdav"

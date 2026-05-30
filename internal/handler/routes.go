@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -110,6 +111,13 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		r.Any(prefix+"/*path", func(c *gin.Context) {
 			handleWebDAV(c, files, bus, dispatcher)
 		})
+
+		t := r.Group("/api/webdav/tokens")
+		{
+			t.POST("", func(c *gin.Context) { createWebDAVToken(c, files) })
+			t.GET("", func(c *gin.Context) { listWebDAVTokens(c, files) })
+			t.DELETE("/:id", func(c *gin.Context) { deleteWebDAVToken(c, files) })
+		}
 	}
 
 	r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}) })
@@ -1965,6 +1973,86 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		Msg("upload event published")
 	_ = tasks.MarkCompleted(task.TaskID)
 	c.JSON(http.StatusOK, created)
+}
+
+func createWebDAVToken(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		Label string `json:"label"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Label) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "label is required"})
+		return
+	}
+
+	rawToken := database.NewID() + database.NewID()
+	hash := sha256.Sum256([]byte(rawToken))
+	hashHex := fmt.Sprintf("%x", hash)
+
+	accountUUID := uuid.MustParse(result.Account.GetId())
+	token := database.WebDAVToken{
+		AccountID: accountUUID,
+		TokenHash: hashHex,
+		Label:     strings.TrimSpace(req.Label),
+	}
+	if err := files.DB().Create(&token).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"id":         token.ID,
+		"label":      token.Label,
+		"token":      rawToken,
+		"created_at": token.CreatedAt,
+	})
+}
+
+func listWebDAVTokens(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var tokens []database.WebDAVToken
+	if err := files.DB().Where("account_id = ?", result.Account.GetId()).Order("created_at desc").Find(&tokens).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, tokens)
+}
+
+func deleteWebDAVToken(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	tokenID := c.Param("id")
+	var token database.WebDAVToken
+	if err := files.DB().Where("id = ? AND account_id = ?", tokenID, result.Account.GetId()).First(&token).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "token not found"})
+		return
+	}
+
+	if err := files.DB().Delete(&token).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func publishFileUploaded(ctx context.Context, bus *eventbus.Bus, dispatcher dispatch.Dispatcher, evt eventbus.FileUploadedEvent) error {

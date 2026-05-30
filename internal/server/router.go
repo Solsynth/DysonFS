@@ -1,12 +1,16 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	docs "src.solsynth.dev/sosys/filesystem/docs"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
+	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/dispatch"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/handler"
@@ -36,6 +40,11 @@ func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi
 			}
 
 			if isWebDAVRequest(c.Request) {
+				if accountID, ok := checkWebDAVToken(c.Request, files); ok {
+					c.Set(handler.WebDAVAccountIDKey, accountID)
+					c.Next()
+					return
+				}
 				convertWebDAVBasicAuth(c.Request)
 			}
 
@@ -122,4 +131,36 @@ func convertWebDAVBasicAuth(r *http.Request) {
 			r.Header.Set("Authorization", "Bearer "+strings.TrimSpace(parts[1]))
 		}
 	}
+}
+
+func checkWebDAVToken(r *http.Request, files *service.FileService) (string, bool) {
+	authz := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authz == "" || !strings.HasPrefix(strings.ToLower(authz), "basic ") {
+		return "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(authz[6:])
+	if err != nil {
+		return "", false
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	rawToken := strings.TrimSpace(parts[1])
+	if rawToken == "" {
+		return "", false
+	}
+
+	hash := sha256.Sum256([]byte(rawToken))
+	hashHex := fmt.Sprintf("%x", hash)
+
+	var token database.WebDAVToken
+	if err := files.DB().Where("token_hash = ?", hashHex).First(&token).Error; err != nil {
+		return "", false
+	}
+
+	now := time.Now()
+	_ = files.DB().Model(&token).Update("last_used_at", &now)
+
+	return token.AccountID.String(), true
 }
