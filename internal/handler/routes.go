@@ -2029,7 +2029,11 @@ func createWebDAVToken(c *gin.Context, files *service.FileService) {
 	hash := sha256.Sum256([]byte(rawToken))
 	hashHex := fmt.Sprintf("%x", hash)
 
-	accountUUID := uuid.MustParse(result.Account.GetId())
+	accountUUID, err := uuid.Parse(result.Account.GetId())
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account ID in session"})
+		return
+	}
 	token := database.WebDAVToken{
 		AccountID: accountUUID,
 		TokenHash: hashHex,

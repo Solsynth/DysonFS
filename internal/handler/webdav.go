@@ -49,8 +49,8 @@ func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus,
 		log.Debug().Str("accountId", accountID).Msg("webdav auth via dyauth")
 	}
 
-	if accountID == "" {
-		log.Warn().Msg("webdav: empty account ID after auth")
+	if accountID == "" || accountID == "00000000-0000-0000-0000-000000000000" {
+		log.Warn().Str("accountId", accountID).Msg("webdav: invalid account ID after auth")
 		c.Header("WWW-Authenticate", `Basic realm="DysonFS"`)
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
@@ -106,7 +106,21 @@ func (fs *webdavFS) Stat(ctx context.Context, name string) (os.FileInfo, error) 
 
 func (fs *webdavFS) ReadDir(ctx context.Context, name string, _ int) ([]os.FileInfo, error) {
 	if name == "/" || name == "" {
-		return fs.listRoot(ctx)
+		rootFiles, err := fs.files.ListRoot(parseUUID(fs.accountID))
+		if err != nil {
+			log.Error().Err(err).Str("accountId", fs.accountID).Msg("webdav: ListRoot failed")
+			return nil, err
+		}
+		log.Debug().Str("accountId", fs.accountID).Int("count", len(rootFiles)).Msg("webdav: ListRoot returned")
+		infos := make([]os.FileInfo, 0, len(rootFiles))
+		for i := range rootFiles {
+			info, err := fs.fileToInfo(&rootFiles[i])
+			if err != nil {
+				continue
+			}
+			infos = append(infos, info)
+		}
+		return infos, nil
 	}
 	f, err := fs.resolvePath(ctx, name)
 	if err != nil {
