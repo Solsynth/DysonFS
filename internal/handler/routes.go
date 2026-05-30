@@ -353,7 +353,7 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 			return
 		}
 	} else if variant := c.Query("original"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
-		if file.ParentID != nil {
+		if isDerivedVariant(file) && file.ParentID != nil {
 			if parent, err := files.GetFile(*file.ParentID); err == nil {
 				file = parent
 			}
@@ -387,6 +387,18 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 	}
 	_ = cfg
 	c.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+func isDerivedVariant(file *database.CloudFile) bool {
+	if file == nil || file.ApplicationType == nil {
+		return false
+	}
+	switch *file.ApplicationType {
+	case "system.thumbnail", "system.compression.low":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveDerivedFile(files *service.FileService, parentID, kind string) (*database.CloudFile, error) {
