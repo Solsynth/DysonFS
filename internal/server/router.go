@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/base64"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oklog/ulid/v2"
 	"github.com/rs/zerolog/log"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -120,44 +120,102 @@ func isWebDAVRequest(r *http.Request) bool {
 // table first. If that fails and the password looks like a JWT/API key, it falls
 // back to dyauth. Returns the account ID if authenticated.
 func authenticateWebDAV(r *http.Request, files *service.FileService) (string, bool) {
-	authz := strings.TrimSpace(r.Header.Get("Authorization"))
-	if authz == "" {
+	if r == nil {
+		return "", false
+	}
+	username, password, ok := r.BasicAuth()
+	if !ok {
 		return "", false
 	}
 
-	if !strings.HasPrefix(strings.ToLower(authz), "basic ") {
+	username = strings.TrimSpace(username)
+	password = strings.TrimSpace(password)
+	if password == "" {
 		return "", false
 	}
-	decoded, err := base64.StdEncoding.DecodeString(authz[6:])
-	if err != nil {
-		return "", false
+
+	if isLikelyWebDAVTokenID(username) {
+		if accountID, ok := authenticateWebDAVTokenCredentials(files, username, password); ok {
+			return accountID, true
+		}
 	}
-	parts := strings.SplitN(string(decoded), ":", 2)
+
+	if tokenID, secret, ok := parseEmbeddedWebDAVToken(password); ok {
+		if accountID, ok := authenticateWebDAVTokenCredentials(files, tokenID, secret); ok {
+			return accountID, true
+		}
+	}
+
+	if accountID, ok := authenticateWebDAVTokenSecret(files, password); ok {
+		return accountID, true
+	}
+
+	log.Warn().Str("username", username).Msg("webdav: token authentication failed")
+	return "", false
+}
+
+func isLikelyWebDAVTokenID(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	_, err := ulid.ParseStrict(value)
+	return err == nil
+}
+
+func parseEmbeddedWebDAVToken(password string) (string, string, bool) {
+	parts := strings.SplitN(password, ":", 2)
 	if len(parts) != 2 {
-		return "", false
+		return "", "", false
 	}
 	tokenID := strings.TrimSpace(parts[0])
-	secret := parts[1]
-	if tokenID == "" || strings.TrimSpace(secret) == "" {
-		return "", false
+	secret := strings.TrimSpace(parts[1])
+	if tokenID == "" || secret == "" {
+		return "", "", false
 	}
+	return tokenID, secret, true
+}
 
+func authenticateWebDAVTokenCredentials(files *service.FileService, tokenID, secret string) (string, bool) {
 	var token database.WebDAVToken
 	if err := files.DB().Where("id = ?", tokenID).First(&token).Error; err != nil {
-		log.Warn().Str("tokenId", tokenID).Msg("webdav: token not found")
 		return "", false
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(token.TokenHash), []byte(secret)); err != nil {
-		log.Warn().Str("tokenId", tokenID).Str("tokenStr", secret).Msg("webdav: token secret mismatch")
 		return "", false
 	}
 
+	markWebDAVTokenUsed(files, &token)
+	return token.AccountID.String(), true
+}
+
+func authenticateWebDAVTokenSecret(files *service.FileService, secret string) (string, bool) {
+	var tokens []database.WebDAVToken
+	if err := files.DB().Find(&tokens).Error; err != nil {
+		return "", false
+	}
+
+	for i := range tokens {
+		token := &tokens[i]
+		if err := bcrypt.CompareHashAndPassword([]byte(token.TokenHash), []byte(secret)); err != nil {
+			continue
+		}
+
+		markWebDAVTokenUsed(files, token)
+		return token.AccountID.String(), true
+	}
+	return "", false
+}
+
+func markWebDAVTokenUsed(files *service.FileService, token *database.WebDAVToken) {
+	if token == nil {
+		return
+	}
+
 	now := time.Now()
-	_ = files.DB().Model(&token).Update("last_used_at", &now)
+	_ = files.DB().Model(token).Update("last_used_at", &now)
 	log.Info().
 		Str("accountId", token.AccountID.String()).
 		Str("tokenId", token.ID).
 		Msg("webdav: authenticated via token")
-	return token.AccountID.String(), true
 }

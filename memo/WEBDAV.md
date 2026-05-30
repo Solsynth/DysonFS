@@ -19,10 +19,17 @@ prefix = "/webdav"
 
 ## Authentication
 
-WebDAV clients authenticate using HTTP Basic Auth. The **username is ignored** and the **password is a WebDAV token** created through the API.
+WebDAV clients authenticate using HTTP Basic Auth. The preferred format is:
 
 ```
-Authorization: Basic base64(username:token)
+Authorization: Basic base64(token-id:token-secret)
+```
+
+For compatibility with older clients, the server also accepts:
+
+```
+Authorization: Basic base64(anything:token-id:token-secret)
+Authorization: Basic base64(anything:token-secret)
 ```
 
 ### Creating a Token
@@ -43,7 +50,7 @@ Response (token shown only once):
 {
   "id": "01HZX...",
   "label": "My MacBook",
-  "token": "01HZX...01HZX...",
+  "secret": "01HZX...",
   "created_at": "2026-05-30T12:00:00Z"
 }
 ```
@@ -62,7 +69,7 @@ DELETE /api/webdav/tokens/:id HTTP/1.1
 Authorization: Bearer <session-token>
 ```
 
-Tokens are stored as SHA-256 hashes. The raw token is only returned at creation time and cannot be retrieved later.
+Tokens are stored as bcrypt hashes. The raw secret is only returned at creation time and cannot be retrieved later.
 
 ## Supported Operations
 
@@ -92,7 +99,7 @@ Files can be locked via WebDAV's `LOCK` and `UNLOCK` methods. Locks are unified 
 1. Open Finder
 2. Go → Connect to Server (⌘K)
 3. Enter: `http://localhost:8080/webdav/`
-4. Enter credentials (username: anything, password: your WebDAV token)
+4. Enter credentials (username: token ID, password: token secret)
 
 ### Windows Explorer
 
@@ -100,7 +107,7 @@ Files can be locked via WebDAV's `LOCK` and `UNLOCK` methods. Locks are unified 
 2. Right-click "This PC" → "Map network drive"
 3. Enter: `http://localhost:8080/webdav/`
 4. Check "Connect using different credentials"
-5. Enter credentials (username: anything, password: your WebDAV token)
+5. Enter credentials (username: token ID, password: token secret)
 
 ### Linux (GVfs / Nautilus)
 
