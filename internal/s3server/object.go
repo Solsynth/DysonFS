@@ -9,15 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"src.solsynth.dev/sosys/filesystem/internal/storage"
 )
 
-func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	ctx := r.Context()
-	reader, info, err := s.backend.Get(ctx, key)
+	reader, info, err := s.backend.GetObject(ctx, bucket, key)
 	if err != nil {
-		xmlError(w, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", "/"+key)
+		xmlError(w, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", "/"+bucket+"/"+key)
 		return
 	}
 	defer func() { _ = reader.Close() }()
@@ -43,7 +41,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, key str
 	_, _ = io.Copy(w, reader)
 }
 
-func (s *Server) handleRangeRequest(w http.ResponseWriter, r *http.Request, reader io.ReadCloser, info storage.ObjectInfo, rangeHeader string) {
+func (s *Server) handleRangeRequest(w http.ResponseWriter, r *http.Request, reader io.ReadCloser, info ObjectInfo, rangeHeader string) {
 	start, end, ok := parseRange(rangeHeader, info.Size)
 	if !ok {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", info.Size))
@@ -101,30 +99,30 @@ func parseRange(header string, size int64) (start, end int64, ok bool) {
 	return
 }
 
-func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	ctx := r.Context()
 	contentType := r.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 
-	if err := s.backend.Put(ctx, key, r.Body, contentType); err != nil {
-		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+key)
+	if err := s.backend.PutObject(ctx, bucket, key, r.Body, contentType); err != nil {
+		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
 
-	info, err := s.backend.Stat(ctx, key)
+	info, err := s.backend.StatObject(ctx, bucket, key)
 	if err == nil && info.ETag != "" {
 		w.Header().Set("ETag", info.ETag)
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	ctx := r.Context()
-	info, err := s.backend.Stat(ctx, key)
+	info, err := s.backend.StatObject(ctx, bucket, key)
 	if err != nil {
-		xmlError(w, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", "/"+key)
+		xmlError(w, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", "/"+bucket+"/"+key)
 		return
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
@@ -140,41 +138,41 @@ func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, key st
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	ctx := r.Context()
-	if err := s.backend.Delete(ctx, key); err != nil {
-		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+key)
+	if err := s.backend.DeleteObject(ctx, bucket, key); err != nil {
+		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleInitiateMultipartUpload(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) handleInitiateMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	uploadID := fmt.Sprintf("%d", time.Now().UnixNano())
 	s.mu.Lock()
-	s.multipart[uploadID] = &multipartUpload{key: key, parts: make(map[int][]byte)}
+	s.multipart[uploadID] = &multipartUpload{bucket: bucket, key: key, parts: make(map[int][]byte)}
 	s.mu.Unlock()
 
 	result := InitiateMultipartUploadResult{
-		Bucket:   "default",
+		Bucket:   bucket,
 		Key:      key,
 		UploadID: uploadID,
 	}
 	xmlResponse(w, http.StatusOK, result)
 }
 
-func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	uploadID := r.URL.Query().Get("uploadId")
 	partNumberStr := r.URL.Query().Get("partNumber")
 
 	if uploadID == "" || partNumberStr == "" {
-		xmlError(w, http.StatusBadRequest, "InvalidArgument", "uploadId and partNumber are required", "/"+key)
+		xmlError(w, http.StatusBadRequest, "InvalidArgument", "uploadId and partNumber are required", "/"+bucket+"/"+key)
 		return
 	}
 
 	partNumber, err := strconv.Atoi(partNumberStr)
 	if err != nil || partNumber < 1 {
-		xmlError(w, http.StatusBadRequest, "InvalidArgument", "invalid partNumber", "/"+key)
+		xmlError(w, http.StatusBadRequest, "InvalidArgument", "invalid partNumber", "/"+bucket+"/"+key)
 		return
 	}
 
@@ -182,13 +180,13 @@ func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, key st
 	upload, ok := s.multipart[uploadID]
 	s.mu.Unlock()
 	if !ok {
-		xmlError(w, http.StatusNotFound, "NoSuchUpload", "The specified upload does not exist.", "/"+key)
+		xmlError(w, http.StatusNotFound, "NoSuchUpload", "The specified upload does not exist.", "/"+bucket+"/"+key)
 		return
 	}
 
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+key)
+		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
 
@@ -203,10 +201,10 @@ func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, key st
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	uploadID := r.URL.Query().Get("uploadId")
 	if uploadID == "" {
-		xmlError(w, http.StatusBadRequest, "InvalidArgument", "uploadId is required", "/"+key)
+		xmlError(w, http.StatusBadRequest, "InvalidArgument", "uploadId is required", "/"+bucket+"/"+key)
 		return
 	}
 
@@ -214,14 +212,14 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	upload, ok := s.multipart[uploadID]
 	if !ok {
 		s.mu.Unlock()
-		xmlError(w, http.StatusNotFound, "NoSuchUpload", "The specified upload does not exist.", "/"+key)
+		xmlError(w, http.StatusNotFound, "NoSuchUpload", "The specified upload does not exist.", "/"+bucket+"/"+key)
 		return
 	}
 	delete(s.multipart, uploadID)
 	s.mu.Unlock()
 
 	if err := upload.complete(r.Context(), s.backend); err != nil {
-		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+key)
+		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket+"/"+key)
 		return
 	}
 
@@ -229,18 +227,18 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	etag := "\"" + hex.EncodeToString(allHash[:]) + "\""
 
 	result := CompleteMultipartUploadResult{
-		Location: "http://" + r.Host + "/" + key,
-		Bucket:   "default",
+		Location: "http://" + r.Host + "/" + bucket + "/" + key,
+		Bucket:   bucket,
 		Key:      key,
 		ETag:     etag,
 	}
 	xmlResponse(w, http.StatusOK, result)
 }
 
-func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	uploadID := r.URL.Query().Get("uploadId")
 	if uploadID == "" {
-		xmlError(w, http.StatusBadRequest, "InvalidArgument", "uploadId is required", "/"+key)
+		xmlError(w, http.StatusBadRequest, "InvalidArgument", "uploadId is required", "/"+bucket+"/"+key)
 		return
 	}
 	s.mu.Lock()

@@ -23,6 +23,7 @@ import (
 	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -45,6 +46,7 @@ type App struct {
 	worker      *worker.Worker
 	dispatcher  dispatch.Dispatcher
 	httpSrv     *http.Server
+	masterS3Srv *http.Server
 	grpcSrv     *grpc.Server
 	profileConn *grpc.ClientConn
 	natsConn    *nats.Conn
@@ -156,6 +158,9 @@ func (a *App) Stop(ctx context.Context) error {
 	if a.httpSrv != nil {
 		_ = a.httpSrv.Shutdown(ctx)
 	}
+	if a.masterS3Srv != nil {
+		_ = a.masterS3Srv.Shutdown(ctx)
+	}
 	if a.grpcSrv != nil {
 		a.grpcSrv.GracefulStop()
 	}
@@ -196,6 +201,7 @@ func (a *App) startMaster(ctx context.Context) error {
 
 	go func() { _ = a.grpcSrv.Serve(lis) }()
 	go func() { _ = a.httpSrv.ListenAndServe() }()
+	a.startMasterS3()
 	logging.Log.Info().Str("mode", a.mode).Msg("master started")
 	return nil
 }
@@ -230,6 +236,7 @@ func (a *App) startBundled(ctx context.Context) error {
 	reflection.Register(a.grpcSrv)
 	go func() { _ = a.grpcSrv.Serve(lis) }()
 	go func() { _ = a.httpSrv.ListenAndServe() }()
+	a.startMasterS3()
 	logging.Log.Info().Str("mode", a.mode).Msg("bundled started")
 	return nil
 }
@@ -253,7 +260,8 @@ func (a *App) startStorage(context.Context) error {
 		})
 	}
 
-	s3srv := s3server.New(a.stor, a.cfg.StorageNode.S3AccessKey, a.cfg.StorageNode.S3SecretKey)
+	backend := s3server.NewStorageBackend(a.stor)
+	s3srv := s3server.New(backend, a.cfg.StorageNode.S3AccessKey, a.cfg.StorageNode.S3SecretKey)
 	s3handler := s3srv.Handler()
 	r.NoRoute(func(c *gin.Context) { s3handler(c.Writer, c.Request) })
 
@@ -272,6 +280,39 @@ func (a *App) startStorage(context.Context) error {
 	}()
 
 	return nil
+}
+
+func (a *App) startMasterS3() {
+	if !a.cfg.MasterS3.Enabled {
+		return
+	}
+	if a.cfg.MasterS3.AccessKey == "" || a.cfg.MasterS3.SecretKey == "" {
+		logging.Log.Warn().Msg("master S3 enabled but accessKey/secretKey not set, skipping")
+		return
+	}
+	accountID := uuid.Nil
+	if a.cfg.MasterS3.AccountID != "" {
+		accountID = uuid.MustParse(a.cfg.MasterS3.AccountID)
+	}
+	backend := s3server.NewMasterBackend(a.files, accountID, a.cfg.Storage.TempDir)
+	s3srv := s3server.New(backend, a.cfg.MasterS3.AccessKey, a.cfg.MasterS3.SecretKey)
+	s3handler := s3srv.Handler()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s3handler)
+	a.masterS3Srv = &http.Server{
+		Addr:         ":" + a.cfg.MasterS3.Port,
+		Handler:      mux,
+		ReadTimeout:  120 * time.Second,
+		WriteTimeout: 120 * time.Second,
+	}
+
+	go func() {
+		logging.Log.Info().Str("addr", a.masterS3Srv.Addr).Msg("master S3 API listening")
+		if err := a.masterS3Srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logging.Log.Fatal().Err(err).Msg("master S3 server failed")
+		}
+	}()
 }
 
 func (a *App) runWorker() error { return nil }

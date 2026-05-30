@@ -26,6 +26,7 @@ type Config struct {
 	WebDAV   WebDAVConfig   `mapstructure:"webdav"`
 	Pools    []PoolConfig   `mapstructure:"pools"`
 	S3           S3Config         `mapstructure:"s3"`
+	MasterS3     MasterS3Config   `mapstructure:"masterS3"`
 	StorageNode  StorageNodeConfig `mapstructure:"storageNode"`
 	Sentry       SentryConfig      `mapstructure:"sentry"`
 }
@@ -166,6 +167,14 @@ type S3Config struct {
 	Secure    bool   `mapstructure:"secure"`
 }
 
+type MasterS3Config struct {
+	Enabled   bool   `mapstructure:"enabled"`
+	Port      string `mapstructure:"port"`
+	AccessKey string `mapstructure:"accessKey"`
+	SecretKey string `mapstructure:"secretKey"`
+	AccountID string `mapstructure:"accountId"`
+}
+
 type StorageNodeConfig struct {
 	Port        string `mapstructure:"port"`
 	MachineID   string `mapstructure:"machineId"`
@@ -224,6 +233,11 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("storageNode.authToken", "")
 	viper.SetDefault("storageNode.s3AccessKey", "")
 	viper.SetDefault("storageNode.s3SecretKey", "")
+	viper.SetDefault("masterS3.enabled", false)
+	viper.SetDefault("masterS3.port", "9001")
+	viper.SetDefault("masterS3.accessKey", "")
+	viper.SetDefault("masterS3.secretKey", "")
+	viper.SetDefault("masterS3.accountId", "")
 	viper.SetDefault("sentry.dsn", "")
 	viper.SetDefault("sentry.tracesSampleRate", 0.01)
 	viper.SetDefault("sentry.environment", "")

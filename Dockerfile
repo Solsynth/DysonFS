@@ -22,5 +22,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 COPY --from=build /out/dysonfs /usr/local/bin/dysonfs
 
-EXPOSE 8080 9090 9000
+EXPOSE 8080 9090 9000 9001
 ENTRYPOINT ["dysonfs"]

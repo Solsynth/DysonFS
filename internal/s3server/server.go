@@ -6,16 +6,15 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-
-	"src.solsynth.dev/sosys/filesystem/internal/storage"
 )
 
 type multipartUpload struct {
-	key   string
-	parts map[int][]byte
+	bucket string
+	key    string
+	parts  map[int][]byte
 }
 
-func (u *multipartUpload) complete(ctx context.Context, backend storage.Backend) error {
+func (u *multipartUpload) complete(ctx context.Context, backend Backend) error {
 	var combined []byte
 	for i := 1; i <= len(u.parts); i++ {
 		data, ok := u.parts[i]
@@ -24,18 +23,18 @@ func (u *multipartUpload) complete(ctx context.Context, backend storage.Backend)
 		}
 		combined = append(combined, data...)
 	}
-	return backend.Put(ctx, u.key, bytes.NewReader(combined), "application/octet-stream")
+	return backend.PutObject(ctx, u.bucket, u.key, bytes.NewReader(combined), "application/octet-stream")
 }
 
 type Server struct {
-	backend   storage.Backend
+	backend   Backend
 	accessKey string
 	secretKey string
 	mu        sync.Mutex
 	multipart map[string]*multipartUpload
 }
 
-func New(backend storage.Backend, accessKey, secretKey string) *Server {
+func New(backend Backend, accessKey, secretKey string) *Server {
 	return &Server{
 		backend:   backend,
 		accessKey: accessKey,
@@ -87,17 +86,17 @@ func (s *Server) Handler() http.HandlerFunc {
 		}
 
 		if r.URL.Query().Get("uploads") != "" && r.Method == http.MethodPost {
-			s.handleInitiateMultipartUpload(w, r, key)
+			s.handleInitiateMultipartUpload(w, r, bucket, key)
 			return
 		}
 		if r.URL.Query().Get("uploadId") != "" {
 			switch r.Method {
 			case http.MethodPost:
-				s.handleCompleteMultipartUpload(w, r, key)
+				s.handleCompleteMultipartUpload(w, r, bucket, key)
 			case http.MethodPut:
-				s.handleUploadPart(w, r, key)
+				s.handleUploadPart(w, r, bucket, key)
 			case http.MethodDelete:
-				s.handleAbortMultipartUpload(w, r, key)
+				s.handleAbortMultipartUpload(w, r, bucket, key)
 			default:
 				xmlError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "The specified method is not allowed.", "/"+key)
 			}
@@ -106,13 +105,13 @@ func (s *Server) Handler() http.HandlerFunc {
 
 		switch r.Method {
 		case http.MethodGet:
-			s.handleGetObject(w, r, key)
+			s.handleGetObject(w, r, bucket, key)
 		case http.MethodHead:
-			s.handleHeadObject(w, r, key)
+			s.handleHeadObject(w, r, bucket, key)
 		case http.MethodPut:
-			s.handlePutObject(w, r, key)
+			s.handlePutObject(w, r, bucket, key)
 		case http.MethodDelete:
-			s.handleDeleteObject(w, r, key)
+			s.handleDeleteObject(w, r, bucket, key)
 		default:
 			xmlError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "The specified method is not allowed.", "/"+key)
 		}

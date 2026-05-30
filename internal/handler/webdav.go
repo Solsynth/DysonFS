@@ -30,9 +30,11 @@ func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus,
 
 	if id, ok := c.Get(WebDAVAccountIDKey); ok {
 		accountID = id.(string)
+		log.Debug().Str("accountId", accountID).Msg("webdav auth via token")
 	} else {
 		result, _, ok := auth.GetAuth(c)
 		if !ok {
+			log.Debug().Str("path", c.Request.URL.Path).Msg("webdav auth failed, sending 401")
 			c.Header("WWW-Authenticate", `Basic realm="DysonFS"`)
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
@@ -40,9 +42,18 @@ func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus,
 		var err error
 		accountID, err = parseAccountID(result)
 		if err != nil {
+			log.Warn().Err(err).Msg("webdav auth result has no account")
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
+		log.Debug().Str("accountId", accountID).Msg("webdav auth via dyauth")
+	}
+
+	if accountID == "" {
+		log.Warn().Msg("webdav: empty account ID after auth")
+		c.Header("WWW-Authenticate", `Basic realm="DysonFS"`)
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
 	}
 
 	h := &webdav.Handler{
@@ -385,7 +396,11 @@ func storageKeyForFile(f *database.CloudFile) string {
 }
 
 func parseUUID(s string) uuid.UUID {
-	return uuid.MustParse(s)
+	id, err := uuid.Parse(strings.TrimSpace(s))
+	if err != nil {
+		return uuid.UUID{}
+	}
+	return id
 }
 
 type webdavFileInfo struct {

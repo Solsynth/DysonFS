@@ -2,23 +2,27 @@ package s3server
 
 import (
 	"net/http"
-	"sort"
+	"strconv"
 	"strings"
-	"time"
 )
 
 func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	keys, err := s.backend.List(ctx, "")
+	buckets, err := s.backend.ListBuckets(ctx)
 	if err != nil {
 		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/")
 		return
 	}
-
-	buckets := extractBuckets(keys)
+	entries := make([]BucketEntry, len(buckets))
+	for i, b := range buckets {
+		entries[i] = BucketEntry{
+			Name:         b.Name,
+			CreationDate: b.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z"),
+		}
+	}
 	result := ListAllMyBucketsResult{
-		Owner: BucketOwner{ID: "dysonfs", DisplayName: "DysonFS"},
-		Buckets: buckets,
+		Owner:   BucketOwner{ID: "dysonfs", DisplayName: "DysonFS"},
+		Buckets: entries,
 	}
 	xmlResponse(w, http.StatusOK, result)
 }
@@ -26,70 +30,21 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucket string) {
 	ctx := r.Context()
 	prefix := r.URL.Query().Get("prefix")
-	delimiter := r.URL.Query().Get("delimiter")
-	maxKeys := 1000
-	if v := r.URL.Query().Get("max-keys"); v != "" {
-		if n, err := parsePositiveInt(v); err == nil && n > 0 {
-			maxKeys = n
-		}
-	}
 	marker := r.URL.Query().Get("marker")
 	if marker == "" {
 		marker = r.URL.Query().Get("start-after")
 	}
+	maxKeys := 1000
+	if v := r.URL.Query().Get("max-keys"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxKeys = n
+		}
+	}
 
-	keys, err := s.backend.List(ctx, prefix)
+	entries, isTruncated, err := s.backend.ListObjects(ctx, bucket, prefix, marker, maxKeys)
 	if err != nil {
 		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket)
 		return
-	}
-
-	sort.Strings(keys)
-
-	if marker != "" {
-		filtered := make([]string, 0, len(keys))
-		for _, k := range keys {
-			if k > marker {
-				filtered = append(filtered, k)
-			}
-		}
-		keys = filtered
-	}
-
-	entries := make([]ObjectEntry, 0, len(keys))
-	commonPrefixes := make(map[string]struct{})
-
-	for _, key := range keys {
-		if delimiter != "" {
-			relative := strings.TrimPrefix(key, prefix)
-			if idx := strings.Index(relative, delimiter); idx >= 0 {
-				cp := prefix + relative[:idx+len(delimiter)]
-				commonPrefixes[cp] = struct{}{}
-				continue
-			}
-		}
-
-		if len(entries) >= maxKeys {
-			break
-		}
-
-		info, err := s.backend.Stat(ctx, key)
-		if err != nil {
-			continue
-		}
-
-		etag := info.ETag
-		if etag == "" {
-			etag = "\"" + key + "\""
-		}
-
-		entries = append(entries, ObjectEntry{
-			Key:          key,
-			LastModified: info.ModTime.UTC().Format("2006-01-02T15:04:05.000Z"),
-			Size:         info.Size,
-			ETag:         etag,
-			StorageClass: "STANDARD",
-		})
 	}
 
 	result := ListBucketResult{
@@ -97,120 +52,64 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 		Prefix:      prefix,
 		KeyCount:    len(entries),
 		MaxKeys:     maxKeys,
-		IsTruncated: false,
+		IsTruncated: isTruncated,
 		Contents:    entries,
 	}
 	xmlResponse(w, http.StatusOK, result)
 }
 
 func (s *Server) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+	ctx := r.Context()
+	if err := s.backend.HeadBucket(ctx, bucket); err != nil {
+		xmlError(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.", "/"+bucket)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+	ctx := r.Context()
+	if err := s.backend.CreateBucket(ctx, bucket); err != nil {
+		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, bucket string) {
 	ctx := r.Context()
-	keys, err := s.backend.List(ctx, "")
-	if err != nil {
-		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket)
-		return
-	}
-	for _, key := range keys {
-		if strings.HasPrefix(key, bucket+"/") || key == bucket {
+	if err := s.backend.DeleteBucket(ctx, bucket); err != nil {
+		if strings.Contains(err.Error(), "not empty") {
 			xmlError(w, http.StatusConflict, "BucketNotEmpty", "bucket is not empty", "/"+bucket)
 			return
 		}
+		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func extractBuckets(keys []string) []BucketEntry {
-	seen := make(map[string]struct{})
-	var buckets []BucketEntry
-	for _, key := range keys {
-		parts := strings.SplitN(key, "/", 2)
-		if len(parts) == 0 {
-			continue
-		}
-		name := parts[0]
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		buckets = append(buckets, BucketEntry{
-			Name:         name,
-			CreationDate: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-		})
-	}
-	if len(buckets) == 0 {
-		buckets = []BucketEntry{{Name: "default", CreationDate: time.Now().UTC().Format("2006-01-02T15:04:05.000Z")}}
-	}
-	return buckets
 }
 
 func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, bucket string) {
 	ctx := r.Context()
 	prefix := r.URL.Query().Get("prefix")
-	delimiter := r.URL.Query().Get("delimiter")
+	startAfter := r.URL.Query().Get("start-after")
+	continuationToken := r.URL.Query().Get("continuation-token")
 	maxKeys := 1000
 	if v := r.URL.Query().Get("max-keys"); v != "" {
-		if n, err := parsePositiveInt(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			maxKeys = n
 		}
 	}
-	continuationToken := r.URL.Query().Get("continuation-token")
-	startAfter := r.URL.Query().Get("start-after")
-
-	keys, err := s.backend.List(ctx, prefix)
-	if err != nil {
-		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket)
-		return
-	}
-	sort.Strings(keys)
 
 	marker := startAfter
 	if continuationToken != "" {
 		marker = continuationToken
 	}
-	if marker != "" {
-		filtered := make([]string, 0, len(keys))
-		for _, k := range keys {
-			if k > marker {
-				filtered = append(filtered, k)
-			}
-		}
-		keys = filtered
-	}
 
-	entries := make([]ObjectEntry, 0)
-	for _, key := range keys {
-		if delimiter != "" {
-			relative := strings.TrimPrefix(key, prefix)
-			if idx := strings.Index(relative, delimiter); idx >= 0 {
-				continue
-			}
-		}
-		if len(entries) >= maxKeys {
-			break
-		}
-		info, err := s.backend.Stat(ctx, key)
-		if err != nil {
-			continue
-		}
-		etag := info.ETag
-		if etag == "" {
-			etag = "\"" + key + "\""
-		}
-		entries = append(entries, ObjectEntry{
-			Key:          key,
-			LastModified: info.ModTime.UTC().Format("2006-01-02T15:04:05.000Z"),
-			Size:         info.Size,
-			ETag:         etag,
-			StorageClass: "STANDARD",
-		})
+	entries, isTruncated, err := s.backend.ListObjects(ctx, bucket, prefix, marker, maxKeys)
+	if err != nil {
+		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket)
+		return
 	}
 
 	result := ListBucketResult{
@@ -218,7 +117,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 		Prefix:      prefix,
 		KeyCount:    len(entries),
 		MaxKeys:     maxKeys,
-		IsTruncated: false,
+		IsTruncated: isTruncated,
 		Contents:    entries,
 	}
 	xmlResponse(w, http.StatusOK, result)
