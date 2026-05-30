@@ -260,7 +260,7 @@ type FileLock struct {
 type WebDAVToken struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
 	AccountID   uuid.UUID      `gorm:"index" json:"account_id"`
-	TokenHash   string         `gorm:"size:64;uniqueIndex" json:"-"`
+	TokenHash   string         `gorm:"size:60;uniqueIndex" json:"-"`
 	Label       string         `gorm:"size:128" json:"label"`
 	LastUsedAt  *time.Time     `json:"last_used_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`

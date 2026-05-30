@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, wopi *service.WOPIService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
@@ -2042,8 +2042,12 @@ func createWebDAVToken(c *gin.Context, files *service.FileService) {
 	}
 
 	rawToken := database.NewID() + database.NewID()
-	hash := sha256.Sum256([]byte(rawToken))
-	hashHex := fmt.Sprintf("%x", hash)
+
+	hashBytes, err := bcrypt.GenerateFromPassword([]byte(rawToken), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash token"})
+		return
+	}
 
 	accountUUID, err := uuid.Parse(result.Account.GetId())
 	if err != nil {
@@ -2052,7 +2056,7 @@ func createWebDAVToken(c *gin.Context, files *service.FileService) {
 	}
 	token := database.WebDAVToken{
 		AccountID: accountUUID,
-		TokenHash: hashHex,
+		TokenHash: string(hashBytes),
 		Label:     strings.TrimSpace(req.Label),
 	}
 	if err := files.DB().Create(&token).Error; err != nil {

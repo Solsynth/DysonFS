@@ -1,9 +1,7 @@
 package server
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -21,6 +19,7 @@ import (
 	"github.com/rs/zerolog/log"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi *service.WOPIService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) *gin.Engine {
@@ -126,34 +125,40 @@ func authenticateWebDAV(r *http.Request, files *service.FileService) (string, bo
 		return "", false
 	}
 
-	if strings.HasPrefix(strings.ToLower(authz), "basic ") {
-		decoded, err := base64.StdEncoding.DecodeString(authz[6:])
-		if err != nil {
-			return "", false
-		}
-		parts := strings.SplitN(string(decoded), ":", 2)
-		if len(parts) != 2 {
-			return "", false
-		}
-		rawToken := strings.TrimSpace(parts[1])
-		if rawToken == "" {
-			return "", false
-		}
+	if !strings.HasPrefix(strings.ToLower(authz), "basic ") {
+		return "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(authz[6:])
+	if err != nil {
+		return "", false
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	rawToken := parts[1]
+	if strings.TrimSpace(rawToken) == "" {
+		return "", false
+	}
 
-		hash := sha256.Sum256([]byte(rawToken))
-		hashHex := fmt.Sprintf("%x", hash)
+	var tokens []database.WebDAVToken
+	if err := files.DB().Find(&tokens).Error; err != nil {
+		log.Warn().Err(err).Msg("webdav: failed to query tokens")
+		return "", false
+	}
 
-		var token database.WebDAVToken
-		if err := files.DB().Where("token_hash = ?", hashHex).First(&token).Error; err == nil {
+	for i := range tokens {
+		if bcrypt.CompareHashAndPassword([]byte(tokens[i].TokenHash), []byte(rawToken)) == nil {
 			now := time.Now()
-			_ = files.DB().Model(&token).Update("last_used_at", &now)
+			_ = files.DB().Model(&tokens[i]).Update("last_used_at", &now)
 			log.Info().
-				Str("accountId", token.AccountID.String()).
-				Str("tokenId", token.ID).
+				Str("accountId", tokens[i].AccountID.String()).
+				Str("tokenId", tokens[i].ID).
 				Msg("webdav: authenticated via token")
-			return token.AccountID.String(), true
+			return tokens[i].AccountID.String(), true
 		}
 	}
 
+	log.Warn().Int("tokenCount", len(tokens)).Msg("webdav: no matching token found")
 	return "", false
 }

@@ -265,6 +265,7 @@ DysonFS automatically selects the storage backend based on the config:
 |--------|------|-------------|
 | `POST` | `/api/pools` | Create a new pool |
 | `GET` | `/api/pools` | List accessible pools |
+| `GET` | `/api/pools/me` | List pools owned by the authenticated user (full data including secrets) |
 | `GET` | `/api/pools/:id` | Get a single pool |
 | `PATCH` | `/api/pools/:id` | Update pool config |
 | `DELETE` | `/api/pools/:id` | Delete a pool |
