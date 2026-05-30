@@ -2041,7 +2041,7 @@ func createWebDAVToken(c *gin.Context, files *service.FileService) {
 		return
 	}
 
-	rawToken := database.NewID() + database.NewID()
+	rawToken := database.NewID()
 
 	hashBytes, err := bcrypt.GenerateFromPassword([]byte(rawToken), bcrypt.DefaultCost)
 	if err != nil {
@@ -2055,6 +2055,7 @@ func createWebDAVToken(c *gin.Context, files *service.FileService) {
 		return
 	}
 	token := database.WebDAVToken{
+		ID:        database.NewID(),
 		AccountID: accountUUID,
 		TokenHash: string(hashBytes),
 		Label:     strings.TrimSpace(req.Label),
@@ -2065,9 +2066,9 @@ func createWebDAVToken(c *gin.Context, files *service.FileService) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":         token.ID,
-		"label":      token.Label,
-		"token":      rawToken,
+		"id":       token.ID,
+		"label":    token.Label,
+		"secret":   rawToken,
 		"created_at": token.CreatedAt,
 	})
 }

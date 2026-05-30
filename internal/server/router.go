@@ -136,29 +136,28 @@ func authenticateWebDAV(r *http.Request, files *service.FileService) (string, bo
 	if len(parts) != 2 {
 		return "", false
 	}
-	rawToken := parts[1]
-	if strings.TrimSpace(rawToken) == "" {
+	tokenID := strings.TrimSpace(parts[0])
+	secret := parts[1]
+	if tokenID == "" || strings.TrimSpace(secret) == "" {
 		return "", false
 	}
 
-	var tokens []database.WebDAVToken
-	if err := files.DB().Find(&tokens).Error; err != nil {
-		log.Warn().Err(err).Msg("webdav: failed to query tokens")
+	var token database.WebDAVToken
+	if err := files.DB().Where("id = ?", tokenID).First(&token).Error; err != nil {
+		log.Warn().Str("tokenId", tokenID).Msg("webdav: token not found")
 		return "", false
 	}
 
-	for i := range tokens {
-		if bcrypt.CompareHashAndPassword([]byte(tokens[i].TokenHash), []byte(rawToken)) == nil {
-			now := time.Now()
-			_ = files.DB().Model(&tokens[i]).Update("last_used_at", &now)
-			log.Info().
-				Str("accountId", tokens[i].AccountID.String()).
-				Str("tokenId", tokens[i].ID).
-				Msg("webdav: authenticated via token")
-			return tokens[i].AccountID.String(), true
-		}
+	if err := bcrypt.CompareHashAndPassword([]byte(token.TokenHash), []byte(secret)); err != nil {
+		log.Warn().Str("tokenId", tokenID).Msg("webdav: token secret mismatch")
+		return "", false
 	}
 
-	log.Warn().Int("tokenCount", len(tokens)).Msg("webdav: no matching token found")
-	return "", false
+	now := time.Now()
+	_ = files.DB().Model(&token).Update("last_used_at", &now)
+	log.Info().
+		Str("accountId", token.AccountID.String()).
+		Str("tokenId", token.ID).
+		Msg("webdav: authenticated via token")
+	return token.AccountID.String(), true
 }
