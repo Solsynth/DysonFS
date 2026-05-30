@@ -5,9 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -135,12 +138,8 @@ func computeSignature(r *http.Request, cred credentials, signedHeaders []string,
 }
 
 func buildCanonicalRequest(r *http.Request, signedHeaders []string) string {
-	canonicalURI := r.URL.Path
-	if canonicalURI == "" {
-		canonicalURI = "/"
-	}
-
-	canonicalQueryString := r.URL.RawQuery
+	canonicalURI := canonicalizeURI(r.URL.Path)
+	canonicalQueryString := canonicalizeQuery(r.URL.Query())
 
 	headers := make(map[string]string)
 	for _, h := range signedHeaders {
@@ -148,18 +147,22 @@ func buildCanonicalRequest(r *http.Request, signedHeaders []string) string {
 		if lh == "host" {
 			headers[lh] = r.Host
 		} else {
-			headers[lh] = r.Header.Get(h)
+			headers[lh] = canonicalizeHeaderValue(r.Header.Values(h))
 		}
 	}
 
 	canonicalHeaders := ""
-	sort.Strings(signedHeaders)
-	for _, h := range signedHeaders {
+	normalizedSignedHeaders := make([]string, len(signedHeaders))
+	for i, h := range signedHeaders {
+		normalizedSignedHeaders[i] = strings.ToLower(h)
+	}
+	sort.Strings(normalizedSignedHeaders)
+	for _, h := range normalizedSignedHeaders {
 		lh := strings.ToLower(h)
 		canonicalHeaders += lh + ":" + strings.TrimSpace(headers[lh]) + "\n"
 	}
 
-	signedHeadersStr := strings.Join(signedHeaders, ";")
+	signedHeadersStr := strings.Join(normalizedSignedHeaders, ";")
 
 	payloadHash := r.Header.Get(amzContentSHA256)
 	if payloadHash == "" {
@@ -167,6 +170,90 @@ func buildCanonicalRequest(r *http.Request, signedHeaders []string) string {
 	}
 
 	return r.Method + "\n" + canonicalURI + "\n" + canonicalQueryString + "\n" + canonicalHeaders + "\n" + signedHeadersStr + "\n" + payloadHash
+}
+
+func canonicalizeURI(path string) string {
+	if path == "" {
+		return "/"
+	}
+	return awsPercentEncode(path, false)
+}
+
+func canonicalizeQuery(values url.Values) string {
+	type pair struct {
+		key   string
+		value string
+	}
+
+	pairs := make([]pair, 0, len(values))
+	for key, list := range values {
+		encodedKey := awsPercentEncode(key, true)
+		if len(list) == 0 {
+			pairs = append(pairs, pair{key: encodedKey})
+			continue
+		}
+		for _, value := range list {
+			pairs = append(pairs, pair{
+				key:   encodedKey,
+				value: awsPercentEncode(value, true),
+			})
+		}
+	}
+
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].key == pairs[j].key {
+			return pairs[i].value < pairs[j].value
+		}
+		return pairs[i].key < pairs[j].key
+	})
+
+	var b strings.Builder
+	for i, item := range pairs {
+		if i > 0 {
+			b.WriteByte('&')
+		}
+		b.WriteString(item.key)
+		b.WriteByte('=')
+		b.WriteString(item.value)
+	}
+	return b.String()
+}
+
+func canonicalizeHeaderValue(values []string) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.Join(strings.Fields(value), " "); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+func awsPercentEncode(s string, encodeSlash bool) string {
+	var b strings.Builder
+	for _, r := range s {
+		if isAWSUnreserved(r) || (!encodeSlash && r == '/') {
+			b.WriteRune(r)
+			continue
+		}
+		buf := make([]byte, 4)
+		n := utf8.EncodeRune(buf, r)
+		for _, c := range buf[:n] {
+			b.WriteByte('%')
+			if c < 16 {
+				b.WriteByte('0')
+			}
+			b.WriteString(strings.ToUpper(strconv.FormatUint(uint64(c), 16)))
+		}
+	}
+	return b.String()
+}
+
+func isAWSUnreserved(r rune) bool {
+	return (r >= 'A' && r <= 'Z') ||
+		(r >= 'a' && r <= 'z') ||
+		(r >= '0' && r <= '9') ||
+		r == '-' || r == '.' || r == '_' || r == '~'
 }
 
 func deriveSigningKey(secretKey, dateStamp, region, service string) []byte {
