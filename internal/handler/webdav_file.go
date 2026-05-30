@@ -7,7 +7,6 @@ import (
 	"os"
 	"sync"
 
-	"github.com/gabriel-vasile/mimetype"
 	"golang.org/x/net/webdav"
 	"gorm.io/datatypes"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
@@ -108,7 +107,6 @@ func (f *webdavFile) Close() error {
 }
 
 func (f *webdavFile) closeNewFile() error {
-	tempPath := f.tempFile.Name()
 	st, err := f.tempFile.Stat()
 	if err != nil {
 		return fmt.Errorf("stat temp file: %w", err)
@@ -118,40 +116,18 @@ func (f *webdavFile) closeNewFile() error {
 		return f.createEmptyFile()
 	}
 
-	contentType := "application/octet-stream"
-	if detected, err := mimetype.DetectFile(tempPath); err == nil {
-		contentType = detected.String()
+	if _, err := f.tempFile.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek temp file: %w", err)
 	}
 
-	data, err := os.ReadFile(tempPath)
+	object, err := f.files.StreamToStorage(context.Background(), f.tempFile, "")
 	if err != nil {
-		return fmt.Errorf("read temp file: %w", err)
-	}
-	hash := service.ComputeHash(data)
-
-	object := &database.FileObject{
-		ID:       database.NewID(),
-		Size:     st.Size(),
-		MimeType: contentType,
-		Hash:     hash,
-		Meta:     datatypes.JSON([]byte(`{}`)),
-	}
-	if err := f.files.DB().Create(object).Error; err != nil {
-		return fmt.Errorf("create file object: %w", err)
-	}
-
-	stage, err := os.Open(tempPath)
-	if err != nil {
-		return fmt.Errorf("open temp for upload: %w", err)
-	}
-	defer stage.Close()
-	if err := f.files.Storage().Put(context.Background(), object.ID, stage, contentType); err != nil {
-		return fmt.Errorf("upload to storage: %w", err)
+		return fmt.Errorf("stream to storage: %w", err)
 	}
 
 	accountUUID := parseUUID(f.accountID)
 	created, err := f.files.CreateUploadedFile(
-		accountUUID, f.winfo.name, nil, &hash, nil, nil,
+		accountUUID, f.winfo.name, nil, &object.Hash, nil, nil,
 		f.parentID, object.ID, nil, nil, &object.ID, true,
 	)
 	if err != nil {
@@ -159,7 +135,7 @@ func (f *webdavFile) closeNewFile() error {
 	}
 
 	f.winfo.fileID = created.ID
-	f.winfo.size = st.Size()
+	f.winfo.size = object.Size
 	f.winfo.modTime = created.CreatedAt
 
 	f.publishUpload(created.ID)
@@ -212,9 +188,12 @@ func (f *webdavFile) closeOverwriteFile() error {
 		return nil
 	}
 
-	object, err := f.files.DetectAndCreateObject(tempPath)
+	if _, err := f.tempFile.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek temp file: %w", err)
+	}
+	object, err := f.files.StreamToStorage(context.Background(), f.tempFile, "")
 	if err != nil {
-		return fmt.Errorf("detect object: %w", err)
+		return fmt.Errorf("stream to storage: %w", err)
 	}
 	storageKey := &object.ID
 	updated, err := f.files.OverwriteFile(f.existing.ID, object.ID, storageKey)
@@ -225,24 +204,6 @@ func (f *webdavFile) closeOverwriteFile() error {
 		if analyzed, err := f.files.StoreSourceAnalysis(updated.ID, analysis); err == nil {
 			updated = analyzed
 		}
-	}
-
-	stage, err := os.Open(tempPath)
-	if err != nil {
-		return fmt.Errorf("open for storage upload: %w", err)
-	}
-	defer stage.Close()
-	target := object.ID
-	if updated.ObjectID != nil && len(*updated.ObjectID) > 0 {
-		target = *updated.ObjectID
-	}
-
-	contentType := "application/octet-stream"
-	if detected, err := mimetype.DetectFile(tempPath); err == nil {
-		contentType = detected.String()
-	}
-	if err := f.files.Storage().Put(context.Background(), target, stage, contentType); err != nil {
-		return fmt.Errorf("upload to storage: %w", err)
 	}
 
 	if updated.Object != nil {

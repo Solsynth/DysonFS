@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
@@ -305,7 +304,12 @@ func (s *WOPIService) SaveContents(ctx context.Context, fileID string, claims *W
 		return updated, nil
 	}
 
-	object, err := s.files.DetectAndCreateObject(tempPath)
+	stage, err := os.Open(tempPath)
+	if err != nil {
+		return nil, err
+	}
+	object, err := s.files.StreamToStorage(ctx, stage, contentType)
+	_ = stage.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -318,24 +322,6 @@ func (s *WOPIService) SaveContents(ctx context.Context, fileID string, claims *W
 		if analyzed, err := s.files.StoreSourceAnalysis(updated.ID, analysis); err == nil {
 			updated = analyzed
 		}
-	}
-	stage, err := os.Open(tempPath)
-	if err != nil {
-		return nil, err
-	}
-	defer stage.Close()
-	target := object.ID
-	if updated.ObjectID != nil && strings.TrimSpace(*updated.ObjectID) != "" {
-		target = strings.TrimSpace(*updated.ObjectID)
-	}
-	detectedType := contentType
-	if strings.TrimSpace(detectedType) == "" {
-		if detected, err := mimetype.DetectFile(tempPath); err == nil {
-			detectedType = detected.String()
-		}
-	}
-	if err := s.files.Storage().Put(ctx, target, stage, detectedType); err != nil {
-		return nil, err
 	}
 	return updated, nil
 }

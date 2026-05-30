@@ -9,6 +9,7 @@ require (
 	github.com/getsentry/sentry-go v0.46.2
 	github.com/gin-gonic/gin v1.10.1
 	github.com/google/uuid v1.6.0
+	github.com/kr/binarydist v0.1.0
 	github.com/minio/minio-go/v7 v7.0.86
 	github.com/nats-io/nats.go v1.34.0
 	github.com/oklog/ulid/v2 v2.1.1

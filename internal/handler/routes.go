@@ -48,6 +48,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
 		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
 		f.PATCH("/:id", func(c *gin.Context) { patchFile(c, files) })
+		f.PATCH("/:id/content", func(c *gin.Context) { patchFileContent(c, files, bus, dispatcher) })
 		f.POST("/recycle/batch", func(c *gin.Context) { batchRecycleFiles(c, files, bus, dispatcher) })
 		f.POST("/restore/batch", func(c *gin.Context) { batchRestoreFiles(c, files, bus, dispatcher) })
 		f.POST("/delete/batch", func(c *gin.Context) { batchDeleteFiles(c, files, bus, dispatcher) })
@@ -1178,6 +1179,46 @@ func patchFile(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, file)
 }
 
+func patchFileContent(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	fileID := c.Param("id")
+	file, err := files.GetFile(fileID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !files.CanAccessFile(result.Account, result.Session, file, "write") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	lockToken := strings.TrimSpace(c.GetHeader("X-Lock-Token"))
+
+	updated, err := files.ApplyPatch(c.Request.Context(), fileID, c.Request.Body, lockToken)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotLocked):
+			c.JSON(http.StatusLocked, gin.H{"error": err.Error()})
+		case errors.Is(err, service.ErrPatchFailed):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{
+		FileID: updated.ID,
+	})
+
+	c.JSON(http.StatusOK, updated)
+}
+
 func deleteFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -1705,7 +1746,13 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		}
 	}
 	if createdFile == nil {
-		object, err = files.DetectAndCreateObject(tempPath)
+		stage, err := os.Open(tempPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		object, err = files.StreamToStorage(c.Request.Context(), stage, fileHeader.Header.Get("Content-Type"))
+		_ = stage.Close()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -1735,33 +1782,6 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	if createdFile == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "overwrite failed"})
 		return
-	}
-	if object == nil || strings.TrimSpace(object.MimeType) == "" {
-		object, err = files.DetectAndCreateObject(tempPath)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if overwriteTarget == nil || !fastMode || (createdFile.ObjectID != nil && object != nil && *createdFile.ObjectID != object.ID) {
-		stage, err := os.Open(tempPath)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		storageTarget := object.ID
-		if createdFile.ObjectID != nil && strings.TrimSpace(*createdFile.ObjectID) != "" {
-			storageTarget = strings.TrimSpace(*createdFile.ObjectID)
-		}
-		if err := files.Storage().Put(c.Request.Context(), storageTarget, stage, fileHeader.Header.Get("Content-Type")); err != nil {
-			_ = stage.Close()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		_ = stage.Close()
-		if object != nil {
-			object.ID = storageTarget
-		}
 	}
 	logging.Log.Info().
 		Str("accountId", result.Account.GetId()).
@@ -1882,7 +1902,13 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		}
 	}
 	if created == nil {
-		object, err = files.DetectAndCreateObject(mergedPath)
+		stage, err := os.Open(mergedPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		object, err = files.StreamToStorage(c.Request.Context(), stage, "")
+		_ = stage.Close()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -1913,27 +1939,6 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "overwrite failed"})
 		return
 	}
-	contentType := "application/octet-stream"
-	if object != nil && strings.TrimSpace(object.MimeType) != "" {
-		contentType = object.MimeType
-	}
-	if task.OverwriteID == nil || !task.FastMode || (created.ObjectID != nil && object != nil && *created.ObjectID != object.ID) {
-		stage, err := os.Open(mergedPath)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		storageTarget := deref(created.ObjectID)
-		if storageTarget == "" && object != nil {
-			storageTarget = object.ID
-		}
-		if err := files.Storage().Put(c.Request.Context(), storageTarget, stage, contentType); err != nil {
-			_ = stage.Close()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		_ = stage.Close()
-	}
 	logging.Log.Info().
 		Str("taskId", taskID).
 		Str("fileId", created.ID).
@@ -1944,6 +1949,10 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		storageKey = strings.TrimSpace(*created.Object.StorageKey)
 	} else if created.StorageKey != nil && strings.TrimSpace(*created.StorageKey) != "" {
 		storageKey = strings.TrimSpace(*created.StorageKey)
+	}
+	contentType := "application/octet-stream"
+	if object != nil && strings.TrimSpace(object.MimeType) != "" {
+		contentType = object.MimeType
 	}
 	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: contentType, StorageKey: storageKey, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
