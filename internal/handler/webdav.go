@@ -94,7 +94,7 @@ type webdavFS struct {
 }
 
 func (fs *webdavFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
-	if name == "/" || name == "" {
+	if isWebDAVRoot(name) {
 		return &webdavFileInfo{name: "/", isDir: true, modTime: time.Now()}, nil
 	}
 	f, err := fs.resolvePath(ctx, name)
@@ -105,7 +105,7 @@ func (fs *webdavFS) Stat(ctx context.Context, name string) (os.FileInfo, error) 
 }
 
 func (fs *webdavFS) ReadDir(ctx context.Context, name string, _ int) ([]os.FileInfo, error) {
-	if name == "/" || name == "" {
+	if isWebDAVRoot(name) {
 		rootFiles, err := fs.files.ListRoot(parseUUID(fs.accountID))
 		if err != nil {
 			log.Error().Err(err).Str("accountId", fs.accountID).Msg("webdav: ListRoot failed")
@@ -145,13 +145,14 @@ func (fs *webdavFS) ReadDir(ctx context.Context, name string, _ int) ([]os.FileI
 }
 
 func (fs *webdavFS) Mkdir(ctx context.Context, name string, _ os.FileMode) error {
-	parentPath, dirName := path.Split(path.Clean(name))
+	cleanName := normalizeWebDAVPath(name)
+	parentPath, dirName := path.Split(cleanName)
 	dirName = strings.TrimSuffix(dirName, "/")
 	if dirName == "" {
 		return os.ErrInvalid
 	}
 	var parentID *string
-	if parentPath != "/" && parentPath != "" {
+	if !isWebDAVRoot(parentPath) {
 		parent, err := fs.resolvePath(ctx, strings.TrimSuffix(parentPath, "/"))
 		if err != nil {
 			return os.ErrNotExist
@@ -205,7 +206,7 @@ func (fs *webdavFS) openForRead(ctx context.Context, name string) (webdav.File, 
 }
 
 func (fs *webdavFS) openForWrite(ctx context.Context, name string, flag int) (webdav.File, error) {
-	cleanName := path.Clean(name)
+	cleanName := normalizeWebDAVPath(name)
 	parentPath, fileName := path.Split(cleanName)
 	fileName = strings.TrimSuffix(fileName, "/")
 	if fileName == "" {
@@ -213,7 +214,7 @@ func (fs *webdavFS) openForWrite(ctx context.Context, name string, flag int) (we
 	}
 
 	var parentID *string
-	if parentPath != "/" && parentPath != "" {
+	if !isWebDAVRoot(parentPath) {
 		parent, err := fs.resolvePath(ctx, strings.TrimSuffix(parentPath, "/"))
 		if err != nil {
 			return nil, os.ErrNotExist
@@ -243,18 +244,18 @@ func (fs *webdavFS) openForWrite(ctx context.Context, name string, flag int) (we
 
 	winfo := &webdavFileInfo{name: fileName, isDir: false}
 	return &webdavFile{
-		tempFile:    tempFile,
-		info:        winfo,
-		winfo:       winfo,
-		isWrite:     true,
-		isNew:       existingFile == nil,
-		existing:    existingFile,
-		parentID:    parentID,
-		accountID:   fs.accountID,
-		files:       fs.files,
-		bus:         fs.bus,
-		dispatcher:  fs.dispatcher,
-		mu:          sync.Mutex{},
+		tempFile:   tempFile,
+		info:       winfo,
+		winfo:      winfo,
+		isWrite:    true,
+		isNew:      existingFile == nil,
+		existing:   existingFile,
+		parentID:   parentID,
+		accountID:  fs.accountID,
+		files:      fs.files,
+		bus:        fs.bus,
+		dispatcher: fs.dispatcher,
+		mu:         sync.Mutex{},
 	}, nil
 }
 
@@ -272,7 +273,7 @@ func (fs *webdavFS) Rename(ctx context.Context, oldName, newName string) error {
 		return os.ErrNotExist
 	}
 
-	cleanDst := path.Clean(newName)
+	cleanDst := normalizeWebDAVPath(newName)
 	dstParentPath, dstName := path.Split(cleanDst)
 	dstName = strings.TrimSuffix(dstName, "/")
 	if dstName == "" {
@@ -280,7 +281,7 @@ func (fs *webdavFS) Rename(ctx context.Context, oldName, newName string) error {
 	}
 
 	var dstParentID *string
-	if dstParentPath != "/" && dstParentPath != "" {
+	if !isWebDAVRoot(dstParentPath) {
 		dstParent, err := fs.resolvePath(ctx, strings.TrimSuffix(dstParentPath, "/"))
 		if err != nil {
 			return os.ErrNotExist
@@ -304,8 +305,8 @@ func (fs *webdavFS) Rename(ctx context.Context, oldName, newName string) error {
 }
 
 func (fs *webdavFS) resolvePath(ctx context.Context, p string) (*database.CloudFile, error) {
-	p = path.Clean(p)
-	if p == "/" || p == "" {
+	p = normalizeWebDAVPath(p)
+	if isWebDAVRoot(p) {
 		return nil, errors.New("root is not a file")
 	}
 	segments := strings.Split(strings.TrimPrefix(p, "/"), "/")
@@ -347,6 +348,28 @@ func (fs *webdavFS) resolvePath(ctx context.Context, p string) (*database.CloudF
 		}
 	}
 	return current, nil
+}
+
+func normalizeWebDAVPath(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || trimmed == "." {
+		return "/"
+	}
+	cleaned := path.Clean(trimmed)
+	switch cleaned {
+	case "", ".":
+		return "/"
+	case "/":
+		return "/"
+	}
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = "/" + cleaned
+	}
+	return cleaned
+}
+
+func isWebDAVRoot(name string) bool {
+	return normalizeWebDAVPath(name) == "/"
 }
 
 func (fs *webdavFS) listRoot(ctx context.Context) ([]os.FileInfo, error) {
@@ -425,9 +448,14 @@ type webdavFileInfo struct {
 	fileID  string
 }
 
-func (fi *webdavFileInfo) Name() string      { return fi.name }
-func (fi *webdavFileInfo) Size() int64        { return fi.size }
-func (fi *webdavFileInfo) Mode() os.FileMode  { return 0644 }
+func (fi *webdavFileInfo) Name() string { return fi.name }
+func (fi *webdavFileInfo) Size() int64  { return fi.size }
+func (fi *webdavFileInfo) Mode() os.FileMode {
+	if fi.isDir {
+		return os.ModeDir | 0755
+	}
+	return 0644
+}
 func (fi *webdavFileInfo) ModTime() time.Time { return fi.modTime }
 func (fi *webdavFileInfo) IsDir() bool        { return fi.isDir }
 func (fi *webdavFileInfo) Sys() any           { return nil }
