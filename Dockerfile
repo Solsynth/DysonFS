@@ -7,7 +7,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /out/dysonfs ./cmd
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+  -ldflags="-s -w -X src.solsynth.dev/sosys/filesystem/internal/version.Version=${VERSION} -X src.solsynth.dev/sosys/filesystem/internal/version.GitCommit=${GIT_COMMIT}" \
+  -o /out/dysonfs ./cmd
 
 FROM debian:bookworm-slim
 WORKDIR /app
@@ -18,5 +22,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 COPY --from=build /out/dysonfs /usr/local/bin/dysonfs
 
-EXPOSE 8080 9090
+EXPOSE 8080 9090 9000
 ENTRYPOINT ["dysonfs"]

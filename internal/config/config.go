@@ -25,8 +25,9 @@ type Config struct {
 	WOPI     WOPIConfig     `mapstructure:"wopi"`
 	WebDAV   WebDAVConfig   `mapstructure:"webdav"`
 	Pools    []PoolConfig   `mapstructure:"pools"`
-	S3       S3Config       `mapstructure:"s3"`
-	Sentry   SentryConfig   `mapstructure:"sentry"`
+	S3           S3Config         `mapstructure:"s3"`
+	StorageNode  StorageNodeConfig `mapstructure:"storageNode"`
+	Sentry       SentryConfig      `mapstructure:"sentry"`
 }
 
 type SentryConfig struct {
@@ -165,6 +166,14 @@ type S3Config struct {
 	Secure    bool   `mapstructure:"secure"`
 }
 
+type StorageNodeConfig struct {
+	Port        string `mapstructure:"port"`
+	MachineID   string `mapstructure:"machineId"`
+	AuthToken   string `mapstructure:"authToken"`
+	S3AccessKey string `mapstructure:"s3AccessKey"`
+	S3SecretKey string `mapstructure:"s3SecretKey"`
+}
+
 func Load(configPath string) (*Config, error) {
 	viper.Reset()
 	viper.SetConfigType("toml")
@@ -210,6 +219,11 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("webdav.enabled", false)
 	viper.SetDefault("webdav.prefix", "/webdav")
 	viper.SetDefault("s3.secure", true)
+	viper.SetDefault("storageNode.port", "9000")
+	viper.SetDefault("storageNode.machineId", "")
+	viper.SetDefault("storageNode.authToken", "")
+	viper.SetDefault("storageNode.s3AccessKey", "")
+	viper.SetDefault("storageNode.s3SecretKey", "")
 	viper.SetDefault("sentry.dsn", "")
 	viper.SetDefault("sentry.tracesSampleRate", 0.01)
 	viper.SetDefault("sentry.environment", "")

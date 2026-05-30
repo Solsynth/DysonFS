@@ -346,3 +346,25 @@ type QuotaRecord struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 }
+
+type StorageNode struct {
+	ID         string         `gorm:"primaryKey;size:36" json:"id"`
+	Name       string         `json:"name"`
+	MachineID  string         `gorm:"size:64;uniqueIndex" json:"machine_id"`
+	Endpoint   string         `json:"endpoint"`
+	AuthToken  string         `gorm:"size:255" json:"-"`
+	Status     string         `gorm:"size:16;index" json:"status"`
+	LastSeenAt *time.Time     `json:"last_seen_at"`
+	PoolID     *string        `gorm:"size:36" json:"pool_id"`
+	AccountID  uuid.UUID      `json:"account_id"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+}
+
+func (n *StorageNode) BeforeCreate(tx *gorm.DB) error {
+	if n.ID == "" {
+		n.ID = NewID()
+	}
+	return nil
+}

@@ -466,6 +466,81 @@ func (s *FileService) IsResourcePublic(perms []database.FilePermission) bool {
 	return len(perms) == 0
 }
 
+func (s *FileService) CreatePool(accountID uuid.UUID, name, description string, storageCfg PoolStorageConfig, billingCfg PoolBillingConfig, policyCfg PoolConfig, isHidden bool) (*Pool, error) {
+	pool := database.FilePool{
+		ID:            database.NewID(),
+		Name:          name,
+		Description:   description,
+		AccountID:     accountID,
+		StorageConfig: mustJSON(storageCfg),
+		BillingConfig: mustJSON(billingCfg),
+		PolicyConfig:  mustJSON(policyCfg),
+		IsHidden:      isHidden,
+	}
+	if err := s.db.Create(&pool).Error; err != nil {
+		return nil, err
+	}
+	return &Pool{
+		ID:            pool.ID,
+		Name:          pool.Name,
+		AccountID:     pool.AccountID,
+		StorageConfig: storageCfg,
+		BillingConfig: billingCfg,
+		PolicyConfig:  policyCfg,
+		IsHidden:      pool.IsHidden,
+	}, nil
+}
+
+func (s *FileService) UpdatePool(poolID string, name, description *string, storageCfg *PoolStorageConfig, billingCfg *PoolBillingConfig, policyCfg *PoolConfig, isHidden *bool) (*Pool, error) {
+	updates := map[string]any{}
+	if name != nil {
+		updates["name"] = *name
+	}
+	if description != nil {
+		updates["description"] = *description
+	}
+	if storageCfg != nil {
+		updates["storage_config"] = mustJSON(*storageCfg)
+	}
+	if billingCfg != nil {
+		updates["billing_config"] = mustJSON(*billingCfg)
+	}
+	if policyCfg != nil {
+		updates["policy_config"] = mustJSON(*policyCfg)
+	}
+	if isHidden != nil {
+		updates["is_hidden"] = *isHidden
+	}
+	if len(updates) == 0 {
+		return s.GetPool(poolID)
+	}
+	if err := s.db.Model(&database.FilePool{}).Where("id = ?", poolID).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	return s.GetPool(poolID)
+}
+
+func (s *FileService) DeletePool(poolID string) error {
+	return s.db.Where("id = ?", poolID).Delete(&database.FilePool{}).Error
+}
+
+func (s *FileService) ValidateStorageConfig(cfg PoolStorageConfig) error {
+	if strings.TrimSpace(cfg.Endpoint) == "" {
+		return fmt.Errorf("storage endpoint is required")
+	}
+	if strings.TrimSpace(cfg.SecretId) == "" && strings.TrimSpace(cfg.SecretKey) == "" && filepath.IsAbs(cfg.Endpoint) {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Bucket) == "" {
+		return fmt.Errorf("bucket is required for S3 storage")
+	}
+	_, err := storage.NewS3Backend(cfg.Endpoint, cfg.SecretId, cfg.SecretKey, cfg.Bucket, cfg.EnableSsl)
+	if err != nil {
+		return fmt.Errorf("failed to create S3 backend: %w", err)
+	}
+	return nil
+}
+
 type cachedFilePermissionLookup struct {
 	HasSource bool                      `json:"has_source"`
 	SourceID  string                    `json:"source_id"`

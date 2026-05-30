@@ -13,13 +13,16 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/dispatch"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/grpcsvc"
+	"src.solsynth.dev/sosys/filesystem/internal/handler"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/server"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
+	"src.solsynth.dev/sosys/filesystem/internal/s3server"
 	"src.solsynth.dev/sosys/filesystem/internal/worker"
 	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 
+	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -233,6 +236,41 @@ func (a *App) startBundled(ctx context.Context) error {
 
 func (a *App) startStorage(context.Context) error {
 	logging.Log.Info().Str("mode", a.mode).Msg("storage mode started")
+
+	r := gin.New()
+	r.Use(gin.Recovery())
+
+	dfs := r.Group("/_dfs")
+	{
+		dfs.GET("/version", func(c *gin.Context) {
+			handler.StorageNodeVersion(c, a.cfg.StorageNode)
+		})
+		dfs.GET("/identity", func(c *gin.Context) {
+			handler.StorageNodeIdentity(c, a.cfg.StorageNode)
+		})
+		dfs.POST("/auth/validate", func(c *gin.Context) {
+			handler.StorageNodeAuthValidate(c, a.cfg.StorageNode)
+		})
+	}
+
+	s3srv := s3server.New(a.stor, a.cfg.StorageNode.S3AccessKey, a.cfg.StorageNode.S3SecretKey)
+	s3handler := s3srv.Handler()
+	r.NoRoute(func(c *gin.Context) { s3handler(c.Writer, c.Request) })
+
+	a.httpSrv = &http.Server{
+		Addr:         ":" + a.cfg.StorageNode.Port,
+		Handler:      r,
+		ReadTimeout:  120 * time.Second,
+		WriteTimeout: 120 * time.Second,
+	}
+
+	go func() {
+		logging.Log.Info().Str("addr", a.httpSrv.Addr).Msg("storage node HTTP server listening")
+		if err := a.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logging.Log.Fatal().Err(err).Msg("storage node HTTP server failed")
+		}
+	}()
+
 	return nil
 }
 

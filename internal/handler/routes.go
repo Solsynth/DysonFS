@@ -90,6 +90,10 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	p := r.Group("/api/pools")
 	{
 		p.GET("", func(c *gin.Context) { listPools(c, files) })
+		p.POST("", func(c *gin.Context) { createPool(c, files) })
+		p.GET("/:id", func(c *gin.Context) { getPool(c, files) })
+		p.PATCH("/:id", func(c *gin.Context) { updatePool(c, files) })
+		p.DELETE("/:id", func(c *gin.Context) { deletePool(c, files) })
 		p.DELETE("/:id/recycle", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": 0}) })
 		p.GET("/:id/permissions", func(c *gin.Context) { getPoolPermissions(c, files) })
 		p.PUT("/:id/permissions", func(c *gin.Context) { updatePoolPermissions(c, files) })
@@ -109,7 +113,10 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 			prefix = "/webdav"
 		}
 		r.Any(prefix+"/*path", func(c *gin.Context) {
-			handleWebDAV(c, files, bus, dispatcher)
+			handleWebDAV(c, files, bus, dispatcher, prefix)
+		})
+		r.Any(prefix, func(c *gin.Context) {
+			c.Redirect(http.StatusMovedPermanently, prefix+"/")
 		})
 
 		t := r.Group("/api/webdav/tokens")
@@ -118,6 +125,23 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 			t.GET("", func(c *gin.Context) { listWebDAVTokens(c, files) })
 			t.DELETE("/:id", func(c *gin.Context) { deleteWebDAVToken(c, files) })
 		}
+	}
+
+	sn := r.Group("/api/storage-nodes")
+	{
+		sn.POST("/register", func(c *gin.Context) { registerStorageNode(c, files) })
+		sn.GET("", func(c *gin.Context) { listStorageNodes(c, files) })
+		sn.GET("/:id", func(c *gin.Context) { getStorageNode(c, files) })
+		sn.PATCH("/:id", func(c *gin.Context) { updateStorageNode(c, files) })
+		sn.DELETE("/:id", func(c *gin.Context) { deleteStorageNode(c, files) })
+		sn.POST("/heartbeat/:machineId", func(c *gin.Context) { storageNodeHeartbeat(c, files) })
+	}
+
+	dfs := r.Group("/_dfs")
+	{
+		dfs.GET("/version", func(c *gin.Context) { StorageNodeVersion(c, cfg.StorageNode) })
+		dfs.GET("/identity", func(c *gin.Context) { StorageNodeIdentity(c, cfg.StorageNode) })
+		dfs.POST("/auth/validate", func(c *gin.Context) { StorageNodeAuthValidate(c, cfg.StorageNode) })
 	}
 
 	r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}) })
