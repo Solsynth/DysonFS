@@ -173,37 +173,13 @@ func (f *webdavFile) closeOverwriteFile() error {
 		return fmt.Errorf("no existing file for overwrite")
 	}
 
-	tempPath := f.tempFile.Name()
-
-	analysis, _ := f.files.AnalyzeSourceFile(context.Background(), tempPath, "")
-
-	if updated, applied, err := f.files.FastOverwriteFile(f.existing.ID, tempPath, analysis); err != nil {
-		return err
-	} else if applied {
-		if updated.Object != nil {
-			f.winfo.size = updated.Object.Size
-		}
-		f.winfo.modTime = updated.UpdatedAt
-		f.publishUpload(updated.ID)
-		return nil
-	}
-
 	if _, err := f.tempFile.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("seek temp file: %w", err)
 	}
-	object, err := f.files.StreamToStorage(context.Background(), f.tempFile, "")
+
+	updated, err := f.files.OverwriteInPlace(context.Background(), f.existing.ID, f.tempFile)
 	if err != nil {
-		return fmt.Errorf("stream to storage: %w", err)
-	}
-	storageKey := &object.ID
-	updated, err := f.files.OverwriteFile(f.existing.ID, object.ID, storageKey)
-	if err != nil {
-		return fmt.Errorf("overwrite file: %w", err)
-	}
-	if analysis != nil {
-		if analyzed, err := f.files.StoreSourceAnalysis(updated.ID, analysis); err == nil {
-			updated = analyzed
-		}
+		return fmt.Errorf("overwrite in place: %w", err)
 	}
 
 	if updated.Object != nil {

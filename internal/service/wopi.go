@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -283,47 +282,8 @@ func (s *WOPIService) SaveContents(ctx context.Context, fileID string, claims *W
 	} else if currentLock != "" && currentLock != strings.TrimSpace(lockID) {
 		return nil, ErrWOPIConflict
 	}
-	tempDir := os.TempDir()
-	tempPath := filepath.Join(tempDir, database.NewID()+".wopi")
-	out, err := os.Create(tempPath)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := io.Copy(out, body); err != nil {
-		_ = out.Close()
-		_ = os.Remove(tempPath)
-		return nil, err
-	}
-	_ = out.Close()
-	defer os.Remove(tempPath)
 
-	analysis, _ := s.files.AnalyzeSourceFile(ctx, tempPath, contentType)
-	if updated, applied, err := s.files.FastOverwriteFile(fileID, tempPath, analysis); err != nil {
-		return nil, err
-	} else if applied {
-		return updated, nil
-	}
-
-	stage, err := os.Open(tempPath)
-	if err != nil {
-		return nil, err
-	}
-	object, err := s.files.StreamToStorage(ctx, stage, contentType)
-	_ = stage.Close()
-	if err != nil {
-		return nil, err
-	}
-	storageKey := &object.ID
-	updated, err := s.files.OverwriteFile(fileID, object.ID, storageKey)
-	if err != nil {
-		return nil, err
-	}
-	if analysis != nil {
-		if analyzed, err := s.files.StoreSourceAnalysis(updated.ID, analysis); err == nil {
-			updated = analyzed
-		}
-	}
-	return updated, nil
+	return s.files.OverwriteInPlace(ctx, fileID, body)
 }
 
 func (s *WOPIService) HandleLock(ctx context.Context, fileID string, claims *WOPITokenClaims, operation, lockID, oldLockID string) (*WOPILockResult, error) {

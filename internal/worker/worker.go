@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,8 +12,10 @@ import (
 	"time"
 
 	"github.com/davidbyttow/govips/v2/vips"
+	"github.com/gabriel-vasile/mimetype"
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
@@ -55,6 +58,8 @@ func (w *Worker) Start(ctx context.Context) error {
 func (w *Worker) runMaintenance(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
+	rehashTicker := time.NewTicker(30 * time.Second)
+	defer rehashTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -62,6 +67,8 @@ func (w *Worker) runMaintenance(ctx context.Context) {
 		case <-ticker.C:
 			w.cleanupTempArtifacts()
 			w.cleanupStaleTasks()
+		case <-rehashTicker.C:
+			w.processRehashQueue(ctx)
 		}
 	}
 }
@@ -89,6 +96,82 @@ func (w *Worker) cleanupStaleTasks() {
 		return
 	}
 	_ = w.files.DB().Where("status IN ? AND last_activity < now() - interval '30 days'", []string{"completed", "failed", "cancelled", "expired"}).Delete(&database.PersistentTask{}).Error
+}
+
+func (w *Worker) processRehashQueue(ctx context.Context) {
+	if w.files == nil || w.stor == nil {
+		return
+	}
+	cutoff := time.Now().Add(-30 * time.Second)
+	var objects []database.FileObject
+	if err := w.db.Where("needs_rehash = true AND updated_at < ?", cutoff).Limit(20).Find(&objects).Error; err != nil {
+		logging.Log.Error().Err(err).Msg("failed to query rehash queue")
+		return
+	}
+	for i := range objects {
+		obj := &objects[i]
+		if err := w.rehashObject(ctx, obj); err != nil {
+			logging.Log.Error().Err(err).Str("objectId", obj.ID).Msg("failed to rehash object")
+			continue
+		}
+	}
+}
+
+func (w *Worker) rehashObject(ctx context.Context, obj *database.FileObject) error {
+	storageKey := ""
+	if obj.StorageKey != nil && strings.TrimSpace(*obj.StorageKey) != "" {
+		storageKey = strings.TrimSpace(*obj.StorageKey)
+	} else {
+		storageKey = obj.ID
+	}
+
+	rc, _, err := w.stor.Get(ctx, storageKey)
+	if err != nil {
+		return fmt.Errorf("read from storage: %w", err)
+	}
+	defer rc.Close()
+
+	path, err := writeTempFile(rc, obj.ID)
+	if err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read temp: %w", err)
+	}
+	hash := service.ComputeHash(data)
+	mimeType := "application/octet-stream"
+	if len(data) > 0 {
+		mimeType = mimetype.Detect(data).String()
+	}
+
+	updates := map[string]any{
+		"hash":         hash,
+		"mime_type":    mimeType,
+		"needs_rehash": false,
+		"updated_at":   time.Now(),
+	}
+	if err := w.db.Model(&database.FileObject{}).Where("id = ?", obj.ID).Updates(updates).Error; err != nil {
+		return fmt.Errorf("update object: %w", err)
+	}
+
+	var file database.CloudFile
+	if err := w.db.Where("object_id = ? AND deleted_at IS NULL", obj.ID).First(&file).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	evt := eventbus.FileUploadedEvent{
+		FileID:             file.ID,
+		ContentType:        mimeType,
+		StorageKey:         storageKey,
+		ProcessingFilePath: path,
+		IsTempFile:         false,
+	}
+	return w.ProcessUploadedFile(ctx, evt)
 }
 
 func (w *Worker) handleFileAction(evt eventbus.FileActionEvent) error {

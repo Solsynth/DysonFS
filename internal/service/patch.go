@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/kr/binarydist"
+	"gorm.io/gorm"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 )
 
@@ -29,14 +32,71 @@ func (s *FileService) ResolveStorageKey(file *database.CloudFile) string {
 	return ""
 }
 
+// OverwriteInPlace uploads new content to the existing storage key, updates the
+// FileObject's size, and marks it for deferred rehash (hash, MIME, derived content).
+// No new FileObject is created. This is the fast path for WebDAV PUT, WOPI save,
+// and binary patch.
+func (s *FileService) OverwriteInPlace(ctx context.Context, fileID string, reader io.Reader) (*database.CloudFile, error) {
+	file, err := s.GetFile(fileID)
+	if err != nil {
+		return nil, fmt.Errorf("get file: %w", err)
+	}
+	if file.IsFolder {
+		return nil, fmt.Errorf("cannot overwrite a folder")
+	}
+	if file.ObjectID == nil || strings.TrimSpace(*file.ObjectID) == "" {
+		return nil, fmt.Errorf("file has no backing object")
+	}
+
+	key := s.ResolveStorageKey(file)
+	if key == "" {
+		return nil, fmt.Errorf("file storage key missing")
+	}
+	backend, err := s.BackendForFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("resolve backend: %w", err)
+	}
+
+	tempFile, err := os.CreateTemp("", "dysonfs-overwrite-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+
+	size, err := io.Copy(tempFile, reader)
+	if err != nil {
+		_ = tempFile.Close()
+		return nil, fmt.Errorf("write temp: %w", err)
+	}
+	_ = tempFile.Close()
+
+	stage, err := os.Open(tempPath)
+	if err != nil {
+		return nil, fmt.Errorf("open for storage: %w", err)
+	}
+	defer stage.Close()
+	if err := backend.Put(ctx, key, stage, "application/octet-stream"); err != nil {
+		return nil, fmt.Errorf("upload to storage: %w", err)
+	}
+
+	objectID := strings.TrimSpace(*file.ObjectID)
+	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
+		return tx.Model(&database.FileObject{}).Where("id = ?", objectID).Updates(map[string]any{
+			"size":         size,
+			"needs_rehash": true,
+			"updated_at":   time.Now(),
+		}).Error
+	}); err != nil {
+		return nil, fmt.Errorf("update object: %w", err)
+	}
+
+	return s.GetFile(fileID)
+}
+
 // ApplyPatch reads the original file content from storage, applies a binary diff patch
-// (bsdiff format), and streams the result to storage as a new object. The file's DB
-// record is updated to point to the new object. Old derived children (thumbnails,
-// compressed variants) are cleaned up.
-//
-// The file must have an active lock. Pass the lock token to verify ownership.
-// If lockToken is empty, any active lock on the file is accepted (useful for WebDAV
-// which manages locks separately).
+// (bsdiff format), and overwrites the file in-place via OverwriteInPlace.
+// The file must have an active lock.
 func (s *FileService) ApplyPatch(ctx context.Context, fileID string, patchData io.Reader, lockToken string) (*database.CloudFile, error) {
 	file, err := s.GetFile(fileID)
 	if err != nil {
@@ -44,6 +104,9 @@ func (s *FileService) ApplyPatch(ctx context.Context, fileID string, patchData i
 	}
 	if file.IsFolder {
 		return nil, fmt.Errorf("cannot patch a folder")
+	}
+	if file.ObjectID == nil || strings.TrimSpace(*file.ObjectID) == "" {
+		return nil, fmt.Errorf("file has no backing object")
 	}
 
 	lock, err := s.GetLock(ctx, fileID)
@@ -72,29 +135,29 @@ func (s *FileService) ApplyPatch(ctx context.Context, fileID string, patchData i
 	}
 	defer original.Close()
 
-	pr, pw := io.Pipe()
+	tempFile, err := os.CreateTemp("", "dysonfs-patch-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+
 	patchErr := make(chan error, 1)
 	go func() {
-		err := binarydist.Patch(original, pw, patchData)
-		pw.CloseWithError(err)
+		err := binarydist.Patch(original, tempFile, patchData)
+		_ = tempFile.Close()
 		patchErr <- err
 	}()
-
-	object, err := s.StreamToStorage(ctx, pr, "")
-	if err != nil {
-		_ = pr.Close()
-		return nil, fmt.Errorf("stream patched content: %w", err)
-	}
 
 	if pErr := <-patchErr; pErr != nil {
 		return nil, fmt.Errorf("%w: %v", ErrPatchFailed, pErr)
 	}
 
-	storageKey := &object.ID
-	updated, err := s.OverwriteFile(fileID, object.ID, storageKey)
+	patchedFile, err := os.Open(tempPath)
 	if err != nil {
-		return nil, fmt.Errorf("overwrite file record: %w", err)
+		return nil, fmt.Errorf("open patched: %w", err)
 	}
+	defer patchedFile.Close()
 
-	return updated, nil
+	return s.OverwriteInPlace(ctx, fileID, patchedFile)
 }

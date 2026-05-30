@@ -35,6 +35,7 @@ type FileObject struct {
 	Meta           datatypes.JSON `gorm:"type:jsonb" json:"meta"`
 	HasCompression bool           `json:"has_compression"`
 	HasThumbnail   bool           `json:"has_thumbnail"`
+	NeedsRehash    bool           `gorm:"index" json:"needs_rehash"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
