@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"net/http"
 	"strings"
 
@@ -32,6 +33,10 @@ func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi
 			if isWOPICallbackRequest(c.Request) {
 				c.Next()
 				return
+			}
+
+			if isWebDAVRequest(c.Request) {
+				convertWebDAVBasicAuth(c.Request)
 			}
 
 			tokenInfo, ok := dyauth.ExtractToken(c.Request)
@@ -96,4 +101,25 @@ func isWOPICallbackRequest(r *http.Request) bool {
 	}
 	authz := strings.TrimSpace(r.Header.Get("Authorization"))
 	return strings.HasPrefix(strings.ToLower(authz), "bearer ")
+}
+
+func isWebDAVRequest(r *http.Request) bool {
+	return r != nil && r.URL != nil && strings.HasPrefix(r.URL.Path, "/webdav/")
+}
+
+func convertWebDAVBasicAuth(r *http.Request) {
+	authz := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authz == "" {
+		return
+	}
+	if strings.HasPrefix(strings.ToLower(authz), "basic ") {
+		decoded, err := base64.StdEncoding.DecodeString(authz[6:])
+		if err != nil {
+			return
+		}
+		parts := strings.SplitN(string(decoded), ":", 2)
+		if len(parts) == 2 {
+			r.Header.Set("Authorization", "Bearer "+strings.TrimSpace(parts[1]))
+		}
+	}
 }

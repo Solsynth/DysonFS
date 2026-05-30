@@ -31,7 +31,7 @@ func Open(cfg *config.Config) (*DB, error) {
 
 func (d *DB) AutoMigrate() error {
 	if err := d.DB.AutoMigrate(
-		&FilePool{}, &FileObject{}, &CloudFile{}, &FilePermission{}, &PoolPermission{}, &PersistentTask{}, &QuotaRecord{}, &WOPILock{},
+		&FilePool{}, &FileObject{}, &CloudFile{}, &FilePermission{}, &PoolPermission{}, &PersistentTask{}, &QuotaRecord{}, &FileLock{},
 	); err != nil {
 		return err
 	}

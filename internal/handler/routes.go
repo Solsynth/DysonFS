@@ -101,6 +101,16 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		b.GET("usage/:poolId", func(c *gin.Context) { getPoolUsage(c, quota) })
 	}
 
+	if cfg.WebDAV.Enabled {
+		prefix := cfg.WebDAV.Prefix
+		if prefix == "" {
+			prefix = "/webdav"
+		}
+		r.Any(prefix+"/*path", func(c *gin.Context) {
+			handleWebDAV(c, files, bus, dispatcher)
+		})
+	}
+
 	r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}) })
 }
 

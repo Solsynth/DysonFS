@@ -21,7 +21,6 @@ import (
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	gen "src.solsynth.dev/sosys/go/proto"
@@ -351,90 +350,85 @@ func (s *WOPIService) HandleLock(ctx context.Context, fileID string, claims *WOP
 	if operation == "" {
 		return nil, ErrWOPIInvalidLockOperation
 	}
-	return s.withLockTx(ctx, fileID, claims, operation, lockID, oldLockID)
-}
 
-func (s *WOPIService) withLockTx(ctx context.Context, fileID string, claims *WOPITokenClaims, operation, lockID, oldLockID string) (*WOPILockResult, error) {
 	result := &WOPILockResult{}
-	err := s.files.DB().Transaction(func(tx *gorm.DB) error {
-		_ = tx.Where("expires_at <= ?", time.Now()).Delete(&database.WOPILock{}).Error
-		var current database.WOPILock
-		err := tx.Where("file_id = ?", fileID).First(&current).Error
-		hasCurrent := err == nil
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		if hasCurrent {
-			result.CurrentLock = current.LockID
-		}
-		accountID := parseOptionalUUID(claims.AccountID)
-		switch operation {
-		case "GET_LOCK":
-			return nil
-		case "LOCK":
-			if lockID == "" {
-				return ErrWOPIInvalidLockOperation
-			}
-			if hasCurrent && current.LockID != lockID {
-				return ErrWOPIConflict
-			}
-			if hasCurrent {
-				return tx.Model(&database.WOPILock{}).Where("id = ?", current.ID).Updates(map[string]any{
-					"lock_id":    lockID,
-					"account_id": accountID,
-					"expires_at": time.Now().Add(30 * time.Minute),
-				}).Error
-			}
-			return tx.Create(&database.WOPILock{
-				FileID:    fileID,
-				LockID:    lockID,
-				AccountID: accountID,
-				ExpiresAt: time.Now().Add(30 * time.Minute),
-			}).Error
-		case "REFRESH_LOCK":
-			if !hasCurrent || current.LockID != lockID {
-				return ErrWOPIConflict
-			}
-			return tx.Model(&database.WOPILock{}).Where("id = ?", current.ID).Update("expires_at", time.Now().Add(30*time.Minute)).Error
-		case "UNLOCK":
-			if !hasCurrent || current.LockID != lockID {
-				return ErrWOPIConflict
-			}
-			return tx.Delete(&database.WOPILock{}, "id = ?", current.ID).Error
-		case "UNLOCK_AND_RELOCK":
-			expected := oldLockID
-			if expected == "" {
-				expected = lockID
-			}
-			if !hasCurrent || current.LockID != expected || lockID == "" {
-				return ErrWOPIConflict
-			}
-			result.CurrentLock = lockID
-			return tx.Model(&database.WOPILock{}).Where("id = ?", current.ID).Updates(map[string]any{
-				"lock_id":    lockID,
-				"account_id": accountID,
-				"expires_at": time.Now().Add(30 * time.Minute),
-			}).Error
-		default:
-			return ErrWOPIInvalidLockOperation
-		}
-	})
+	accountID := parseOptionalUUID(claims.AccountID)
+
+	current, err := s.files.GetLock(ctx, fileID)
 	if err != nil {
-		return result, err
+		return nil, err
 	}
-	return result, nil
+	if current != nil {
+		result.CurrentLock = current.LockToken
+	}
+
+	switch operation {
+	case "GET_LOCK":
+		return result, nil
+
+	case "LOCK":
+		if lockID == "" {
+			return nil, ErrWOPIInvalidLockOperation
+		}
+		if current != nil && current.LockToken != lockID {
+			return result, ErrWOPIConflict
+		}
+		if _, err := s.files.AcquireLock(ctx, fileID, "wopi", lockID, accountID, 1800); err != nil {
+			return result, err
+		}
+		result.CurrentLock = lockID
+		return result, nil
+
+	case "REFRESH_LOCK":
+		if current == nil || current.LockToken != lockID {
+			return result, ErrWOPIConflict
+		}
+		if err := s.files.RefreshLock(ctx, fileID, lockID, 1800); err != nil {
+			return result, err
+		}
+		return result, nil
+
+	case "UNLOCK":
+		if current == nil || current.LockToken != lockID {
+			return result, ErrWOPIConflict
+		}
+		if err := s.files.ReleaseLock(ctx, fileID, lockID); err != nil {
+			return result, err
+		}
+		return result, nil
+
+	case "UNLOCK_AND_RELOCK":
+		expected := oldLockID
+		if expected == "" {
+			expected = lockID
+		}
+		if current == nil || current.LockToken != expected || lockID == "" {
+			return result, ErrWOPIConflict
+		}
+		if err := s.files.ReleaseLock(ctx, fileID, expected); err != nil {
+			return result, err
+		}
+		acquired, err := s.files.AcquireLock(ctx, fileID, "wopi", lockID, accountID, 1800)
+		if err != nil {
+			return result, err
+		}
+		result.CurrentLock = acquired.LockToken
+		return result, nil
+
+	default:
+		return nil, ErrWOPIInvalidLockOperation
+	}
 }
 
 func (s *WOPIService) currentLock(ctx context.Context, fileID string) (string, error) {
-	_ = s.files.DB().WithContext(ctx).Where("expires_at <= ?", time.Now()).Delete(&database.WOPILock{}).Error
-	var current database.WOPILock
-	if err := s.files.DB().WithContext(ctx).Where("file_id = ?", fileID).First(&current).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", nil
-		}
+	lock, err := s.files.GetLock(ctx, fileID)
+	if err != nil {
 		return "", err
 	}
-	return current.LockID, nil
+	if lock == nil {
+		return "", nil
+	}
+	return lock.LockToken, nil
 }
 
 func (s *WOPIService) signToken(claims WOPITokenClaims) (string, time.Time, error) {

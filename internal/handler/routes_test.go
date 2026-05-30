@@ -676,7 +676,7 @@ func TestPatchFileRejectsForbiddenRename(t *testing.T) {
 
 func TestCreateEditSessionAndWOPIRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.WOPILock{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.FileLock{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)
@@ -763,7 +763,7 @@ func TestCreateEditSessionAndWOPIRoundTrip(t *testing.T) {
 
 func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.WOPILock{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.FileLock{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)
@@ -782,7 +782,7 @@ func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), "text/plain"); err != nil {
 		t.Fatalf("put source: %v", err)
 	}
-	if err := db.Create(&database.WOPILock{FileID: fileID, LockID: "lock-a", ExpiresAt: time.Now().Add(5 * time.Minute)}).Error; err != nil {
+	if err := db.Create(&database.FileLock{FileID: fileID, LockToken: "lock-a", Protocol: "wopi", ExpiresAt: time.Now().Add(5 * time.Minute)}).Error; err != nil {
 		t.Fatalf("create lock: %v", err)
 	}
 
@@ -815,7 +815,7 @@ func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 
 func TestWOPIEndpointsAcceptBearerAccessToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.WOPILock{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.FileLock{})
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)
 	files := service.NewFileService(&database.DB{DB: db}, stor)

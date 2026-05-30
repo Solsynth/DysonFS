@@ -243,18 +243,20 @@ type FilePermission struct {
 	UpdatedAt   time.Time      `json:"updated_at"`
 }
 
-type WOPILock struct {
+type FileLock struct {
 	ID        string         `gorm:"primaryKey;size:36" json:"id"`
 	FileID    string         `gorm:"size:36;index" json:"file_id"`
-	LockID    string         `gorm:"size:255" json:"lock_id"`
+	LockToken string         `gorm:"size:255" json:"lock_token"`
+	Protocol  string         `gorm:"size:16;index" json:"protocol"`
 	AccountID *uuid.UUID     `json:"account_id"`
+	Timeout   int            `json:"timeout"`
 	ExpiresAt time.Time      `gorm:"index" json:"expires_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
-func (l *WOPILock) BeforeCreate(tx *gorm.DB) error {
+func (l *FileLock) BeforeCreate(tx *gorm.DB) error {
 	if l.ID == "" {
 		l.ID = NewID()
 	}

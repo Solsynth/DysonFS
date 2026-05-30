@@ -23,6 +23,7 @@ type Config struct {
 	Mode     ModeConfig     `mapstructure:"mode"`
 	Files    FileConfig     `mapstructure:"files"`
 	WOPI     WOPIConfig     `mapstructure:"wopi"`
+	WebDAV   WebDAVConfig   `mapstructure:"webdav"`
 	Pools    []PoolConfig   `mapstructure:"pools"`
 	S3       S3Config       `mapstructure:"s3"`
 	Sentry   SentryConfig   `mapstructure:"sentry"`
@@ -116,6 +117,11 @@ type WOPIConfig struct {
 	ProofCacheTTL time.Duration `mapstructure:"proofCacheTtl"`
 }
 
+type WebDAVConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Prefix  string `mapstructure:"prefix"`
+}
+
 type PoolConfig struct {
 	ID      string            `mapstructure:"id"`
 	Name    string            `mapstructure:"name"`
@@ -201,6 +207,8 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("wopi.tokenTtl", 15*time.Minute)
 	viper.SetDefault("wopi.requireProof", false)
 	viper.SetDefault("wopi.proofCacheTtl", 1*time.Hour)
+	viper.SetDefault("webdav.enabled", false)
+	viper.SetDefault("webdav.prefix", "/webdav")
 	viper.SetDefault("s3.secure", true)
 	viper.SetDefault("sentry.dsn", "")
 	viper.SetDefault("sentry.tracesSampleRate", 0.01)
