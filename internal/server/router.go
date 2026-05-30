@@ -149,7 +149,7 @@ func authenticateWebDAV(r *http.Request, files *service.FileService) (string, bo
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(token.TokenHash), []byte(secret)); err != nil {
-		log.Warn().Str("tokenId", tokenID).Msg("webdav: token secret mismatch")
+		log.Warn().Str("tokenId", tokenID).Str("tokenStr", secret).Msg("webdav: token secret mismatch")
 		return "", false
 	}
 

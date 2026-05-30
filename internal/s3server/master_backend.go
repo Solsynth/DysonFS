@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"src.solsynth.dev/sosys/filesystem/internal/database"
+	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	gen "src.solsynth.dev/sosys/go/proto"
 
@@ -26,10 +27,22 @@ func NewMasterBackend(files *service.FileService, tempDir string) *MasterBackend
 }
 
 func (b *MasterBackend) ResolveS3Credentials(ctx context.Context, accessKey string) (string, *TokenInfo, error) {
+	logging.Log.Debug().
+		Str("accessKeyPrefix", accessKey[:min(8, len(accessKey))]).
+		Int("accessKeyLen", len(accessKey)).
+		Msg("s3: resolving credentials")
+
 	var token database.S3Token
 	if err := b.files.DB().Where("access_key = ?", accessKey).First(&token).Error; err != nil {
+		logging.Log.Warn().Err(err).Msg("s3: access key not found in DB")
 		return "", nil, fmt.Errorf("invalid access key")
 	}
+
+	logging.Log.Debug().
+		Str("tokenId", token.ID).
+		Str("accountId", token.AccountID.String()).
+		Int("secretKeyLen", len(token.SecretKey)).
+		Msg("s3: token found")
 
 	now := time.Now()
 	_ = b.files.DB().Model(&token).Update("last_used_at", &now)
