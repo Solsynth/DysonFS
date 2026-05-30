@@ -127,6 +127,13 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		}
 	}
 
+	s3t := r.Group("/api/s3/tokens")
+	{
+		s3t.POST("", func(c *gin.Context) { createS3Token(c, files) })
+		s3t.GET("", func(c *gin.Context) { listS3Tokens(c, files) })
+		s3t.DELETE("/:id", func(c *gin.Context) { deleteS3Token(c, files) })
+	}
+
 	sn := r.Group("/api/storage-nodes")
 	{
 		sn.POST("/register", func(c *gin.Context) { registerStorageNode(c, files) })

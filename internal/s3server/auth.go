@@ -24,19 +24,20 @@ type credentials struct {
 	Request   string
 }
 
-func validateSignature(r *http.Request, accessKey, secretKey string) bool {
+type authResult struct {
+	secretKey string
+	info      *TokenInfo
+}
+
+func authenticateRequest(r *http.Request, fixedAccessKey, fixedSecretKey string, resolver TokenResolver) (*authResult, bool) {
 	auth := r.Header.Get(authorizationHeader)
 	if auth == "" {
-		return false
+		return nil, false
 	}
 
 	cred, signedHeaders, signature, ok := parseAuthorization(auth)
 	if !ok {
-		return false
-	}
-
-	if cred.AccessKey != accessKey {
-		return false
+		return nil, false
 	}
 
 	dateStr := r.Header.Get(amzDateHeader)
@@ -44,22 +45,45 @@ func validateSignature(r *http.Request, accessKey, secretKey string) bool {
 		dateStr = r.Header.Get(dateHeader)
 	}
 	if dateStr == "" {
-		return false
+		return nil, false
 	}
 
 	t, err := time.Parse("20060102T150405Z", dateStr)
 	if err != nil {
 		t, err = time.Parse(http.TimeFormat, dateStr)
 		if err != nil {
-			return false
+			return nil, false
 		}
 	}
 	if time.Since(t) > 15*time.Minute {
-		return false
+		return nil, false
+	}
+
+	var secretKey string
+	var info *TokenInfo
+
+	if resolver != nil {
+		resolvedSecret, resolvedInfo, err := resolver.ResolveS3Credentials(r.Context(), cred.AccessKey)
+		if err != nil {
+			return nil, false
+		}
+		secretKey = resolvedSecret
+		info = resolvedInfo
+	} else if fixedAccessKey != "" && fixedSecretKey != "" {
+		if cred.AccessKey != fixedAccessKey {
+			return nil, false
+		}
+		secretKey = fixedSecretKey
+	} else {
+		return nil, false
 	}
 
 	expected := computeSignature(r, cred, signedHeaders, secretKey, dateStr)
-	return hmac.Equal([]byte(signature), []byte(expected))
+	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		return nil, false
+	}
+
+	return &authResult{secretKey: secretKey, info: info}, true
 }
 
 func parseAuthorization(auth string) (cred credentials, signedHeaders []string, signature string, ok bool) {

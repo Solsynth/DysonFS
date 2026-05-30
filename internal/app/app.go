@@ -23,7 +23,6 @@ import (
 	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -286,16 +285,8 @@ func (a *App) startMasterS3() {
 	if !a.cfg.MasterS3.Enabled {
 		return
 	}
-	if a.cfg.MasterS3.AccessKey == "" || a.cfg.MasterS3.SecretKey == "" {
-		logging.Log.Warn().Msg("master S3 enabled but accessKey/secretKey not set, skipping")
-		return
-	}
-	accountID := uuid.Nil
-	if a.cfg.MasterS3.AccountID != "" {
-		accountID = uuid.MustParse(a.cfg.MasterS3.AccountID)
-	}
-	backend := s3server.NewMasterBackend(a.files, accountID, a.cfg.Storage.TempDir)
-	s3srv := s3server.New(backend, a.cfg.MasterS3.AccessKey, a.cfg.MasterS3.SecretKey)
+	backend := s3server.NewMasterBackend(a.files, a.cfg.Storage.TempDir)
+	s3srv := s3server.NewWithResolver(backend, backend)
 	s3handler := s3srv.Handler()
 
 	mux := http.NewServeMux()

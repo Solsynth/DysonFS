@@ -20,18 +20,73 @@ The master node can expose an S3-compatible API that maps **file pools to S3 buc
 [masterS3]
 enabled = true
 port = "9001"
-accessKey = "AKIAIOSFODNN7EXAMPLE"
-secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-accountId = "00000000-0000-0000-0000-000000000000"
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable the master S3 API |
 | `port` | `9001` | HTTP port for the S3 API |
-| `accessKey` | — | S3 access key for authentication |
-| `secretKey` | — | S3 secret key for authentication |
-| `accountId` | — | DysonFS account ID to operate as. If empty, uses a nil/system account |
+
+### Authentication
+
+The master S3 API uses **per-user S3 tokens** (similar to WebDAV tokens). Each user creates their own S3 access key and secret key via the API. Tokens can optionally be restricted to a specific pool.
+
+#### Creating an S3 Token
+
+```http
+POST /api/s3/tokens HTTP/1.1
+Authorization: Bearer <session-token>
+Content-Type: application/json
+
+{
+  "label": "My S3 Client",
+  "pool_id": "optional-pool-id-to-restrict-access"
+}
+```
+
+Response (keys shown only once):
+
+```json
+{
+  "id": "01HZX...",
+  "label": "My S3 Client",
+  "pool_id": "optional-pool-id",
+  "access_key": "01HZX...01HZX...",
+  "secret_key": "01HZX...01HZX...",
+  "created_at": "2026-05-30T12:00:00Z"
+}
+```
+
+#### Listing S3 Tokens
+
+```http
+GET /api/s3/tokens HTTP/1.1
+Authorization: Bearer <session-token>
+```
+
+#### Deleting an S3 Token
+
+```http
+DELETE /api/s3/tokens/:id HTTP/1.1
+Authorization: Bearer <session-token>
+```
+
+Tokens are stored as SHA-256 hashes. The raw access key and secret key are only returned at creation time and cannot be retrieved later.
+
+### Pool Restriction
+
+When `pool_id` is set on a token:
+
+- The token can only access that specific pool as a bucket
+- The `auto` and `unindexed` special buckets are **not accessible**
+- `ListBuckets` returns only the restricted pool
+- All object operations are scoped to files in that pool
+
+When `pool_id` is not set:
+
+- The token can access all pools the user owns
+- `auto` and `unindexed` special buckets are available
+- `ListBuckets` returns all pools + `auto` + `unindexed`
 
 ### Bucket Mapping
 
@@ -79,6 +134,8 @@ aws --endpoint-url http://localhost:9001 s3 cp ./temp.bin s3://unindexed/temp.bi
 aws --endpoint-url http://localhost:9001 s3 rm s3://auto/<file-id>
 ```
 
+Use your S3 token's `access_key` and `secret_key` as credentials.
+
 **rclone:**
 
 ```ini
@@ -86,8 +143,8 @@ aws --endpoint-url http://localhost:9001 s3 rm s3://auto/<file-id>
 type = s3
 provider = Other
 endpoint = http://localhost:9001
-access_key_id = AKIAIOSFODNN7EXAMPLE
-secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+access_key_id = <your-s3-token-access-key>
+secret_access_key = <your-s3-token-secret-key>
 ```
 
 ```bash
@@ -109,8 +166,8 @@ import boto3
 s3 = boto3.client(
     "s3",
     endpoint_url="http://localhost:9001",
-    aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-    aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    aws_access_key_id="<your-s3-token-access-key>",
+    aws_secret_access_key="<your-s3-token-secret-key>",
     region_name="us-east-1",
 )
 

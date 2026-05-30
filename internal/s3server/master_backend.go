@@ -2,6 +2,7 @@ package s3server
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -17,18 +18,73 @@ import (
 )
 
 type MasterBackend struct {
-	files     *service.FileService
-	accountID uuid.UUID
-	tempDir   string
+	files   *service.FileService
+	tempDir string
 }
 
-func NewMasterBackend(files *service.FileService, accountID uuid.UUID, tempDir string) *MasterBackend {
-	return &MasterBackend{files: files, accountID: accountID, tempDir: tempDir}
+func NewMasterBackend(files *service.FileService, tempDir string) *MasterBackend {
+	return &MasterBackend{files: files, tempDir: tempDir}
+}
+
+func (b *MasterBackend) ResolveS3Credentials(ctx context.Context, accessKey string) (string, *TokenInfo, error) {
+	hash := sha256.Sum256([]byte(accessKey))
+	hashHex := fmt.Sprintf("%x", hash)
+
+	var token database.S3Token
+	if err := b.files.DB().Where("access_key = ?", hashHex).First(&token).Error; err != nil {
+		return "", nil, fmt.Errorf("invalid access key")
+	}
+
+	info := &TokenInfo{
+		AccountID: token.AccountID.String(),
+		PoolID:    token.PoolID,
+	}
+	return token.SecretKey, info, nil
+}
+
+func (b *MasterBackend) accountFromContext(ctx context.Context) uuid.UUID {
+	info := TokenInfoFromContext(ctx)
+	if info == nil || info.AccountID == "" {
+		return uuid.Nil
+	}
+	return uuid.MustParse(info.AccountID)
+}
+
+func (b *MasterBackend) poolRestriction(ctx context.Context) *string {
+	info := TokenInfoFromContext(ctx)
+	if info == nil {
+		return nil
+	}
+	return info.PoolID
+}
+
+func (b *MasterBackend) isBucketAllowed(ctx context.Context, bucket string) bool {
+	restriction := b.poolRestriction(ctx)
+	if restriction == nil {
+		return true
+	}
+	switch bucket {
+	case "auto", "unindexed":
+		return false
+	default:
+		return *restriction == bucket
+	}
 }
 
 func (b *MasterBackend) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
+	accountID := b.accountFromContext(ctx)
+	restriction := b.poolRestriction(ctx)
+
+	if restriction != nil {
+		pool, err := b.files.GetPool(*restriction)
+		if err != nil {
+			return nil, err
+		}
+		return []BucketInfo{{Name: pool.ID, CreationDate: time.Now()}}, nil
+	}
+
 	pools, err := b.files.ListPools(service.AccessContext{
-		Account: &gen.DyAccount{Id: b.accountID.String(), IsSuperuser: true},
+		Account: &gen.DyAccount{Id: accountID.String(), IsSuperuser: false},
 	})
 	if err != nil {
 		return nil, err
@@ -45,6 +101,9 @@ func (b *MasterBackend) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 }
 
 func (b *MasterBackend) HeadBucket(ctx context.Context, bucket string) error {
+	if !b.isBucketAllowed(ctx, bucket) {
+		return fmt.Errorf("access denied to bucket %s", bucket)
+	}
 	switch bucket {
 	case "auto", "unindexed":
 		return nil
@@ -55,11 +114,18 @@ func (b *MasterBackend) HeadBucket(ctx context.Context, bucket string) error {
 }
 
 func (b *MasterBackend) CreateBucket(ctx context.Context, bucket string) error {
-	_, err := b.files.CreatePool(b.accountID, bucket, "", service.PoolStorageConfig{}, service.PoolBillingConfig{}, service.PoolConfig{}, false)
+	if b.poolRestriction(ctx) != nil {
+		return fmt.Errorf("cannot create buckets with restricted token")
+	}
+	accountID := b.accountFromContext(ctx)
+	_, err := b.files.CreatePool(accountID, bucket, "", service.PoolStorageConfig{}, service.PoolBillingConfig{}, service.PoolConfig{}, false)
 	return err
 }
 
 func (b *MasterBackend) DeleteBucket(ctx context.Context, bucket string) error {
+	if b.poolRestriction(ctx) != nil {
+		return fmt.Errorf("cannot delete buckets with restricted token")
+	}
 	switch bucket {
 	case "auto", "unindexed":
 		return fmt.Errorf("cannot delete special bucket")
@@ -69,14 +135,19 @@ func (b *MasterBackend) DeleteBucket(ctx context.Context, bucket string) error {
 }
 
 func (b *MasterBackend) ListObjects(ctx context.Context, bucket, prefix, marker string, maxKeys int) ([]ObjectEntry, bool, error) {
+	if !b.isBucketAllowed(ctx, bucket) {
+		return nil, false, fmt.Errorf("access denied to bucket %s", bucket)
+	}
+	accountID := b.accountFromContext(ctx)
+
 	var files []database.CloudFile
 	var err error
 
 	switch bucket {
 	case "auto":
-		files, err = b.files.ListRoot(b.accountID)
+		files, err = b.files.ListRoot(accountID)
 	case "unindexed":
-		files, err = b.files.ListUnindexed(b.accountID)
+		files, err = b.files.ListUnindexed(accountID)
 	default:
 		files, err = b.listFilesInPool(bucket)
 	}
@@ -120,7 +191,10 @@ func (b *MasterBackend) ListObjects(ctx context.Context, bucket, prefix, marker 
 }
 
 func (b *MasterBackend) GetObject(ctx context.Context, bucket, key string) (io.ReadCloser, ObjectInfo, error) {
-	file, err := b.resolveFile(bucket, key)
+	if !b.isBucketAllowed(ctx, bucket) {
+		return nil, ObjectInfo{}, fmt.Errorf("access denied to bucket %s", bucket)
+	}
+	file, err := b.resolveFile(ctx, bucket, key)
 	if err != nil {
 		return nil, ObjectInfo{}, err
 	}
@@ -140,6 +214,11 @@ func (b *MasterBackend) GetObject(ctx context.Context, bucket, key string) (io.R
 }
 
 func (b *MasterBackend) PutObject(ctx context.Context, bucket, key string, reader io.Reader, contentType string) error {
+	if !b.isBucketAllowed(ctx, bucket) {
+		return fmt.Errorf("access denied to bucket %s", bucket)
+	}
+	accountID := b.accountFromContext(ctx)
+
 	var poolID *string
 	switch bucket {
 	case "auto":
@@ -182,12 +261,15 @@ func (b *MasterBackend) PutObject(ctx context.Context, bucket, key string, reade
 	}
 
 	indexed := bucket != "unindexed"
-	_, err = b.files.CreateUploadedFile(b.accountID, fileName, nil, nil, nil, nil, nil, object.ID, poolID, nil, storageKey, indexed)
+	_, err = b.files.CreateUploadedFile(accountID, fileName, nil, nil, nil, nil, nil, object.ID, poolID, nil, storageKey, indexed)
 	return err
 }
 
 func (b *MasterBackend) DeleteObject(ctx context.Context, bucket, key string) error {
-	file, err := b.resolveFile(bucket, key)
+	if !b.isBucketAllowed(ctx, bucket) {
+		return fmt.Errorf("access denied to bucket %s", bucket)
+	}
+	file, err := b.resolveFile(ctx, bucket, key)
 	if err != nil {
 		return err
 	}
@@ -195,7 +277,10 @@ func (b *MasterBackend) DeleteObject(ctx context.Context, bucket, key string) er
 }
 
 func (b *MasterBackend) StatObject(ctx context.Context, bucket, key string) (ObjectInfo, error) {
-	file, err := b.resolveFile(bucket, key)
+	if !b.isBucketAllowed(ctx, bucket) {
+		return ObjectInfo{}, fmt.Errorf("access denied to bucket %s", bucket)
+	}
+	file, err := b.resolveFile(ctx, bucket, key)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
@@ -213,7 +298,10 @@ func (b *MasterBackend) StatObject(ctx context.Context, bucket, key string) (Obj
 }
 
 func (b *MasterBackend) SignedURL(ctx context.Context, bucket, key string, ttl time.Duration, filename string, download bool) (string, error) {
-	file, err := b.resolveFile(bucket, key)
+	if !b.isBucketAllowed(ctx, bucket) {
+		return "", fmt.Errorf("access denied to bucket %s", bucket)
+	}
+	file, err := b.resolveFile(ctx, bucket, key)
 	if err != nil {
 		return "", err
 	}
@@ -228,18 +316,19 @@ func (b *MasterBackend) SignedURL(ctx context.Context, bucket, key string, ttl t
 	return backend.SignedURL(ctx, storageKey, ttl, filename, download)
 }
 
-func (b *MasterBackend) resolveFile(bucket, key string) (*database.CloudFile, error) {
+func (b *MasterBackend) resolveFile(ctx context.Context, bucket, key string) (*database.CloudFile, error) {
+	accountID := b.accountFromContext(ctx)
 	file, err := b.files.GetFile(key)
 	if err != nil {
 		return nil, err
 	}
 	switch bucket {
 	case "auto":
-		if file.AccountID != b.accountID || !file.Indexed {
+		if file.AccountID != accountID || !file.Indexed {
 			return nil, fmt.Errorf("file not found in auto bucket")
 		}
 	case "unindexed":
-		if file.AccountID != b.accountID || file.Indexed {
+		if file.AccountID != accountID || file.Indexed {
 			return nil, fmt.Errorf("file not found in unindexed bucket")
 		}
 	default:
@@ -271,3 +360,4 @@ func (b *MasterBackend) listFilesInPool(poolID string) ([]database.CloudFile, er
 }
 
 var _ Backend = (*MasterBackend)(nil)
+var _ TokenResolver = (*MasterBackend)(nil)

@@ -33,6 +33,7 @@ func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to init authenticator")
 		}
+
 		r.Use(func(c *gin.Context) {
 			if isWOPICallbackRequest(c.Request) {
 				c.Next()
@@ -40,12 +41,11 @@ func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi
 			}
 
 			if isWebDAVRequest(c.Request) {
-				if accountID, ok := checkWebDAVToken(c.Request, files); ok {
+				if accountID, ok := authenticateWebDAV(c.Request, files); ok {
 					c.Set(handler.WebDAVAccountIDKey, accountID)
-					c.Next()
-					return
 				}
-				convertWebDAVBasicAuth(c.Request)
+				c.Next()
+				return
 			}
 
 			tokenInfo, ok := dyauth.ExtractToken(c.Request)
@@ -116,51 +116,44 @@ func isWebDAVRequest(r *http.Request) bool {
 	return r != nil && r.URL != nil && strings.HasPrefix(r.URL.Path, "/webdav/")
 }
 
-func convertWebDAVBasicAuth(r *http.Request) {
+// authenticateWebDAV handles WebDAV authentication independently from the global
+// dyauth middleware. It checks Basic Auth credentials against the web_dav_tokens
+// table first. If that fails and the password looks like a JWT/API key, it falls
+// back to dyauth. Returns the account ID if authenticated.
+func authenticateWebDAV(r *http.Request, files *service.FileService) (string, bool) {
 	authz := strings.TrimSpace(r.Header.Get("Authorization"))
 	if authz == "" {
-		return
+		return "", false
 	}
+
 	if strings.HasPrefix(strings.ToLower(authz), "basic ") {
 		decoded, err := base64.StdEncoding.DecodeString(authz[6:])
 		if err != nil {
-			return
+			return "", false
 		}
 		parts := strings.SplitN(string(decoded), ":", 2)
-		if len(parts) == 2 {
-			r.Header.Set("Authorization", "Bearer "+strings.TrimSpace(parts[1]))
+		if len(parts) != 2 {
+			return "", false
+		}
+		rawToken := strings.TrimSpace(parts[1])
+		if rawToken == "" {
+			return "", false
+		}
+
+		hash := sha256.Sum256([]byte(rawToken))
+		hashHex := fmt.Sprintf("%x", hash)
+
+		var token database.WebDAVToken
+		if err := files.DB().Where("token_hash = ?", hashHex).First(&token).Error; err == nil {
+			now := time.Now()
+			_ = files.DB().Model(&token).Update("last_used_at", &now)
+			log.Info().
+				Str("accountId", token.AccountID.String()).
+				Str("tokenId", token.ID).
+				Msg("webdav: authenticated via token")
+			return token.AccountID.String(), true
 		}
 	}
-}
 
-func checkWebDAVToken(r *http.Request, files *service.FileService) (string, bool) {
-	authz := strings.TrimSpace(r.Header.Get("Authorization"))
-	if authz == "" || !strings.HasPrefix(strings.ToLower(authz), "basic ") {
-		return "", false
-	}
-	decoded, err := base64.StdEncoding.DecodeString(authz[6:])
-	if err != nil {
-		return "", false
-	}
-	parts := strings.SplitN(string(decoded), ":", 2)
-	if len(parts) != 2 {
-		return "", false
-	}
-	rawToken := strings.TrimSpace(parts[1])
-	if rawToken == "" {
-		return "", false
-	}
-
-	hash := sha256.Sum256([]byte(rawToken))
-	hashHex := fmt.Sprintf("%x", hash)
-
-	var token database.WebDAVToken
-	if err := files.DB().Where("token_hash = ?", hashHex).First(&token).Error; err != nil {
-		return "", false
-	}
-
-	now := time.Now()
-	_ = files.DB().Model(&token).Update("last_used_at", &now)
-
-	return token.AccountID.String(), true
+	return "", false
 }

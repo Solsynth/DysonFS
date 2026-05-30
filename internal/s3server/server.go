@@ -30,6 +30,7 @@ type Server struct {
 	backend   Backend
 	accessKey string
 	secretKey string
+	resolver  TokenResolver
 	mu        sync.Mutex
 	multipart map[string]*multipartUpload
 }
@@ -43,12 +44,25 @@ func New(backend Backend, accessKey, secretKey string) *Server {
 	}
 }
 
+func NewWithResolver(backend Backend, resolver TokenResolver) *Server {
+	return &Server{
+		backend:   backend,
+		resolver:  resolver,
+		multipart: make(map[string]*multipartUpload),
+	}
+}
+
 func (s *Server) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.accessKey != "" && s.secretKey != "" {
-			if !validateSignature(r, s.accessKey, s.secretKey) {
+		if s.resolver != nil || (s.accessKey != "" && s.secretKey != "") {
+			result, ok := authenticateRequest(r, s.accessKey, s.secretKey, s.resolver)
+			if !ok {
 				xmlError(w, http.StatusForbidden, "SignatureDoesNotMatch", "The request signature we calculated does not match.", r.URL.Path)
 				return
+			}
+			if result.info != nil {
+				ctx := context.WithValue(r.Context(), tokenInfoContextKey, result.info)
+				r = r.WithContext(ctx)
 			}
 		}
 

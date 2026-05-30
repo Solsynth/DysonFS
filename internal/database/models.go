@@ -368,3 +368,23 @@ func (n *StorageNode) BeforeCreate(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+type S3Token struct {
+	ID          string         `gorm:"primaryKey;size:36" json:"id"`
+	AccountID   uuid.UUID      `gorm:"index" json:"account_id"`
+	AccessKey   string         `gorm:"size:64;uniqueIndex" json:"-"`
+	SecretKey   string         `gorm:"size:64" json:"-"`
+	Label       string         `gorm:"size:128" json:"label"`
+	PoolID      *string        `gorm:"size:36" json:"pool_id"`
+	LastUsedAt  *time.Time     `json:"last_used_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}
+
+func (t *S3Token) BeforeCreate(tx *gorm.DB) error {
+	if t.ID == "" {
+		t.ID = NewID()
+	}
+	return nil
+}
