@@ -1788,7 +1788,12 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		Str("accountId", result.Account.GetId()).
 		Str("tempPath", tempPath).
 		Msg("direct upload staged to disk")
-	defer os.Remove(tempPath)
+	cleanupTempPath := true
+	defer func() {
+		if cleanupTempPath {
+			_ = os.Remove(tempPath)
+		}
+	}()
 	var createdFile *database.CloudFile
 	var object *database.FileObject
 	analysis, analysisErr := files.AnalyzeSourceFile(c.Request.Context(), tempPath, fileHeader.Header.Get("Content-Type"))
@@ -1859,6 +1864,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	cleanupTempPath = false
 	c.JSON(http.StatusOK, createdFile)
 }
 
@@ -1934,6 +1940,18 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	}
 	chunkDir := filepath.Join(cfg.Storage.TempDir, taskID)
 	mergedPath := filepath.Join(cfg.Storage.TempDir, taskID+".merged")
+	cleanupChunkDir := true
+	defer func() {
+		if cleanupChunkDir {
+			_ = os.RemoveAll(chunkDir)
+		}
+	}()
+	cleanupMergedPath := true
+	defer func() {
+		if cleanupMergedPath {
+			_ = os.Remove(mergedPath)
+		}
+	}()
 	if err := files.MergeChunks(taskID, chunkDir, mergedPath, task.ChunksCount, nil); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2014,6 +2032,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	cleanupMergedPath = false
 	logging.Log.Info().
 		Str("taskId", taskID).
 		Str("fileId", created.ID).
