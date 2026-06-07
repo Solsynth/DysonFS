@@ -35,7 +35,7 @@ func TestProcessUploadedFileFallsBackToStorageWhenTempPathMissing(t *testing.T) 
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.mp4", AccountID: uuid.New(), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := stor.Put(context.Background(), storageKey, strings.NewReader(string(content)), "video/mp4"); err != nil {
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader(string(content)), int64(len(content)), "video/mp4"); err != nil {
 		t.Fatalf("put object: %v", err)
 	}
 	w := New(nil, svc, stor, &database.DB{DB: db}, tmp)

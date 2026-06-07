@@ -25,7 +25,7 @@ type Backend interface {
 	DeleteBucket(ctx context.Context, bucket string) error
 	ListObjects(ctx context.Context, bucket, prefix, marker string, maxKeys int) ([]ObjectEntry, bool, error)
 	GetObject(ctx context.Context, bucket, key string) (io.ReadCloser, ObjectInfo, error)
-	PutObject(ctx context.Context, bucket, key string, reader io.Reader, contentType string) error
+	PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error
 	DeleteObject(ctx context.Context, bucket, key string) error
 	StatObject(ctx context.Context, bucket, key string) (ObjectInfo, error)
 	SignedURL(ctx context.Context, bucket, key string, ttl time.Duration, filename string, download bool) (string, error)

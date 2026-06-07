@@ -106,7 +106,7 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 		contentType = "application/octet-stream"
 	}
 
-	if err := s.backend.PutObject(ctx, bucket, key, r.Body, contentType); err != nil {
+	if err := s.backend.PutObject(ctx, bucket, key, r.Body, r.ContentLength, contentType); err != nil {
 		xmlError(w, http.StatusInternalServerError, "InternalError", err.Error(), "/"+bucket+"/"+key)
 		return
 	}

@@ -121,9 +121,9 @@ func (b *StorageBackend) GetObject(ctx context.Context, bucket, key string) (io.
 	return reader, ObjectInfo{Size: info.Size, ModTime: info.ModTime, MimeType: info.MimeType, ETag: info.ETag}, nil
 }
 
-func (b *StorageBackend) PutObject(ctx context.Context, bucket, key string, reader io.Reader, contentType string) error {
+func (b *StorageBackend) PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error {
 	fullKey := bucket + "/" + key
-	return b.inner.Put(ctx, fullKey, reader, contentType)
+	return b.inner.Put(ctx, fullKey, reader, size, contentType)
 }
 
 func (b *StorageBackend) DeleteObject(ctx context.Context, bucket, key string) error {

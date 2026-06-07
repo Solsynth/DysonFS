@@ -18,7 +18,7 @@ func NewLocalBackend(base string) *LocalBackend { return &LocalBackend{base: bas
 
 func (b *LocalBackend) path(key string) string { return filepath.Join(b.base, filepath.Clean(key)) }
 
-func (b *LocalBackend) Put(_ context.Context, key string, reader io.Reader, _ string) error {
+func (b *LocalBackend) Put(_ context.Context, key string, reader io.Reader, _ int64, _ string) error {
 	if err := os.MkdirAll(filepath.Dir(b.path(key)), 0o755); err != nil {
 		return err
 	}

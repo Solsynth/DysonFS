@@ -23,7 +23,7 @@ func (u *multipartUpload) complete(ctx context.Context, backend Backend) error {
 		}
 		combined = append(combined, data...)
 	}
-	return backend.PutObject(ctx, u.bucket, u.key, bytes.NewReader(combined), "application/octet-stream")
+	return backend.PutObject(ctx, u.bucket, u.key, bytes.NewReader(combined), int64(len(combined)), "application/octet-stream")
 }
 
 type Server struct {

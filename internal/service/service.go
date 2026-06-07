@@ -1495,7 +1495,7 @@ func (s *FileService) AnalyzeImage(path string) (*ImageAnalysis, error) {
 		return nil, err
 	}
 
-	blur, err := analyzeBlurhash(path)
+	blur, err := analyzeBlurhashImage(img)
 	if err != nil {
 		return nil, err
 	}
@@ -1510,6 +1510,7 @@ func (s *FileService) AnalyzeImage(path string) (*ImageAnalysis, error) {
 
 func (s *FileService) AnalyzeSourceFile(ctx context.Context, path, mimeType string) (*SourceAnalysis, error) {
 	analysis := &SourceAnalysis{}
+	mimeType = detectSourceMime(path, mimeType)
 	if strings.HasPrefix(mimeType, "image/") {
 		img, err := s.AnalyzeImage(path)
 		if err != nil {
@@ -1617,13 +1618,10 @@ func (w exifWalker) Walk(name exif.FieldName, tag *tiff.Tag) error {
 	return nil
 }
 
-func analyzeBlurhash(path string) (string, error) {
-	img, err := vips.NewImageFromFile(path)
-	if err != nil {
-		return "", err
+func analyzeBlurhashImage(img *vips.ImageRef) (string, error) {
+	if img == nil {
+		return "", fmt.Errorf("image is required")
 	}
-	defer img.Close()
-
 	buf, _, err := img.ExportPng(&vips.PngExportParams{StripMetadata: true})
 	if err != nil {
 		return "", err
@@ -1637,6 +1635,43 @@ func analyzeBlurhash(path string) (string, error) {
 		return "", err
 	}
 	return hash, nil
+}
+
+func mediaAspectRatio(media map[string]any, width, height int) string {
+	streams, ok := media["streams"].([]any)
+	if ok {
+		for _, raw := range streams {
+			stream, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			codecType, _ := stream["codec_type"].(string)
+			if codecType != "video" {
+				continue
+			}
+			if ratio, _ := stream["display_aspect_ratio"].(string); strings.TrimSpace(ratio) != "" && ratio != "0:1" {
+				return strings.TrimSpace(ratio)
+			}
+			if ratio, _ := stream["sample_aspect_ratio"].(string); strings.TrimSpace(ratio) != "" && ratio != "0:1" {
+				return strings.TrimSpace(ratio)
+			}
+		}
+	}
+	if width > 0 && height > 0 {
+		divisor := gcd(width, height)
+		return fmt.Sprintf("%d:%d", width/divisor, height/divisor)
+	}
+	return ""
+}
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	if a == 0 {
+		return 1
+	}
+	return a
 }
 
 func mergeJSONMeta(raw datatypes.JSON, updates map[string]any) (datatypes.JSON, error) {
@@ -1656,6 +1691,35 @@ func mergeJSONMeta(raw datatypes.JSON, updates map[string]any) (datatypes.JSON, 
 	return datatypes.JSON(merged), nil
 }
 
+func sourceAnalysisUpdates(analysis *SourceAnalysis) map[string]any {
+	if analysis == nil {
+		return nil
+	}
+	updates := map[string]any{}
+	if analysis.Width > 0 {
+		updates["width"] = analysis.Width
+	}
+	if analysis.Height > 0 {
+		updates["height"] = analysis.Height
+	}
+	if analysis.Image != nil {
+		updates["width"] = analysis.Image.Width
+		updates["height"] = analysis.Image.Height
+		updates["blurhash"] = analysis.Image.Blurhash
+		updates["exif_version"] = 2
+		if len(analysis.Image.Exif) > 0 {
+			updates["exif"] = analysis.Image.Exif
+		}
+	}
+	if len(analysis.Media) > 0 {
+		updates["media"] = analysis.Media
+		if ratio := mediaAspectRatio(analysis.Media, analysis.Width, analysis.Height); ratio != "" {
+			updates["aspect_ratio"] = ratio
+		}
+	}
+	return updates
+}
+
 func (s *FileService) StoreImageAnalysis(fileID string, analysis *ImageAnalysis) (*database.CloudFile, error) {
 	return s.StoreSourceAnalysis(fileID, &SourceAnalysis{Image: analysis})
 }
@@ -1669,25 +1733,7 @@ func (s *FileService) StoreSourceAnalysis(fileID string, analysis *SourceAnalysi
 		if err := tx.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
 			return err
 		}
-		updates := map[string]any{}
-		if analysis.Width > 0 {
-			updates["width"] = analysis.Width
-		}
-		if analysis.Height > 0 {
-			updates["height"] = analysis.Height
-		}
-		if analysis.Image != nil {
-			updates["width"] = analysis.Image.Width
-			updates["height"] = analysis.Image.Height
-			updates["blurhash"] = analysis.Image.Blurhash
-			updates["exif_version"] = 2
-			if len(analysis.Image.Exif) > 0 {
-				updates["exif"] = analysis.Image.Exif
-			}
-		}
-		if len(analysis.Media) > 0 {
-			updates["media"] = analysis.Media
-		}
+		updates := sourceAnalysisUpdates(analysis)
 		if file.ObjectID != nil {
 			var object database.FileObject
 			if err := tx.First(&object, "id = ?", *file.ObjectID).Error; err != nil {
@@ -2051,7 +2097,7 @@ func (s *FileService) persistReanalysisVariant(ctx context.Context, parent *data
 		return err
 	}
 	key := parent.ID + suffix
-	if err := backend.Put(ctx, key, bytes.NewReader(body), mimeType); err != nil {
+	if err := backend.Put(ctx, key, bytes.NewReader(body), int64(len(body)), mimeType); err != nil {
 		return err
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -2409,7 +2455,7 @@ func (s *FileService) FastOverwriteFile(fileID, sourcePath string, analysis *Sou
 		if err != nil {
 			return err
 		}
-		if err := backend.Put(context.Background(), *storageKey, bytes.NewReader(data), mimeType); err != nil {
+		if err := backend.Put(context.Background(), *storageKey, bytes.NewReader(data), int64(len(data)), mimeType); err != nil {
 			return err
 		}
 
@@ -2418,25 +2464,7 @@ func (s *FileService) FastOverwriteFile(fileID, sourcePath string, analysis *Sou
 			meta = file.Object.Meta
 		}
 		if analysis != nil {
-			updates := map[string]any{}
-			if analysis.Width > 0 {
-				updates["width"] = analysis.Width
-			}
-			if analysis.Height > 0 {
-				updates["height"] = analysis.Height
-			}
-			if analysis.Image != nil {
-				updates["width"] = analysis.Image.Width
-				updates["height"] = analysis.Image.Height
-				updates["blurhash"] = analysis.Image.Blurhash
-				updates["exif_version"] = 2
-				if len(analysis.Image.Exif) > 0 {
-					updates["exif"] = analysis.Image.Exif
-				}
-			}
-			if len(analysis.Media) > 0 {
-				updates["media"] = analysis.Media
-			}
+			updates := sourceAnalysisUpdates(analysis)
 			merged, err := mergeJSONMeta(meta, updates)
 			if err != nil {
 				return err

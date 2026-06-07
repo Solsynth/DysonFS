@@ -274,7 +274,7 @@ func TestPurgeFileDeletesDereferencedObjectAndRemote(t *testing.T) {
 	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: fileID, SubjectType: "private", Permission: "read"}).Error; err != nil {
 		t.Fatalf("create permission: %v", err)
 	}
-	if err := stor.Put(context.Background(), storageKey, strings.NewReader("hello"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
 		t.Fatalf("put remote object: %v", err)
 	}
 
@@ -333,10 +333,10 @@ func TestPurgeFileDeletesDescendantsAndTheirObjects(t *testing.T) {
 			t.Fatalf("create permission for %s: %v", perm.FileID, err)
 		}
 	}
-	if err := stor.Put(context.Background(), childStorageKey, strings.NewReader("child"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), childStorageKey, strings.NewReader("child"), int64(len("child")), "text/plain"); err != nil {
 		t.Fatalf("put child remote object: %v", err)
 	}
-	if err := stor.Put(context.Background(), grandchildStorageKey, strings.NewReader("grandchild"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), grandchildStorageKey, strings.NewReader("grandchild"), int64(len("grandchild")), "text/plain"); err != nil {
 		t.Fatalf("put grandchild remote object: %v", err)
 	}
 
@@ -389,7 +389,7 @@ func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
 			t.Fatalf("create file %s: %v", fileID, err)
 		}
 	}
-	if err := stor.Put(context.Background(), storageKey, strings.NewReader("hello"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
 		t.Fatalf("put remote object: %v", err)
 	}
 
@@ -444,10 +444,10 @@ func TestOverwriteFileSwapsObjectAndDeletesDereferencedSource(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
 		t.Fatalf("create derived file: %v", err)
 	}
-	if err := stor.Put(context.Background(), oldStorageKey, strings.NewReader("hello"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), oldStorageKey, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
 		t.Fatalf("put old object: %v", err)
 	}
-	if err := stor.Put(context.Background(), derivedStorageKey, strings.NewReader("cmp"), "image/webp"); err != nil {
+	if err := stor.Put(context.Background(), derivedStorageKey, strings.NewReader("cmp"), int64(len("cmp")), "image/webp"); err != nil {
 		t.Fatalf("put derived object: %v", err)
 	}
 
@@ -521,7 +521,7 @@ func TestOverwriteFileKeepsSharedPreviousObject(t *testing.T) {
 			t.Fatalf("create file %s: %v", fileID, err)
 		}
 	}
-	if err := stor.Put(context.Background(), sharedStorageKey, strings.NewReader("hello"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), sharedStorageKey, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
 		t.Fatalf("put shared object: %v", err)
 	}
 
@@ -577,10 +577,10 @@ func TestFastOverwriteFileUpdatesExistingObject(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
 		t.Fatalf("create derived file: %v", err)
 	}
-	if err := stor.Put(context.Background(), storageKey, strings.NewReader("old"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader("old"), int64(len("old")), "text/plain"); err != nil {
 		t.Fatalf("put source object: %v", err)
 	}
-	if err := stor.Put(context.Background(), derivedStorageKey, strings.NewReader("old-derived"), "image/webp"); err != nil {
+	if err := stor.Put(context.Background(), derivedStorageKey, strings.NewReader("old-derived"), int64(len("old-derived")), "image/webp"); err != nil {
 		t.Fatalf("put derived object: %v", err)
 	}
 	sourcePath := filepath.Join(tmp, "updated.txt")
@@ -1013,7 +1013,7 @@ func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testi
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := stor.Put(context.Background(), storageKey, strings.NewReader("abc"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), storageKey, strings.NewReader("abc"), int64(len("abc")), "text/plain"); err != nil {
 		t.Fatalf("stor.Put() error = %v", err)
 	}
 	missingID := database.NewID()
@@ -1063,7 +1063,7 @@ func TestBackendFromPoolStorageLocal(t *testing.T) {
 	}
 
 	const key = "files/example.txt"
-	if err := local.Put(context.Background(), key, strings.NewReader("hello"), "text/plain"); err != nil {
+	if err := local.Put(context.Background(), key, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
 
@@ -1306,7 +1306,7 @@ func TestReanalyzeMissingImageMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open image: %v", err)
 	}
-	if err := stor.Put(context.Background(), object.ID, imgFile, object.MimeType); err != nil {
+	if err := stor.Put(context.Background(), object.ID, imgFile, object.Size, object.MimeType); err != nil {
 		_ = imgFile.Close()
 		t.Fatalf("stor.Put() error = %v", err)
 	}
@@ -1376,6 +1376,9 @@ func TestStoreSourceAnalysisStoresSharedMediaDimensions(t *testing.T) {
 	if _, ok := meta["media"].(map[string]any); !ok {
 		t.Fatalf("meta media missing or wrong type: %#v", meta["media"])
 	}
+	if got, _ := meta["aspect_ratio"].(string); got != "16:9" {
+		t.Fatalf("meta aspect_ratio = %q, want %q", got, "16:9")
+	}
 	if width, height := mediaDimensions(analysis.Media); width != 1920 || height != 1080 {
 		t.Fatalf("mediaDimensions() = (%d, %d), want (1920, 1080)", width, height)
 	}
@@ -1434,7 +1437,7 @@ func TestReanalyzeFilesDeduplicatesAndUpdatesSourceMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open image: %v", err)
 	}
-	if err := stor.Put(context.Background(), object.ID, imgFile, object.MimeType); err != nil {
+	if err := stor.Put(context.Background(), object.ID, imgFile, object.Size, object.MimeType); err != nil {
 		_ = imgFile.Close()
 		t.Fatalf("stor.Put() error = %v", err)
 	}

@@ -225,7 +225,7 @@ func (b *MasterBackend) GetObject(ctx context.Context, bucket, key string) (io.R
 	return reader, ObjectInfo{Size: info.Size, ModTime: info.ModTime, MimeType: info.MimeType, ETag: info.ETag}, nil
 }
 
-func (b *MasterBackend) PutObject(ctx context.Context, bucket, key string, reader io.Reader, contentType string) error {
+func (b *MasterBackend) PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error {
 	if !b.isBucketAllowed(ctx, bucket) {
 		return fmt.Errorf("access denied to bucket %s", bucket)
 	}
@@ -255,13 +255,8 @@ func (b *MasterBackend) PutObject(ctx context.Context, bucket, key string, reade
 	}
 	_ = f.Close()
 	defer os.Remove(tempPath)
-
-	stage, err := os.Open(tempPath)
-	if err != nil {
-		return err
-	}
-	object, err := b.files.StreamToStorage(ctx, stage, contentType)
-	_ = stage.Close()
+	_ = size
+	object, err := b.files.StreamFileToStorage(ctx, tempPath, contentType)
 	if err != nil {
 		return err
 	}

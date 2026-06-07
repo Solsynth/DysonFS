@@ -473,6 +473,9 @@ func resolveOpenVariant(ctx context.Context, files *service.FileService, file *d
 			return nil, err
 		}
 		if ok {
+			if kind == "system.compression.low" {
+				logging.Log.Info().Str("fileId", file.ID).Str("storageKey", deref(legacy.StorageKey)).Msg("compression_pending_fallback")
+			}
 			return legacy, nil
 		}
 	}
@@ -1694,6 +1697,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 // @Success 200 {object} database.CloudFile
 // @Router /api/files/upload/direct [post]
 func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+	startedAt := time.Now()
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -1784,9 +1788,11 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	_ = out.Close()
+	stagedDuration := time.Since(startedAt)
 	logging.Log.Info().
 		Str("accountId", result.Account.GetId()).
 		Str("tempPath", tempPath).
+		Dur("stageDuration", stagedDuration).
 		Msg("direct upload staged to disk")
 	cleanupTempPath := true
 	defer func() {
@@ -1796,7 +1802,9 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	}()
 	var createdFile *database.CloudFile
 	var object *database.FileObject
+	analysisStartedAt := time.Now()
 	analysis, analysisErr := files.AnalyzeSourceFile(c.Request.Context(), tempPath, fileHeader.Header.Get("Content-Type"))
+	analysisDuration := time.Since(analysisStartedAt)
 	if overwriteTarget != nil && fastMode {
 		if updated, applied, err := files.FastOverwriteFile(overwriteTarget.ID, tempPath, analysis); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1807,17 +1815,13 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		}
 	}
 	if createdFile == nil {
-		stage, err := os.Open(tempPath)
+		uploadStartedAt := time.Now()
+		object, err = files.StreamFileToStorage(c.Request.Context(), tempPath, fileHeader.Header.Get("Content-Type"))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		object, err = files.StreamToStorage(c.Request.Context(), stage, fileHeader.Header.Get("Content-Type"))
-		_ = stage.Close()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+		uploadDuration := time.Since(uploadStartedAt)
 		storageKey := &object.ID
 		if overwriteTarget != nil {
 			createdFile, err = files.OverwriteFile(overwriteTarget.ID, object.ID, storageKey)
@@ -1837,6 +1841,16 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		} else {
 			logging.Log.Warn().Err(analysisErr).Str("fileId", createdFile.ID).Msg("failed to analyze source file")
 		}
+		logging.Log.Info().
+			Str("accountId", result.Account.GetId()).
+			Str("fileId", createdFile.ID).
+			Str("objectId", object.ID).
+			Str("contentType", object.MimeType).
+			Int64("size", object.Size).
+			Dur("analysisDuration", analysisDuration).
+			Dur("uploadDuration", uploadDuration).
+			Dur("totalDuration", time.Since(startedAt)).
+			Msg("direct upload persisted")
 	} else if object == nil {
 		object = createdFile.Object
 	}
@@ -1848,6 +1862,8 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		Str("accountId", result.Account.GetId()).
 		Str("fileId", createdFile.ID).
 		Str("objectId", deref(createdFile.ObjectID)).
+		Dur("analysisDuration", analysisDuration).
+		Dur("totalDuration", time.Since(startedAt)).
 		Msg("direct upload stored")
 	_ = tasks
 	contentType := fileHeader.Header.Get("Content-Type")
@@ -1919,6 +1935,7 @@ func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService)
 // @Success 200 {object} database.CloudFile
 // @Router /api/files/upload/complete/{taskId} [post]
 func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+	startedAt := time.Now()
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -1960,12 +1977,15 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		Str("taskId", taskID).
 		Int("chunks", task.ChunksCount).
 		Str("mergedPath", mergedPath).
+		Dur("mergeDuration", time.Since(startedAt)).
 		Msg("upload chunks merged")
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	_ = ctx
 	var created *database.CloudFile
 	var object *database.FileObject
+	analysisStartedAt := time.Now()
 	analysis, analysisErr := files.AnalyzeSourceFile(c.Request.Context(), mergedPath, "")
+	analysisDuration := time.Since(analysisStartedAt)
 	if task.FastMode && task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
 		if updated, applied, err := files.FastOverwriteFile(strings.TrimSpace(*task.OverwriteID), mergedPath, analysis); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1976,17 +1996,13 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		}
 	}
 	if created == nil {
-		stage, err := os.Open(mergedPath)
+		uploadStartedAt := time.Now()
+		object, err = files.StreamFileToStorage(c.Request.Context(), mergedPath, "")
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		object, err = files.StreamToStorage(c.Request.Context(), stage, "")
-		_ = stage.Close()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+		uploadDuration := time.Since(uploadStartedAt)
 		storageKey := &object.ID
 		if task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
 			created, err = files.OverwriteFile(strings.TrimSpace(*task.OverwriteID), object.ID, storageKey)
@@ -2006,6 +2022,16 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		} else {
 			logging.Log.Warn().Err(analysisErr).Str("fileId", created.ID).Msg("failed to analyze source file")
 		}
+		logging.Log.Info().
+			Str("taskId", taskID).
+			Str("fileId", created.ID).
+			Str("objectId", object.ID).
+			Str("contentType", object.MimeType).
+			Int64("size", object.Size).
+			Dur("analysisDuration", analysisDuration).
+			Dur("uploadDuration", uploadDuration).
+			Dur("totalDuration", time.Since(startedAt)).
+			Msg("chunked upload persisted")
 	} else if object == nil {
 		object = created.Object
 	}
@@ -2017,6 +2043,8 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		Str("taskId", taskID).
 		Str("fileId", created.ID).
 		Str("objectId", deref(created.ObjectID)).
+		Dur("analysisDuration", analysisDuration).
+		Dur("totalDuration", time.Since(startedAt)).
 		Msg("upload stored")
 	storageKey := deref(created.ObjectID)
 	if created.Object != nil && created.Object.StorageKey != nil && strings.TrimSpace(*created.Object.StorageKey) != "" {
@@ -2085,9 +2113,9 @@ func createWebDAVToken(c *gin.Context, files *service.FileService) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":       token.ID,
-		"label":    token.Label,
-		"secret":   rawToken,
+		"id":         token.ID,
+		"label":      token.Label,
+		"secret":     rawToken,
 		"created_at": token.CreatedAt,
 	})
 }

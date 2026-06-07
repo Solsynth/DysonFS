@@ -27,11 +27,11 @@ func NewS3Backend(endpoint, accessKey, secretKey, bucket string, secure bool) (*
 	return &S3Backend{client: client, bucket: bucket, secure: secure}, nil
 }
 
-func (b *S3Backend) Put(ctx context.Context, key string, reader io.Reader, contentType string) error {
+func (b *S3Backend) Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
 	if b == nil || b.client == nil {
 		return fmt.Errorf("s3 backend not configured")
 	}
-	_, err := b.client.PutObject(ctx, b.bucket, key, reader, -1, minio.PutObjectOptions{ContentType: contentType})
+	_, err := b.client.PutObject(ctx, b.bucket, key, reader, size, minio.PutObjectOptions{ContentType: contentType})
 	return err
 }
 

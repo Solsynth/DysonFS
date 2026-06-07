@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
-func extractImageMeta(file *database.CloudFile) (width, height int, blurhash string) {
+func extractSourceMeta(file *database.CloudFile) (width, height int, blurhash string) {
 	if file == nil {
 		return 0, 0, ""
 	}
@@ -222,7 +222,7 @@ func toProtoCloudFile(file *database.CloudFile) *gen.DyCloudFile {
 	if file.ParentID != nil {
 		resp.ParentId = file.ParentID
 	}
-	if width, height, blurhash := extractImageMeta(file); width > 0 {
+	if width, height, blurhash := extractSourceMeta(file); width > 0 || height > 0 {
 		w := int32(width)
 		h := int32(height)
 		resp.Width = &w

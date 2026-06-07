@@ -14,7 +14,7 @@ type ObjectInfo struct {
 }
 
 type Backend interface {
-	Put(ctx context.Context, key string, reader io.Reader, contentType string) error
+	Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
 	Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error)
 	Delete(ctx context.Context, key string) error
 	Stat(ctx context.Context, key string) (ObjectInfo, error)

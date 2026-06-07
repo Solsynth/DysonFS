@@ -337,7 +337,7 @@ func (w *Worker) processImageStill(path string, evt eventbus.FileUploadedEvent, 
 	}
 	if len(compBuf) > 0 {
 		compKey := storageKey(parent.ID, ".compressed")
-		if err := w.stor.Put(context.Background(), compKey, bytes.NewReader(compBuf), "image/webp"); err != nil {
+		if err := w.stor.Put(context.Background(), compKey, bytes.NewReader(compBuf), int64(len(compBuf)), "image/webp"); err != nil {
 			return err
 		}
 		if err := w.upsertChild(parent, evt, "system.compression.low", compKey, "image/webp", compBuf); err != nil {
@@ -426,7 +426,7 @@ func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, paren
 	if err != nil {
 		return err
 	}
-	if err := w.stor.Put(context.Background(), thumbKey, bytes.NewReader(thumbBytes), "image/jpeg"); err != nil {
+	if err := w.stor.Put(context.Background(), thumbKey, bytes.NewReader(thumbBytes), int64(len(thumbBytes)), "image/jpeg"); err != nil {
 		return err
 	}
 	if err := w.upsertChild(parent, evt, "system.thumbnail", thumbKey, "image/jpeg", thumbBytes); err != nil {

@@ -76,7 +76,7 @@ func (s *FileService) OverwriteInPlace(ctx context.Context, fileID string, reade
 		return nil, fmt.Errorf("open for storage: %w", err)
 	}
 	defer stage.Close()
-	if err := backend.Put(ctx, key, stage, "application/octet-stream"); err != nil {
+	if err := backend.Put(ctx, key, stage, size, "application/octet-stream"); err != nil {
 		return nil, fmt.Errorf("upload to storage: %w", err)
 	}
 

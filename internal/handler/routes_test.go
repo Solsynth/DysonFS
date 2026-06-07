@@ -88,7 +88,7 @@ func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.png", AccountID: uuid.New(), ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := stor.Put(context.Background(), legacyKey, strings.NewReader("thumb"), "image/jpeg"); err != nil {
+	if err := stor.Put(context.Background(), legacyKey, strings.NewReader("thumb"), int64(len("thumb")), "image/jpeg"); err != nil {
 		t.Fatalf("put legacy thumbnail: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestOpenFileFallsBackToLegacyCompressionStorageKey(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.png", AccountID: uuid.New(), ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := stor.Put(context.Background(), legacyKey, strings.NewReader("compressed"), "image/webp"); err != nil {
+	if err := stor.Put(context.Background(), legacyKey, strings.NewReader("compressed"), int64(len("compressed")), "image/webp"); err != nil {
 		t.Fatalf("put legacy compressed: %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestOpenFileNormalizesDerivedCompressionStorageKeyFromObjectID(t *testing.T
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "sample.png", AccountID: uuid.New(), ObjectID: &derivedObjectID, ParentID: &parentFileID, StorageKey: &wrongKey, ApplicationType: &appType, Indexed: false}).Error; err != nil {
 		t.Fatalf("create derived file: %v", err)
 	}
-	if err := stor.Put(context.Background(), legacyKey, strings.NewReader("compressed"), "image/webp"); err != nil {
+	if err := stor.Put(context.Background(), legacyKey, strings.NewReader("compressed"), int64(len("compressed")), "image/webp"); err != nil {
 		t.Fatalf("put legacy compressed: %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestOpenFileFallsBackToOriginalWhenDerivedCompressionIsMissing(t *testing.T
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "sample.png", AccountID: uuid.New(), ObjectID: &derivedObjectID, ParentID: &parentFileID, StorageKey: &missingDerivedKey, ApplicationType: &appType, Indexed: false}).Error; err != nil {
 		t.Fatalf("create derived file: %v", err)
 	}
-	if err := stor.Put(context.Background(), parentKey, strings.NewReader("original"), "image/png"); err != nil {
+	if err := stor.Put(context.Background(), parentKey, strings.NewReader("original"), int64(len("original")), "image/png"); err != nil {
 		t.Fatalf("put original object: %v", err)
 	}
 
@@ -692,7 +692,7 @@ func TestCreateEditSessionAndWOPIRoundTrip(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "notes.txt", AccountID: accountID, ObjectID: &objectID, StorageKey: &key, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
 		t.Fatalf("put source: %v", err)
 	}
 
@@ -779,7 +779,7 @@ func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "notes.txt", AccountID: accountID, ObjectID: &objectID, StorageKey: &key, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
 		t.Fatalf("put source: %v", err)
 	}
 	if err := db.Create(&database.FileLock{FileID: fileID, LockToken: "lock-a", Protocol: "wopi", ExpiresAt: time.Now().Add(5 * time.Minute)}).Error; err != nil {
@@ -831,7 +831,7 @@ func TestWOPIEndpointsAcceptBearerAccessToken(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "notes.txt", AccountID: accountID, ObjectID: &objectID, StorageKey: &key, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), "text/plain"); err != nil {
+	if err := stor.Put(context.Background(), key, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
 		t.Fatalf("put source: %v", err)
 	}
 
