@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"src.solsynth.dev/sosys/filesystem/internal/logging"
 )
 
 const (
@@ -83,6 +85,17 @@ func authenticateRequest(r *http.Request, fixedAccessKey, fixedSecretKey string,
 
 	expected := computeSignature(r, cred, signedHeaders, secretKey, dateStr)
 	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		logging.Log.Warn().
+			Str("got", signature).
+			Str("expected", expected).
+			Str("method", r.Method).
+			Str("path", r.URL.Path).
+			Str("host", r.Host).
+			Str("dateStr", dateStr).
+			Str("signedHeaders", strings.Join(signedHeaders, ";")).
+			Str("accessKey", cred.AccessKey).
+			Str("canonicalRequest", buildCanonicalRequest(r, signedHeaders)).
+			Msg("s3: signature mismatch")
 		return nil, false
 	}
 
@@ -138,8 +151,12 @@ func computeSignature(r *http.Request, cred credentials, signedHeaders []string,
 }
 
 func buildCanonicalRequest(r *http.Request, signedHeaders []string) string {
-	canonicalURI := canonicalizeURI(r.URL.Path)
-	canonicalQueryString := canonicalizeQuery(r.URL.Query())
+	path := r.URL.RawPath
+	if path == "" {
+		path = r.URL.Path
+	}
+	canonicalURI := canonicalizeURI(path)
+	canonicalQueryString := canonicalizeQuery(r.URL.RawQuery)
 
 	headers := make(map[string]string)
 	for _, h := range signedHeaders {
@@ -176,10 +193,19 @@ func canonicalizeURI(path string) string {
 	if path == "" {
 		return "/"
 	}
-	return awsPercentEncode(path, false)
+	return path
 }
 
-func canonicalizeQuery(values url.Values) string {
+func canonicalizeQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+
+	// Normalize + to %20 before parsing so url.ParseQuery doesn't lose the
+	// distinction between a literal '+' and an encoded space.
+	normalized := strings.ReplaceAll(rawQuery, "+", "%20")
+	values, _ := url.ParseQuery(normalized)
+
 	type pair struct {
 		key   string
 		value string
@@ -188,10 +214,6 @@ func canonicalizeQuery(values url.Values) string {
 	pairs := make([]pair, 0, len(values))
 	for key, list := range values {
 		encodedKey := awsPercentEncode(key, true)
-		if len(list) == 0 {
-			pairs = append(pairs, pair{key: encodedKey})
-			continue
-		}
 		for _, value := range list {
 			pairs = append(pairs, pair{
 				key:   encodedKey,
