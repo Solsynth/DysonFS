@@ -180,6 +180,26 @@ func (fs *webdavFS) OpenFile(ctx context.Context, name string, flag int, _ os.Fi
 }
 
 func (fs *webdavFS) openForRead(ctx context.Context, name string) (webdav.File, error) {
+	if isWebDAVRoot(name) {
+		rootFiles, err := fs.files.ListRoot(parseUUID(fs.accountID))
+		if err != nil {
+			return nil, err
+		}
+		infos := make([]os.FileInfo, 0, len(rootFiles))
+		for i := range rootFiles {
+			info, err := fs.fileToInfo(&rootFiles[i])
+			if err != nil {
+				continue
+			}
+			infos = append(infos, info)
+		}
+		return &webdavDirFile{
+			fs:    fs,
+			file:  &database.CloudFile{Name: "/", IsFolder: true},
+			ctx:   ctx,
+			items: infos,
+		}, nil
+	}
 	f, err := fs.resolvePath(ctx, name)
 	if err != nil {
 		return nil, os.ErrNotExist
