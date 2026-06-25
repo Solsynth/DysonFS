@@ -79,7 +79,7 @@ func authenticateRequest(r *http.Request, fixedAccessKey, fixedSecretKey string,
 		if len(sk) > 8 {
 			sk = sk[:4] + "..." + sk[len(sk)-4:]
 		}
-		logging.Log.Debug().Str("secretKeyPreview", sk).Int("secretKeyLen", len(secretKey)).Msg("s3: resolved secret key")
+		logging.Log.Info().Str("secretKeyPreview", sk).Int("secretKeyLen", len(secretKey)).Msg("s3: resolved secret key from DB")
 	} else if fixedAccessKey != "" && fixedSecretKey != "" {
 		if cred.AccessKey != fixedAccessKey {
 			return nil, false
