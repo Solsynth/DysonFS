@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -92,6 +91,8 @@ type webdavFS struct {
 	bus        *eventbus.Bus
 	dispatcher dispatch.Dispatcher
 	accountID  string
+	// ponytail: per-request cache — a fresh webdavFS is created per request in handleWebDAV
+	pathCache map[string]*database.CloudFile
 }
 
 func (fs *webdavFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
@@ -214,35 +215,16 @@ func (fs *webdavFS) openForRead(ctx context.Context, name string) (webdav.File, 
 	}
 	winfo := info.(*webdavFileInfo)
 
-	reader, err := fs.openFileContent(ctx, f)
-	if err != nil {
-		// ponytail: context.Canceled from a disconnected client during PROPFIND body
-		// writing (after 207 headers are sent) triggers a GIN warning and 500 override.
-		// Return os.ErrPermission so handlePropfindError skips the resource gracefully.
-		if errors.Is(err, context.Canceled) {
-			return nil, os.ErrPermission
-		}
-		// Only swallow the error for files that genuinely have no storage.
-		// If the file has a storage key but the backend failed, propagate the error.
-		if storageKeyForFile(f) == "" {
-			return &webdavFile{info: info, winfo: winfo, isWrite: false}, nil
-		}
-		return nil, err
-	}
-
-	// http.ServeContent (used by the webdav library for GET) needs Seek.
-	// Buffer the content into memory so Seek works.
-	defer reader.Close()
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, err
-	}
-
+	// ponytail: lazy loading — don't fetch file content from storage here.
+	// PROPFIND calls OpenFile per file to get properties via Stat() but never
+	// reads the content. Defer the download to first Read/Seek (GET requests).
+	// This cuts O(n) storage round-trips per listing to zero for listings.
 	return &webdavFile{
-		reader:  io.NopCloser(bytes.NewReader(data)),
 		info:    info,
 		winfo:   winfo,
 		isWrite: false,
+		file:    f,
+		fs:      fs,
 	}, nil
 }
 
@@ -355,6 +337,11 @@ func (fs *webdavFS) resolvePath(ctx context.Context, p string) (*database.CloudF
 		return nil, errors.New("empty path")
 	}
 
+	// Check per-request path cache first
+	if cached, ok := fs.pathCache[p]; ok {
+		return cached, nil
+	}
+
 	rootFiles, err := fs.files.ListRoot(parseUUID(fs.accountID))
 	if err != nil {
 		return nil, err
@@ -388,6 +375,11 @@ func (fs *webdavFS) resolvePath(ctx context.Context, p string) (*database.CloudF
 			return nil, os.ErrNotExist
 		}
 	}
+	// Cache for subsequent lookups during this request
+	if fs.pathCache == nil {
+		fs.pathCache = make(map[string]*database.CloudFile)
+	}
+	fs.pathCache[p] = current
 	return current, nil
 }
 

@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +18,11 @@ import (
 )
 
 type webdavFile struct {
+	// Read path (lazy loading)
+	file     *database.CloudFile
+	fs       *webdavFS
+	loadErr  error
+
 	reader   io.ReadCloser
 	tempFile *os.File
 	info     os.FileInfo
@@ -39,7 +46,14 @@ func (f *webdavFile) Read(p []byte) (int, error) {
 	if f.tempFile != nil {
 		return f.tempFile.Read(p)
 	}
-	// ponytail: metadata-only file with no storage — return empty content
+	// ponytail: lazy load from storage on first read (avoids downloading file
+	// content during PROPFIND which calls OpenFile per file but never reads)
+	if err := f.lazyLoad(); err != nil {
+		return 0, err
+	}
+	if f.reader != nil {
+		return f.reader.Read(p)
+	}
 	return 0, io.EOF
 }
 
@@ -57,10 +71,61 @@ func (f *webdavFile) Seek(offset int64, whence int) (int64, error) {
 	if f.tempFile != nil {
 		return f.tempFile.Seek(offset, whence)
 	}
+	if f.reader != nil {
+		if s, ok := f.reader.(io.Seeker); ok {
+			return s.Seek(offset, whence)
+		}
+		return 0, os.ErrInvalid
+	}
+	// ponytail: lazy load on first seek (http.ServeContent calls Seek before Read)
+	if err := f.lazyLoad(); err != nil {
+		return 0, err
+	}
 	if s, ok := f.reader.(io.Seeker); ok {
 		return s.Seek(offset, whence)
 	}
 	return 0, os.ErrInvalid
+}
+
+// ponytail: lazy load file content from storage on first Read/Seek.
+// PROPFIND calls OpenFile per file but never reads — avoid the download entirely.
+func (f *webdavFile) lazyLoad() error {
+	if f.loadErr != nil {
+		return f.loadErr
+	}
+	if f.reader != nil {
+		return nil
+	}
+	if f.file == nil || f.fs == nil {
+		return nil
+	}
+
+	// No storage key means this is a metadata-only file (empty placeholder)
+	key := storageKeyForFile(f.file)
+	if key == "" {
+		f.reader = io.NopCloser(bytes.NewReader(nil))
+		return nil
+	}
+
+	reader, err := f.fs.openFileContent(context.Background(), f.file)
+	if err != nil {
+		// ponytail: context canceled during content load — return ErrPermission
+		// so handlePropfindError skips gracefully
+		if errors.Is(err, context.Canceled) {
+			f.loadErr = os.ErrPermission
+			return f.loadErr
+		}
+		f.loadErr = err
+		return err
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		f.loadErr = err
+		return err
+	}
+	f.reader = io.NopCloser(bytes.NewReader(data))
+	return nil
 }
 
 func (f *webdavFile) Readdir(count int) ([]os.FileInfo, error) {
