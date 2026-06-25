@@ -207,16 +207,22 @@ func (fs *webdavFS) openForRead(ctx context.Context, name string) (webdav.File, 
 	if f.IsFolder {
 		return &webdavDirFile{fs: fs, file: f, ctx: ctx}, nil
 	}
-	reader, err := fs.openFileContent(ctx, f)
-	if err != nil {
-		return nil, err
-	}
 	info, err := fs.fileToInfo(f)
 	if err != nil {
-		reader.Close()
 		return nil, err
 	}
 	winfo := info.(*webdavFileInfo)
+
+	// If the file has no storage (metadata-only), return a file with empty content.
+	reader, err := fs.openFileContent(ctx, f)
+	if err != nil {
+		return &webdavFile{
+			info:    info,
+			winfo:   winfo,
+			isWrite: false,
+		}, nil
+	}
+
 	return &webdavFile{
 		reader:  reader,
 		info:    info,

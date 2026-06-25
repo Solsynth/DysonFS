@@ -113,12 +113,15 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		if prefix == "" {
 			prefix = "/webdav"
 		}
-		r.Any(prefix+"/*path", func(c *gin.Context) {
+		handleWebDAV := func(c *gin.Context) {
 			handleWebDAV(c, files, bus, dispatcher, prefix)
-		})
-		r.Any(prefix, func(c *gin.Context) {
-			c.Redirect(http.StatusMovedPermanently, prefix+"/")
-		})
+		}
+		r.Any(prefix+"/*path", handleWebDAV)
+		r.Any(prefix, handleWebDAV)
+		for _, method := range []string{"PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK"} {
+			r.Handle(method, prefix+"/*path", handleWebDAV)
+			r.Handle(method, prefix, handleWebDAV)
+		}
 
 		t := r.Group("/api/webdav/tokens")
 		{
