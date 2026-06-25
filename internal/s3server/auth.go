@@ -85,16 +85,25 @@ func authenticateRequest(r *http.Request, fixedAccessKey, fixedSecretKey string,
 
 	expected := computeSignature(r, cred, signedHeaders, secretKey, dateStr)
 	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		cr := buildCanonicalRequest(r, signedHeaders)
+		credScope := dateStr[:8] + "/" + cred.Region + "/" + cred.Service + "/aws4_request"
+		sts := "AWS4-HMAC-SHA256\n" + dateStr + "\n" + credScope + "\n" + hexSHA256(cr)
 		logging.Log.Warn().
 			Str("got", signature).
 			Str("expected", expected).
 			Str("method", r.Method).
 			Str("path", r.URL.Path).
+			Str("rawPath", r.URL.RawPath).
+			Str("rawQuery", r.URL.RawQuery).
 			Str("host", r.Host).
 			Str("dateStr", dateStr).
 			Str("signedHeaders", strings.Join(signedHeaders, ";")).
 			Str("accessKey", cred.AccessKey).
-			Str("canonicalRequest", buildCanonicalRequest(r, signedHeaders)).
+			Str("region", cred.Region).
+			Str("service", cred.Service).
+			Str("payloadHash", r.Header.Get(amzContentSHA256)).
+			Str("canonicalRequest", cr).
+			Str("stringToSign", sts).
 			Msg("s3: signature mismatch")
 		return nil, false
 	}

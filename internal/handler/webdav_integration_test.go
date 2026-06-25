@@ -27,10 +27,18 @@ func newWebDAVTestServer(t *testing.T, accountID uuid.UUID, files *service.FileS
 		handleWebDAV(c, files, nil, nil, "/webdav")
 	}
 	r.Any("/webdav/*path", handler)
-	r.Any("/webdav", handler)
+	r.Any("/webdav", func(c *gin.Context) {
+		c.Request.URL.Path = "/webdav/"
+		c.Set(WebDAVAccountIDKey, accountID.String())
+		handleWebDAV(c, files, nil, nil, "/webdav")
+	})
 	for _, method := range []string{"PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK"} {
 		r.Handle(method, "/webdav/*path", handler)
-		r.Handle(method, "/webdav", handler)
+		r.Handle(method, "/webdav", func(c *gin.Context) {
+			c.Request.URL.Path = "/webdav/"
+			c.Set(WebDAVAccountIDKey, accountID.String())
+			handleWebDAV(c, files, nil, nil, "/webdav")
+		})
 	}
 	return httptest.NewServer(r)
 }
