@@ -39,7 +39,8 @@ func (f *webdavFile) Read(p []byte) (int, error) {
 	if f.tempFile != nil {
 		return f.tempFile.Read(p)
 	}
-	return 0, os.ErrClosed
+	// ponytail: metadata-only file with no storage — return empty content
+	return 0, io.EOF
 }
 
 func (f *webdavFile) Write(p []byte) (int, error) {
@@ -55,6 +56,9 @@ func (f *webdavFile) Write(p []byte) (int, error) {
 func (f *webdavFile) Seek(offset int64, whence int) (int64, error) {
 	if f.tempFile != nil {
 		return f.tempFile.Seek(offset, whence)
+	}
+	if s, ok := f.reader.(io.Seeker); ok {
+		return s.Seek(offset, whence)
 	}
 	return 0, os.ErrInvalid
 }

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -213,18 +214,26 @@ func (fs *webdavFS) openForRead(ctx context.Context, name string) (webdav.File, 
 	}
 	winfo := info.(*webdavFileInfo)
 
-	// If the file has no storage (metadata-only), return a file with empty content.
 	reader, err := fs.openFileContent(ctx, f)
 	if err != nil {
-		return &webdavFile{
-			info:    info,
-			winfo:   winfo,
-			isWrite: false,
-		}, nil
+		// Only swallow the error for files that genuinely have no storage.
+		// If the file has a storage key but the backend failed, propagate the error.
+		if storageKeyForFile(f) == "" {
+			return &webdavFile{info: info, winfo: winfo, isWrite: false}, nil
+		}
+		return nil, err
+	}
+
+	// http.ServeContent (used by the webdav library for GET) needs Seek.
+	// Buffer the content into memory so Seek works.
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
 	}
 
 	return &webdavFile{
-		reader:  reader,
+		reader:  io.NopCloser(bytes.NewReader(data)),
 		info:    info,
 		winfo:   winfo,
 		isWrite: false,
