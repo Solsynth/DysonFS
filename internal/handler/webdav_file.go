@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,10 +17,14 @@ import (
 )
 
 type webdavFile struct {
-	// Read path (lazy loading)
+	// Read path (streaming from storage)
 	file     *database.CloudFile
 	fs       *webdavFS
+	ctx      context.Context
 	loadErr  error
+	s3Reader io.ReadCloser // underlying storage reader, opened lazily
+	fileSize int64         // from Object.Size, known before fetch
+	seekSkip int64         // bytes to discard before first Read (Range seek)
 
 	reader   io.ReadCloser
 	tempFile *os.File
@@ -40,21 +43,21 @@ type webdavFile struct {
 }
 
 func (f *webdavFile) Read(p []byte) (int, error) {
-	if f.reader != nil {
-		return f.reader.Read(p)
-	}
 	if f.tempFile != nil {
 		return f.tempFile.Read(p)
 	}
-	// ponytail: lazy load from storage on first read (avoids downloading file
-	// content during PROPFIND which calls OpenFile per file but never reads)
-	if err := f.lazyLoad(); err != nil {
-		return 0, err
-	}
 	if f.reader != nil {
 		return f.reader.Read(p)
 	}
-	return 0, io.EOF
+	// ponytail: lazy open + stream from storage on first read.
+	// No buffering — data flows S3 → client without an in-memory copy.
+	if err := f.ensureOpen(); err != nil {
+		return 0, err
+	}
+	if f.s3Reader == nil {
+		return 0, io.EOF
+	}
+	return f.s3Reader.Read(p)
 }
 
 func (f *webdavFile) Write(p []byte) (int, error) {
@@ -71,60 +74,77 @@ func (f *webdavFile) Seek(offset int64, whence int) (int64, error) {
 	if f.tempFile != nil {
 		return f.tempFile.Seek(offset, whence)
 	}
-	if f.reader != nil {
-		if s, ok := f.reader.(io.Seeker); ok {
-			return s.Seek(offset, whence)
+
+	// http.ServeContent calls Seek(0, SeekEnd) for content length,
+	// then Seek(0, SeekStart) before reading. Both are metadata-only:
+	// we know the size from Object.Size without opening a storage reader.
+	switch whence {
+	case io.SeekEnd:
+		if offset == 0 {
+			return f.fileSize, nil
 		}
+		// ponytail: non-zero SeekEnd offset is never used by http.ServeContent
+		return 0, os.ErrInvalid
+	case io.SeekStart:
+		if offset == 0 {
+			// If we already have an open reader, close + reopen on next Read.
+			if f.s3Reader != nil {
+				f.s3Reader.Close()
+				f.s3Reader = nil
+			}
+			return 0, nil
+		}
+		// ponytail: Range requests seek to offset — re-fetch from start and
+		// discard the skipped bytes on the next Read. Not ideal for large
+		// offsets but acceptable (Range requests are uncommon).
+		f.seekSkip = offset
+		return offset, nil
+	default:
 		return 0, os.ErrInvalid
 	}
-	// ponytail: lazy load on first seek (http.ServeContent calls Seek before Read)
-	if err := f.lazyLoad(); err != nil {
-		return 0, err
-	}
-	if s, ok := f.reader.(io.Seeker); ok {
-		return s.Seek(offset, whence)
-	}
-	return 0, os.ErrInvalid
 }
 
-// ponytail: lazy load file content from storage on first Read/Seek.
-// PROPFIND calls OpenFile per file but never reads — avoid the download entirely.
-func (f *webdavFile) lazyLoad() error {
+// ponytail: lazy open + stream from storage. Called by Read on first byte.
+// No buffering — data flows S3 → client without an in-memory copy.
+func (f *webdavFile) ensureOpen() error {
 	if f.loadErr != nil {
 		return f.loadErr
 	}
-	if f.reader != nil {
+	if f.s3Reader != nil {
 		return nil
 	}
 	if f.file == nil || f.fs == nil {
 		return nil
 	}
 
-	// No storage key means this is a metadata-only file (empty placeholder)
 	key := storageKeyForFile(f.file)
 	if key == "" {
-		f.reader = io.NopCloser(bytes.NewReader(nil))
-		return nil
+		return nil // metadata-only file, Read returns EOF
 	}
 
-	reader, err := f.fs.openFileContent(context.Background(), f.file)
+	reader, err := f.fs.openFileContent(f.ctx, f.file)
 	if err != nil {
-		// ponytail: context canceled during content load — return ErrPermission
-		// so handlePropfindError skips gracefully
 		if errors.Is(err, context.Canceled) {
 			f.loadErr = os.ErrPermission
-			return f.loadErr
+		} else {
+			f.loadErr = err
 		}
-		f.loadErr = err
-		return err
+		return f.loadErr
 	}
-	defer reader.Close()
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		f.loadErr = err
-		return err
+
+	// ponytail: discard bytes for Range requests (Seek to offset before Read).
+	// Avoids needing a storage-backend Range method.
+	if f.seekSkip > 0 {
+		skip := f.seekSkip
+		f.seekSkip = 0
+		if _, err := io.CopyN(io.Discard, reader, skip); err != nil {
+			reader.Close()
+			f.loadErr = err
+			return err
+		}
 	}
-	f.reader = io.NopCloser(bytes.NewReader(data))
+
+	f.s3Reader = reader
 	return nil
 }
 
@@ -153,6 +173,9 @@ func (f *webdavFile) Close() error {
 	f.closed = true
 
 	if !f.isWrite {
+		if f.s3Reader != nil {
+			return f.s3Reader.Close()
+		}
 		if f.reader != nil {
 			return f.reader.Close()
 		}

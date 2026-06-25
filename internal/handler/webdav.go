@@ -219,12 +219,18 @@ func (fs *webdavFS) openForRead(ctx context.Context, name string) (webdav.File, 
 	// PROPFIND calls OpenFile per file to get properties via Stat() but never
 	// reads the content. Defer the download to first Read/Seek (GET requests).
 	// This cuts O(n) storage round-trips per listing to zero for listings.
+	fileSize := int64(0)
+	if f.Object != nil {
+		fileSize = f.Object.Size
+	}
 	return &webdavFile{
-		info:    info,
-		winfo:   winfo,
-		isWrite: false,
-		file:    f,
-		fs:      fs,
+		info:     info,
+		winfo:    winfo,
+		isWrite:  false,
+		file:     f,
+		fs:       fs,
+		ctx:      ctx,
+		fileSize: fileSize,
 	}, nil
 }
 
