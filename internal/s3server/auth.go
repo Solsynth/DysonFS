@@ -74,6 +74,12 @@ func authenticateRequest(r *http.Request, fixedAccessKey, fixedSecretKey string,
 		}
 		secretKey = resolvedSecret
 		info = resolvedInfo
+		// ponytail: temporary debug — remove after S3 auth confirmed working
+		sk := secretKey
+		if len(sk) > 8 {
+			sk = sk[:4] + "..." + sk[len(sk)-4:]
+		}
+		logging.Log.Debug().Str("secretKeyPreview", sk).Int("secretKeyLen", len(secretKey)).Msg("s3: resolved secret key")
 	} else if fixedAccessKey != "" && fixedSecretKey != "" {
 		if cred.AccessKey != fixedAccessKey {
 			return nil, false
