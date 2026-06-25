@@ -216,6 +216,12 @@ func (fs *webdavFS) openForRead(ctx context.Context, name string) (webdav.File, 
 
 	reader, err := fs.openFileContent(ctx, f)
 	if err != nil {
+		// ponytail: context.Canceled from a disconnected client during PROPFIND body
+		// writing (after 207 headers are sent) triggers a GIN warning and 500 override.
+		// Return os.ErrPermission so handlePropfindError skips the resource gracefully.
+		if errors.Is(err, context.Canceled) {
+			return nil, os.ErrPermission
+		}
 		// Only swallow the error for files that genuinely have no storage.
 		// If the file has a storage key but the backend failed, propagate the error.
 		if storageKeyForFile(f) == "" {
