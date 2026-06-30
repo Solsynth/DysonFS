@@ -997,6 +997,55 @@ func TestUpdateFilePermissionsAssignsIDs(t *testing.T) {
 	}
 }
 
+func TestLoadInheritedFilePermissionsBatchUsesCacheAndInvalidatesDescendants(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	svc.SetCache(sharedcache.NewMemoryCacheService(8))
+
+	accountID := uuid.New()
+	rootID := database.NewID()
+	childID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: rootID, Name: "root", AccountID: accountID, Indexed: true, IsFolder: true}).Error; err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: childID, Name: "child", AccountID: accountID, Indexed: true, IsFolder: true, ParentID: &rootID}).Error; err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: rootID, SubjectType: "private", Permission: "read"}).Error; err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+
+	lookups, err := svc.loadInheritedFilePermissionsBatch([]string{childID}, "read")
+	if err != nil {
+		t.Fatalf("first loadInheritedFilePermissionsBatch() error = %v", err)
+	}
+	if lookup := lookups[childID]; !lookup.HasSource || lookup.SourceID != rootID || len(lookup.Perms) != 1 || lookup.Perms[0].SubjectType != "private" {
+		t.Fatalf("first lookup = %+v, want inherited private permission from root", lookup)
+	}
+
+	if err := db.Where("file_id = ?", rootID).Delete(&database.FilePermission{}).Error; err != nil {
+		t.Fatalf("delete permission directly: %v", err)
+	}
+	lookups, err = svc.loadInheritedFilePermissionsBatch([]string{childID}, "read")
+	if err != nil {
+		t.Fatalf("second loadInheritedFilePermissionsBatch() error = %v", err)
+	}
+	if lookup := lookups[childID]; len(lookup.Perms) != 1 || lookup.Perms[0].SubjectType != "private" {
+		t.Fatalf("cached lookup = %+v, want cached private permission", lookup)
+	}
+
+	if err := svc.UpdateFilePermissions(rootID, []database.FilePermission{{FileID: rootID, SubjectType: "public", Permission: "read"}}); err != nil {
+		t.Fatalf("UpdateFilePermissions() error = %v", err)
+	}
+	lookups, err = svc.loadInheritedFilePermissionsBatch([]string{childID}, "read")
+	if err != nil {
+		t.Fatalf("third loadInheritedFilePermissionsBatch() error = %v", err)
+	}
+	if lookup := lookups[childID]; !lookup.HasSource || lookup.SourceID != rootID || len(lookup.Perms) != 1 || lookup.Perms[0].SubjectType != "public" {
+		t.Fatalf("invalidated lookup = %+v, want refreshed public permission from root", lookup)
+	}
+}
+
 func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testing.T) {
 	tmp := t.TempDir()
 	stor := storage.NewLocalBackend(tmp)

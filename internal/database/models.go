@@ -48,7 +48,7 @@ type CloudFile struct {
 	AccountID        uuid.UUID        `json:"account_id"`
 	PoolID           *string          `gorm:"size:36" json:"pool_id"`
 	ObjectID         *string          `gorm:"size:36" json:"object_id"`
-	ParentID         *string          `gorm:"size:36;index:idx_cloud_files_parent_deleted,priority:1" json:"parent_id"`
+	ParentID         *string          `gorm:"size:36;index:idx_cloud_files_parent_deleted,priority:1;index:idx_cloud_files_parent_active,where:deleted_at IS NULL" json:"parent_id"`
 	Indexed          bool             `json:"indexed"`
 	IsFolder         bool             `json:"is_folder"`
 	IsMarkedRecycle  bool             `json:"is_marked_recycle"`
@@ -235,10 +235,10 @@ func nullableDeletedAt(v gorm.DeletedAt) any {
 
 type FilePermission struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
-	FileID      string         `gorm:"size:36;index;index:idx_file_permissions_file_permission_deleted,priority:1" json:"file_id"`
+	FileID      string         `gorm:"size:36;index;index:idx_file_permissions_file_permission_deleted,priority:1;index:idx_file_permissions_active_lookup,priority:1,where:deleted_at IS NULL" json:"file_id"`
 	SubjectType string         `json:"subject_type"`
 	SubjectID   string         `gorm:"size:36" json:"subject_id"`
-	Permission  string         `gorm:"index:idx_file_permissions_file_permission_deleted,priority:2" json:"permission"`
+	Permission  string         `gorm:"index:idx_file_permissions_file_permission_deleted,priority:2;index:idx_file_permissions_active_lookup,priority:2,where:deleted_at IS NULL" json:"permission"`
 	DeletedAt   gorm.DeletedAt `gorm:"index;index:idx_file_permissions_file_permission_deleted,priority:3" json:"deleted_at"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`

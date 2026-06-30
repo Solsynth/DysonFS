@@ -272,7 +272,9 @@ func (s *FileService) GetFile(id string) (*database.CloudFile, error) {
 	if err := s.db.Preload("Object").First(&file, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
-	file.ChildrenCount = s.countChildren(file.ID)
+	if file.IsFolder {
+		file.ChildrenCount = s.countChildren(file.ID)
+	}
 	file.PermissionStatus = s.permissionStatus(&file)
 	return &file, nil
 }
@@ -629,6 +631,48 @@ func (s *FileService) loadAncestorIDs(fileID string) ([]string, error) {
 	return ids, nil
 }
 
+func (s *FileService) loadAncestorIDsBatch(fileIDs []string) (map[string][]string, error) {
+	fileIDs = normalizeFileIDs(fileIDs)
+	if len(fileIDs) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	const query = `WITH RECURSIVE ancestors AS (
+		SELECT id AS file_id, id AS ancestor_id, parent_id, 0 AS depth
+		FROM cloud_files
+		WHERE id IN ? AND deleted_at IS NULL
+
+		UNION ALL
+
+		SELECT ancestors.file_id, cf.id AS ancestor_id, cf.parent_id, ancestors.depth + 1
+		FROM cloud_files cf
+		JOIN ancestors ON cf.id = ancestors.parent_id
+		WHERE cf.deleted_at IS NULL
+	)
+	SELECT file_id, ancestor_id
+	FROM ancestors
+	ORDER BY file_id, depth`
+
+	type ancestorRow struct {
+		FileID     string
+		AncestorID string
+	}
+
+	var rows []ancestorRow
+	if err := s.db.DB.Raw(query, fileIDs).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	ancestorsByFile := make(map[string][]string, len(fileIDs))
+	for _, row := range rows {
+		if strings.TrimSpace(row.FileID) == "" || strings.TrimSpace(row.AncestorID) == "" {
+			continue
+		}
+		ancestorsByFile[row.FileID] = append(ancestorsByFile[row.FileID], row.AncestorID)
+	}
+	return ancestorsByFile, nil
+}
+
 func (s *FileService) loadInheritedFilePermissions(fileID, permission string) (cachedFilePermissionLookup, error) {
 	const sourceQuery = `WITH RECURSIVE ancestors AS (
 		SELECT id, parent_id, 0 AS depth
@@ -670,8 +714,28 @@ func (s *FileService) loadInheritedFilePermissions(fileID, permission string) (c
 }
 
 func (s *FileService) loadInheritedFilePermissionsBatch(fileIDs []string, permission string) (map[string]cachedFilePermissionLookup, error) {
+	fileIDs = normalizeFileIDs(fileIDs)
 	if len(fileIDs) == 0 {
 		return map[string]cachedFilePermissionLookup{}, nil
+	}
+
+	lookups := make(map[string]cachedFilePermissionLookup, len(fileIDs))
+	missingFileIDs := make([]string, 0, len(fileIDs))
+	if s.cache != nil {
+		for _, fileID := range fileIDs {
+			var cached cachedFilePermissionLookup
+			ok, err := s.cache.GetData(context.Background(), s.filePermissionCacheKey(fileID, permission), &cached, "FilePermissionLookup")
+			if err == nil && ok {
+				lookups[fileID] = cached
+				continue
+			}
+			missingFileIDs = append(missingFileIDs, fileID)
+		}
+	} else {
+		missingFileIDs = append(missingFileIDs, fileIDs...)
+	}
+	if len(missingFileIDs) == 0 {
+		return lookups, nil
 	}
 
 	const sourceQuery = `WITH RECURSIVE ancestors AS (
@@ -703,12 +767,15 @@ func (s *FileService) loadInheritedFilePermissionsBatch(fileIDs []string, permis
 	}
 
 	var sourceRows []permissionSourceRow
-	if err := s.db.DB.Raw(sourceQuery, fileIDs, permission).Scan(&sourceRows).Error; err != nil {
+	if err := s.db.DB.Raw(sourceQuery, missingFileIDs, permission).Scan(&sourceRows).Error; err != nil {
 		return nil, err
 	}
 
-	lookups := make(map[string]cachedFilePermissionLookup, len(fileIDs))
 	if len(sourceRows) == 0 {
+		for _, fileID := range missingFileIDs {
+			lookups[fileID] = cachedFilePermissionLookup{HasSource: false}
+		}
+		s.cacheInheritedFilePermissionsBatch(context.Background(), missingFileIDs, permission, lookups)
 		return lookups, nil
 	}
 
@@ -743,7 +810,53 @@ func (s *FileService) loadInheritedFilePermissionsBatch(fileIDs []string, permis
 		}
 	}
 
+	for _, fileID := range missingFileIDs {
+		if _, ok := lookups[fileID]; !ok {
+			lookups[fileID] = cachedFilePermissionLookup{HasSource: false}
+		}
+	}
+	s.cacheInheritedFilePermissionsBatch(context.Background(), missingFileIDs, permission, lookups)
+
 	return lookups, nil
+}
+
+func (s *FileService) cacheInheritedFilePermissionsBatch(ctx context.Context, fileIDs []string, permission string, lookups map[string]cachedFilePermissionLookup) {
+	if s == nil || s.cache == nil || len(fileIDs) == 0 {
+		return
+	}
+
+	ancestorsByFile, err := s.loadAncestorIDsBatch(fileIDs)
+	if err != nil {
+		return
+	}
+
+	for _, fileID := range fileIDs {
+		lookup, ok := lookups[fileID]
+		if !ok {
+			continue
+		}
+		ancestors := ancestorsByFile[fileID]
+		groups := make([]string, 0, len(ancestors))
+		for _, ancestorID := range ancestors {
+			groups = append(groups, s.filePermissionGroupKey(ancestorID))
+		}
+		s.cacheFilePermissionLookup(ctx, s.filePermissionCacheKey(fileID, permission), lookup, groups)
+	}
+}
+
+func (s *FileService) cacheFilePermissionLookup(ctx context.Context, key string, lookup cachedFilePermissionLookup, groups []string) {
+	if s == nil || s.cache == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	if err := s.cache.SetData(ctx, key, lookup, "FilePermissionLookup", 5*time.Minute); err != nil {
+		return
+	}
+	for _, group := range groups {
+		if strings.TrimSpace(group) == "" {
+			continue
+		}
+		_ = s.cache.AddToGroup(ctx, key, group)
+	}
 }
 
 func (s *FileService) resolveInheritedFilePermissions(ctx context.Context, fileID, permission string) (cachedFilePermissionLookup, error) {
@@ -768,7 +881,7 @@ func (s *FileService) resolveInheritedFilePermissions(ctx context.Context, fileI
 				groups = append(groups, s.filePermissionGroupKey(ancestorID))
 			}
 		}
-		_ = s.cache.SetWithGroups(ctx, key, lookup, groups, 5*time.Minute)
+		s.cacheFilePermissionLookup(ctx, key, lookup, groups)
 	}
 
 	return lookup, nil
