@@ -1582,6 +1582,7 @@ func purgeMyRecycleBin(c *gin.Context, files *service.FileService, bus *eventbus
 // @Success 200 {object} map[string]any
 // @Router /api/files/upload/create [post]
 func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService) {
+	startedAt := time.Now()
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -1607,6 +1608,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	parseDuration := time.Since(startedAt)
 	if req.FileSize <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file_size must be greater than zero"})
 		return
@@ -1664,6 +1666,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 			poolMultiplier = *pool.BillingConfig.CostMultiplier
 		}
 	}
+	quotaStart := time.Now()
 	account, err := quota.EnrichedAccount(c.Request.Context(), result.Account)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1683,7 +1686,17 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	quotaDuration := time.Since(quotaStart)
 	chunks := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
+	dbStart := time.Now()
+	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, OverwriteID: req.OverwriteID, FastMode: req.FastMode, ApplicationType: req.ApplicationType, Indexed: req.Index}
+	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, resolvedPoolID, name, req.ContentType, req.ChunkSize, chunks)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	dbDuration := time.Since(dbStart)
+	_ = cfg
 	logging.Log.Info().
 		Str("accountId", result.Account.GetId()).
 		Str("name", name).
@@ -1691,14 +1704,11 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		Int64("chunkSize", req.ChunkSize).
 		Int("chunks", chunks).
 		Str("contentType", req.ContentType).
-		Msg("creating upload task")
-	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, OverwriteID: req.OverwriteID, FastMode: req.FastMode, ApplicationType: req.ApplicationType, Indexed: req.Index}
-	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, resolvedPoolID, name, req.ContentType, req.ChunkSize, chunks)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	_ = cfg
+		Dur("parseDuration", parseDuration).
+		Dur("quotaDuration", quotaDuration).
+		Dur("dbDuration", dbDuration).
+		Dur("totalDuration", time.Since(startedAt)).
+		Msg("upload task created")
 	c.JSON(http.StatusOK, gin.H{"task_id": task.TaskID, "chunk_size": task.ChunkSize, "chunks_count": task.ChunksCount})
 }
 
@@ -1887,15 +1897,23 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	} else if createdFile.StorageKey != nil && strings.TrimSpace(*createdFile.StorageKey) != "" {
 		storageKey = strings.TrimSpace(*createdFile.StorageKey)
 	}
+	eventStart := time.Now()
 	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: createdFile.ID, ContentType: contentType, StorageKey: storageKey, ProcessingFilePath: tempPath, IsTempFile: true}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	eventDuration := time.Since(eventStart)
 	cleanupTempPath = false
+	logging.Log.Info().
+		Str("fileId", createdFile.ID).
+		Dur("eventDuration", eventDuration).
+		Dur("totalDuration", time.Since(startedAt)).
+		Msg("direct upload complete")
 	c.JSON(http.StatusOK, createdFile)
 }
 
 func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService) {
+	startedAt := time.Now()
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -1923,19 +1941,26 @@ func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService)
 		return
 	}
 	defer reader.Close()
+	copyStart := time.Now()
 	if _, err := service.CopyStreamToChunk(cfg.Storage.TempDir, taskID, idx, reader); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	logging.Log.Debug().
-		Str("taskId", taskID).
-		Int("chunkIndex", idx).
-		Int64("chunkSize", fileHeader.Size).
-		Msg("upload chunk staged")
+	copyDuration := time.Since(copyStart)
+	dbStart := time.Now()
 	if err := tasks.UpdateUploadedChunk(taskID, idx); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	dbDuration := time.Since(dbStart)
+	logging.Log.Debug().
+		Str("taskId", taskID).
+		Int("chunkIndex", idx).
+		Int64("chunkSize", fileHeader.Size).
+		Dur("copyDuration", copyDuration).
+		Dur("dbDuration", dbDuration).
+		Dur("totalDuration", time.Since(startedAt)).
+		Msg("upload chunk staged")
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -1966,6 +1991,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		c.JSON(http.StatusBadRequest, gin.H{"error": "task has no chunks"})
 		return
 	}
+	lookupDuration := time.Since(startedAt)
 	chunkDir := filepath.Join(cfg.Storage.TempDir, taskID)
 	mergedPath := filepath.Join(cfg.Storage.TempDir, taskID+".merged")
 	cleanupChunkDir := true
@@ -1980,15 +2006,18 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 			_ = os.Remove(mergedPath)
 		}
 	}()
+	mergeStart := time.Now()
 	if err := files.MergeChunks(taskID, chunkDir, mergedPath, task.ChunksCount, nil); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	mergeDuration := time.Since(mergeStart)
 	logging.Log.Info().
 		Str("taskId", taskID).
 		Int("chunks", task.ChunksCount).
 		Str("mergedPath", mergedPath).
-		Dur("mergeDuration", time.Since(startedAt)).
+		Dur("lookupDuration", lookupDuration).
+		Dur("mergeDuration", mergeDuration).
 		Msg("upload chunks merged")
 	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	_ = ctx
@@ -2067,16 +2096,20 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	if object != nil && strings.TrimSpace(object.MimeType) != "" {
 		contentType = object.MimeType
 	}
+	eventStart := time.Now()
 	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{FileID: created.ID, TaskID: task.TaskID, ContentType: contentType, StorageKey: storageKey, ProcessingFilePath: mergedPath, IsTempFile: true}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	eventDuration := time.Since(eventStart)
 	cleanupMergedPath = false
+	_ = tasks.MarkCompleted(task.TaskID)
 	logging.Log.Info().
 		Str("taskId", taskID).
 		Str("fileId", created.ID).
-		Msg("upload event published")
-	_ = tasks.MarkCompleted(task.TaskID)
+		Dur("eventDuration", eventDuration).
+		Dur("totalDuration", time.Since(startedAt)).
+		Msg("chunked upload complete")
 	c.JSON(http.StatusOK, created)
 }
 
