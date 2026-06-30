@@ -1735,7 +1735,20 @@ func analyzeBlurhashImage(img *vips.ImageRef) (string, error) {
 	if img == nil {
 		return "", fmt.Errorf("image is required")
 	}
-	buf, _, err := img.ExportPng(&vips.PngExportParams{StripMetadata: true})
+	// ponytail: downscale before PNG export — blurhash only needs low-freq color data.
+	// A 40MP PNG export for 4×3 DCT is ~5000x more pixels than necessary.
+	// Resize to 64px wide keeps the bridge (vips → PNG → Go image.Image) cheap.
+	thumb, err := img.Copy()
+	if err != nil {
+		return "", err
+	}
+	defer thumb.Close()
+	if thumb.Width() > 64 {
+		if err := thumb.Resize(64.0/float64(thumb.Width()), vips.KernelLanczos3); err != nil {
+			return "", err
+		}
+	}
+	buf, _, err := thumb.ExportPng(&vips.PngExportParams{StripMetadata: true})
 	if err != nil {
 		return "", err
 	}
