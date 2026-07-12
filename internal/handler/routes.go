@@ -37,6 +37,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	}
 	f := r.Group("/api/files")
 	{
+		f.GET("/meta", func(c *gin.Context) { listFilesMetadata(c, files) })
 		f.GET("/:id", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
 		f.GET("/:id/breadcrumb", func(c *gin.Context) { fileBreadcrumb(c, files) })
@@ -185,6 +186,60 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 		return
 	}
 	c.JSON(http.StatusOK, file)
+}
+
+// @Summary List file metadata
+// @Tags files
+// @Produce json
+// @Param ids query []string true "File IDs; may be repeated or comma-separated"
+// @Success 200 {array} database.CloudFile
+// @Router /api/files/meta [get]
+func listFilesMetadata(c *gin.Context, files *service.FileService) {
+	ids := queryFileIDs(c, "ids")
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ids is required"})
+		return
+	}
+
+	items, err := files.GetFiles(ids)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	result, _, authenticated := auth.GetAuth(c)
+	itemsByID := make(map[string]database.CloudFile, len(items))
+	for _, item := range items {
+		if authenticated {
+			if !files.CanAccessFile(result.Account, result.Session, &item, "read") {
+				continue
+			}
+		} else if !files.CanAccessFile(nil, nil, &item, "read") {
+			continue
+		}
+		itemsByID[item.ID] = item
+	}
+
+	ordered := make([]database.CloudFile, 0, len(ids))
+	for _, id := range ids {
+		if item, ok := itemsByID[id]; ok {
+			ordered = append(ordered, item)
+		}
+	}
+	c.Header("X-Total", strconv.Itoa(len(ordered)))
+	c.JSON(http.StatusOK, ordered)
+}
+
+func queryFileIDs(c *gin.Context, key string) []string {
+	ids := make([]string, 0)
+	for _, value := range c.QueryArray(key) {
+		for _, id := range strings.Split(value, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
 }
 
 type breadcrumbItem struct {

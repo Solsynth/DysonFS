@@ -279,6 +279,17 @@ func (s *FileService) GetFile(id string) (*database.CloudFile, error) {
 	return &file, nil
 }
 
+func (s *FileService) GetFiles(ids []string) ([]database.CloudFile, error) {
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("id IN ?", ids).Find(&files).Error; err != nil {
+		return nil, err
+	}
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
 func (s *FileService) GetBreadcrumb(fileID string) ([]database.CloudFile, error) {
 	ids, err := s.loadAncestorIDs(fileID)
 	if err != nil {

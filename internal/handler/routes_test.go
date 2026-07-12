@@ -554,6 +554,84 @@ func TestFileBreadcrumbRequiresReadAccess(t *testing.T) {
 	}
 }
 
+func TestListFilesMetadataPreservesRequestedOrder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+	first := database.CloudFile{ID: database.NewID(), Name: "first.txt", AccountID: accountID, Indexed: true}
+	second := database.CloudFile{ID: database.NewID(), Name: "second.txt", AccountID: accountID, Indexed: true}
+	for _, file := range []database.CloudFile{first, second} {
+		if err := db.Create(&file).Error; err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+	}
+
+	r := gin.New()
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+second.ID+","+first.ID+"&ids=missing", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if total := w.Header().Get("X-Total"); total != "2" {
+		t.Fatalf("X-Total = %q, want 2", total)
+	}
+	var got []database.CloudFile
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != second.ID || got[1].ID != first.ID {
+		t.Fatalf("metadata order = %+v, want [%s %s]", got, second.ID, first.ID)
+	}
+}
+
+func TestListFilesMetadataRequiresIDsAndFiltersUnreadableFiles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.New()
+	viewerID := uuid.New()
+	public := database.CloudFile{ID: database.NewID(), Name: "public.txt", AccountID: ownerID, Indexed: true}
+	private := database.CloudFile{ID: database.NewID(), Name: "private.txt", AccountID: ownerID, Indexed: true}
+	for _, file := range []database.CloudFile{public, private} {
+		if err := db.Create(&file).Error; err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+	}
+	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: private.ID, SubjectType: "account", SubjectID: ownerID.String(), Permission: "read"}).Error; err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(viewerID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	missingReq := httptest.NewRequest(http.MethodGet, "/api/files/meta", nil)
+	missingRes := httptest.NewRecorder()
+	r.ServeHTTP(missingRes, missingReq)
+	if missingRes.Code != http.StatusBadRequest {
+		t.Fatalf("missing ids status = %d, want %d", missingRes.Code, http.StatusBadRequest)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+private.ID+"&ids="+public.ID, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var got []database.CloudFile
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != public.ID {
+		t.Fatalf("metadata = %+v, want only %s", got, public.ID)
+	}
+}
+
 func testAuthMiddleware(accountID uuid.UUID) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		dyauth.WithAuth(c, &dyauth.AuthResult{
