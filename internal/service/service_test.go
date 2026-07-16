@@ -1586,7 +1586,7 @@ func blankImage(w, h int) *image.RGBA {
 }
 
 func TestCreateUploadTaskPersistsOverwriteID(t *testing.T) {
-	db := openTestDB(t, &database.PersistentTask{})
+	db := openTestDB(t, &database.PersistentTask{}, &database.UploadChunk{})
 	tasks := NewTaskService(&database.DB{DB: db})
 	accountID := uuid.New()
 	overwriteID := database.NewID()
@@ -1600,7 +1600,7 @@ func TestCreateUploadTaskPersistsOverwriteID(t *testing.T) {
 		t.Fatalf("task.OverwriteID = %v, want %q", task.OverwriteID, overwriteID)
 	}
 
-	loaded, err := tasks.GetUploadTask(task.TaskID)
+	loaded, err := tasks.GetUploadTaskWithChunks(task.TaskID)
 	if err != nil {
 		t.Fatalf("GetUploadTask() error = %v", err)
 	}
@@ -1609,6 +1609,84 @@ func TestCreateUploadTaskPersistsOverwriteID(t *testing.T) {
 	}
 	if !loaded.FastMode {
 		t.Fatal("loaded.FastMode = false, want true")
+	}
+}
+
+func TestUpdateUploadedChunkIsIdempotent(t *testing.T) {
+	db := openTestDB(t, &database.PersistentTask{}, &database.UploadChunk{})
+	tasks := NewTaskService(&database.DB{DB: db})
+	task, err := tasks.CreateUploadTask(uuid.New(), "upload", nil, 10, nil, "file.txt", "text/plain", 5, 2)
+	if err != nil {
+		t.Fatalf("CreateUploadTask() error = %v", err)
+	}
+	if err := tasks.UpdateUploadedChunk(task.TaskID, 0); err != nil {
+		t.Fatalf("first chunk update: %v", err)
+	}
+	if err := tasks.UpdateUploadedChunk(task.TaskID, 0); err != nil {
+		t.Fatalf("duplicate chunk update: %v", err)
+	}
+	loaded, err := tasks.GetUploadTaskWithChunks(task.TaskID)
+	if err != nil {
+		t.Fatalf("GetUploadTask() error = %v", err)
+	}
+	if loaded.ChunksUploaded != 1 || string(loaded.UploadedChunks) != "[0]" {
+		t.Fatalf("task progress = count=%d chunks=%s, want count=1 chunks=[0]", loaded.ChunksUploaded, loaded.UploadedChunks)
+	}
+}
+
+func TestWriteUploadChunkWritesFinalSourceAtOffsets(t *testing.T) {
+	tempDir := t.TempDir()
+	taskID := "upload-task"
+	if _, err := WriteUploadChunk(tempDir, taskID, 2, 5, 11, strings.NewReader("!")); err != nil {
+		t.Fatalf("write final chunk: %v", err)
+	}
+	if _, err := WriteUploadChunk(tempDir, taskID, 1, 5, 11, strings.NewReader("world")); err != nil {
+		t.Fatalf("write second chunk: %v", err)
+	}
+	path, err := WriteUploadChunk(tempDir, taskID, 0, 5, 11, strings.NewReader("hello"))
+	if err != nil {
+		t.Fatalf("write first chunk: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read staged upload: %v", err)
+	}
+	if got, want := string(body), "helloworld!"; got != want {
+		t.Fatalf("staged upload = %q, want %q", got, want)
+	}
+}
+
+func TestCreateUploadedObjectIncludesSourceAnalysis(t *testing.T) {
+	db := openTestDB(t, &database.FileObject{})
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	info := &StagedFileInfo{Size: 42, ContentType: "image/jpeg", Hash: "abc"}
+	object, err := svc.CreateUploadedObject("object-1", info, &SourceAnalysis{Image: &ImageAnalysis{Width: 80, Height: 60, Blurhash: "hash"}})
+	if err != nil {
+		t.Fatalf("CreateUploadedObject() error = %v", err)
+	}
+	if object.StorageKey == nil || *object.StorageKey != "object-1" {
+		t.Fatalf("storage key = %v, want object-1", object.StorageKey)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(object.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["width"] != float64(80) || meta["height"] != float64(60) || meta["blurhash"] != "hash" {
+		t.Fatalf("object metadata = %#v, want source analysis", meta)
+	}
+}
+
+func TestCheckUploadQuotaEnrichesAccountOnce(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.QuotaRecord{})
+	svc := NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+	client := &stubProfileClient{account: &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 1}}}
+	svc.SetProfileClient(client)
+	if err := svc.CheckUploadQuota(&gen.DyAccount{Id: accountID.String()}, 1, 1); err != nil {
+		t.Fatalf("CheckUploadQuota() error = %v", err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("profile client calls = %d, want 1", client.calls)
 	}
 }
 

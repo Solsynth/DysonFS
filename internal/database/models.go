@@ -335,6 +335,14 @@ type PersistentTask struct {
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
+// UploadChunk makes chunk completion idempotent without repeatedly rewriting a
+// JSON array on the parent upload task.
+type UploadChunk struct {
+	TaskID     string    `gorm:"primaryKey;size:36" json:"task_id"`
+	ChunkIndex int       `gorm:"primaryKey" json:"chunk_index"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type QuotaRecord struct {
 	ID          string         `gorm:"primaryKey;size:36" json:"id"`
 	AccountID   uuid.UUID      `json:"account_id"`

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
 	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 )
@@ -2878,6 +2880,51 @@ func (s *TaskService) GetUploadTask(taskID string) (*database.PersistentTask, er
 	return &task, nil
 }
 
+func (s *TaskService) GetUploadTaskWithChunks(taskID string) (*database.PersistentTask, error) {
+	task, err := s.GetUploadTask(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.populateUploadedChunks(task); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+func (s *TaskService) populateUploadedChunks(task *database.PersistentTask) error {
+	if task == nil || task.TaskID == "" {
+		return nil
+	}
+	var chunks []database.UploadChunk
+	if err := s.db.Where("task_id = ?", task.TaskID).Order("chunk_index asc").Find(&chunks).Error; err != nil {
+		return err
+	}
+	seen := map[int]struct{}{}
+	var legacy []int
+	_ = json.Unmarshal(task.UploadedChunks, &legacy)
+	for _, index := range legacy {
+		seen[index] = struct{}{}
+	}
+	for _, chunk := range chunks {
+		seen[chunk.ChunkIndex] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	indices := make([]int, 0, len(seen))
+	for index := range seen {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	raw, err := json.Marshal(indices)
+	if err != nil {
+		return err
+	}
+	task.UploadedChunks = datatypes.JSON(raw)
+	task.ChunksUploaded = len(indices)
+	return nil
+}
+
 func (s *TaskService) GetUploadTaskByTaskID(taskID string) (*database.PersistentTask, error) {
 	return s.GetUploadTask(taskID)
 }
@@ -2911,33 +2958,34 @@ func (s *TaskService) Progress(taskID string, progress float64) error {
 }
 
 func (s *TaskService) UpdateUploadedChunk(taskID string, idx int) error {
-	var task database.PersistentTask
-	if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
-		return err
-	}
-	var chunks []int
-	if len(task.UploadedChunks) > 0 {
-		_ = json.Unmarshal(task.UploadedChunks, &chunks)
-	}
-	for _, existing := range chunks {
-		if existing == idx {
-			return nil
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&database.UploadChunk{TaskID: taskID, ChunkIndex: idx})
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
 		}
-	}
-	chunks = append(chunks, idx)
-	raw, _ := json.Marshal(chunks)
-	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"uploaded_chunks": datatypes.JSON(raw), "chunks_uploaded": len(chunks), "updated_at": time.Now(), "last_activity": time.Now()}).Error
+		return tx.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{
+			"chunks_uploaded": gorm.Expr("chunks_uploaded + ?", 1),
+			"updated_at":      time.Now(),
+			"last_activity":   time.Now(),
+		}).Error
+	})
 }
 
 func (s *TaskService) IsChunkUploaded(taskID string, idx int) (bool, error) {
-	var task database.PersistentTask
-	if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+	var chunk database.UploadChunk
+	err := s.db.Where("task_id = ? AND chunk_index = ?", taskID, idx).First(&chunk).Error
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+	task, err := s.GetUploadTaskWithChunks(taskID)
+	if err != nil {
 		return false, err
 	}
 	var chunks []int
-	if len(task.UploadedChunks) > 0 {
-		_ = json.Unmarshal(task.UploadedChunks, &chunks)
-	}
+	_ = json.Unmarshal(task.UploadedChunks, &chunks)
 	for _, existing := range chunks {
 		if existing == idx {
 			return true, nil
@@ -3029,7 +3077,7 @@ func (s *QuotaService) CheckUploadQuota(account *gen.DyAccount, size int64, cost
 	if err != nil {
 		return err
 	}
-	summary, err := s.GetSummary(account)
+	summary, err := s.getSummaryForAccount(account)
 	if err != nil {
 		return err
 	}
@@ -3067,6 +3115,10 @@ func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) 
 	if err != nil {
 		return QuotaSummary{}, err
 	}
+	return s.getSummaryForAccount(account)
+}
+
+func (s *QuotaService) getSummaryForAccount(account *gen.DyAccount) (QuotaSummary, error) {
 	var records []database.QuotaRecord
 	if err := s.db.Where("account_id = ?", account.GetId()).Order("created_at asc").Find(&records).Error; err != nil {
 		return QuotaSummary{}, err
@@ -3198,38 +3250,58 @@ func (s *QuotaService) enrichedAccount(ctx context.Context, account *gen.DyAccou
 }
 
 func (s *QuotaService) usageStats(accountID string) (int64, int64, int64, error) {
-	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ? AND deleted_at IS NULL", accountID).Find(&files).Error; err != nil {
+	type usageRow struct {
+		PoolID *string `gorm:"column:pool_id"`
+		Size   int64   `gorm:"column:size"`
+	}
+	var rows []usageRow
+	if err := s.db.Model(&database.CloudFile{}).
+		Select("cloud_files.pool_id, file_objects.size").
+		Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
+		Where("cloud_files.account_id = ? AND cloud_files.deleted_at IS NULL", accountID).
+		Scan(&rows).Error; err != nil {
 		return 0, 0, 0, err
 	}
+
+	poolIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.PoolID != nil && strings.TrimSpace(*row.PoolID) != "" {
+			poolIDs = append(poolIDs, strings.TrimSpace(*row.PoolID))
+		}
+	}
 	poolMultipliers := map[string]float64{}
+	if len(poolIDs) > 0 {
+		var pools []database.FilePool
+		if err := s.db.Where("id IN ?", poolIDs).Find(&pools).Error; err != nil {
+			return 0, 0, 0, err
+		}
+		for _, pool := range pools {
+			multiplier := 1.0
+			var billing PoolBillingConfig
+			_ = json.Unmarshal(pool.BillingConfig, &billing)
+			if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
+				multiplier = *billing.CostMultiplier
+			}
+			poolMultipliers[pool.ID] = multiplier
+		}
+	}
+
 	var total int64
 	var fileCount int64
 	var usageBytes int64
-	for _, file := range files {
-		if file.Object == nil || file.Object.Size <= 0 {
+	for _, row := range rows {
+		if row.Size <= 0 {
 			continue
 		}
 		fileCount++
-		usageBytes += file.Object.Size
+		usageBytes += row.Size
 		multiplier := 1.0
-		if file.PoolID != nil && strings.TrimSpace(*file.PoolID) != "" {
-			if cached, ok := poolMultipliers[*file.PoolID]; ok {
+		if row.PoolID != nil {
+			if cached, ok := poolMultipliers[strings.TrimSpace(*row.PoolID)]; ok {
 				multiplier = cached
-			} else {
-				multiplier = 1.0
-				var pool database.FilePool
-				if err := s.db.First(&pool, "id = ?", *file.PoolID).Error; err == nil {
-					var billing PoolBillingConfig
-					_ = json.Unmarshal(pool.BillingConfig, &billing)
-					if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
-						multiplier = *billing.CostMultiplier
-					}
-				}
-				poolMultipliers[*file.PoolID] = multiplier
 			}
 		}
-		total += int64(math.Ceil(float64(file.Object.Size) * multiplier / float64(quotaUnitBytes)))
+		total += int64(math.Ceil(float64(row.Size) * multiplier / float64(quotaUnitBytes)))
 	}
 	return total, fileCount, usageBytes, nil
 }
@@ -3322,6 +3394,52 @@ func CopyStreamToChunk(tempDir, taskID string, idx int, reader io.Reader) (strin
 	defer out.Close()
 	if _, err := io.Copy(out, reader); err != nil {
 		return "", err
+	}
+	return path, nil
+}
+
+type offsetFileWriter struct {
+	file   *os.File
+	offset int64
+}
+
+func (w *offsetFileWriter) Write(p []byte) (int, error) {
+	n, err := w.file.WriteAt(p, w.offset)
+	w.offset += int64(n)
+	return n, err
+}
+
+// WriteUploadChunk places a chunk directly into its final staged source file.
+// Separate offsets allow clients to keep uploading chunks in parallel while
+// removing the completion-time merge copy.
+func WriteUploadChunk(tempDir, taskID string, idx int, chunkSize, fileSize int64, reader io.Reader) (string, error) {
+	if idx < 0 || chunkSize <= 0 || fileSize <= 0 {
+		return "", fmt.Errorf("invalid upload chunk bounds")
+	}
+	offset := int64(idx) * chunkSize
+	if offset >= fileSize {
+		return "", fmt.Errorf("chunk index out of range")
+	}
+	expected := chunkSize
+	if remaining := fileSize - offset; remaining < expected {
+		expected = remaining
+	}
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(tempDir, taskID+".upload")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	written, err := io.Copy(&offsetFileWriter{file: file, offset: offset}, io.LimitReader(reader, expected+1))
+	if err != nil {
+		return "", err
+	}
+	if written != expected {
+		return "", fmt.Errorf("chunk size = %d, want %d", written, expected)
 	}
 	return path, nil
 }

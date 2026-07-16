@@ -31,6 +31,15 @@ type stagedFileInfo struct {
 	hash        string
 }
 
+// StagedFileInfo describes a fully written local upload source. It is kept
+// separate from storage so callers can inspect a source once, then overlap
+// storage I/O with synchronous metadata analysis.
+type StagedFileInfo struct {
+	Size        int64
+	ContentType string
+	Hash        string
+}
+
 func detectSourceMime(path, contentType string) string {
 	resolved := strings.TrimSpace(contentType)
 	if resolved != "" && !strings.EqualFold(resolved, "application/octet-stream") {
@@ -66,6 +75,65 @@ func inspectStagedFile(path, contentType string) (*stagedFileInfo, error) {
 	}, nil
 }
 
+func InspectStagedFile(path, contentType string) (*StagedFileInfo, error) {
+	info, err := inspectStagedFile(path, contentType)
+	if err != nil {
+		return nil, err
+	}
+	return &StagedFileInfo{Size: info.size, ContentType: info.contentType, Hash: info.hash}, nil
+}
+
+// NewStagedFileInfo reuses hash and size collected while a direct upload is
+// being staged, avoiding another full read before the storage transfer.
+func NewStagedFileInfo(path, contentType string, size int64, hash string) *StagedFileInfo {
+	return &StagedFileInfo{Size: size, ContentType: detectSourceMime(path, contentType), Hash: hash}
+}
+
+func (s *FileService) UploadStagedFile(ctx context.Context, path string, info *StagedFileInfo) (string, error) {
+	if info == nil {
+		return "", fmt.Errorf("staged file info is required")
+	}
+	stage, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open temp for upload: %w", err)
+	}
+	defer stage.Close()
+
+	storageKey := database.NewID()
+	if err := s.Storage().Put(ctx, storageKey, stage, info.Size, info.ContentType); err != nil {
+		return "", fmt.Errorf("upload to storage: %w", err)
+	}
+	return storageKey, nil
+}
+
+func (s *FileService) CreateUploadedObject(storageKey string, info *StagedFileInfo, analysis *SourceAnalysis) (*database.FileObject, error) {
+	if info == nil {
+		return nil, fmt.Errorf("staged file info is required")
+	}
+	meta := datatypes.JSON([]byte(`{}`))
+	if analysis != nil {
+		var err error
+		meta, err = mergeJSONMeta(meta, sourceAnalysisUpdates(analysis))
+		if err != nil {
+			return nil, fmt.Errorf("merge source analysis: %w", err)
+		}
+	}
+	object := &database.FileObject{
+		ID:             storageKey,
+		Size:           info.Size,
+		MimeType:       info.ContentType,
+		Hash:           info.Hash,
+		StorageKey:     &storageKey,
+		Meta:           meta,
+		HasCompression: false,
+		HasThumbnail:   false,
+	}
+	if err := s.db.Create(object).Error; err != nil {
+		return nil, fmt.Errorf("create file object: %w", err)
+	}
+	return object, nil
+}
+
 func (s *FileService) createFileObject(storageKey string, info *stagedFileInfo) (*database.FileObject, error) {
 	object := &database.FileObject{
 		ID:             storageKey,
@@ -83,22 +151,15 @@ func (s *FileService) createFileObject(storageKey string, info *stagedFileInfo) 
 }
 
 func (s *FileService) StreamFileToStorage(ctx context.Context, path, contentType string) (*database.FileObject, error) {
-	info, err := inspectStagedFile(path, contentType)
+	info, err := InspectStagedFile(path, contentType)
 	if err != nil {
 		return nil, err
 	}
-
-	storageKey := database.NewID()
-	stage, err := os.Open(path)
+	storageKey, err := s.UploadStagedFile(ctx, path, info)
 	if err != nil {
-		return nil, fmt.Errorf("open temp for upload: %w", err)
+		return nil, err
 	}
-	defer stage.Close()
-	if err := s.Storage().Put(ctx, storageKey, stage, info.size, info.contentType); err != nil {
-		return nil, fmt.Errorf("upload to storage: %w", err)
-	}
-
-	return s.createFileObject(storageKey, info)
+	return s.CreateUploadedObject(storageKey, info, nil)
 }
 
 // StreamToStorage reads from r, writes to a temp file while computing SHA-256 hash

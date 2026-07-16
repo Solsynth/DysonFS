@@ -1,8 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +28,19 @@ import (
 	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
 	gen "src.solsynth.dev/sosys/go/proto"
 )
+
+type recordingDispatcher struct {
+	uploaded []eventbus.FileUploadedEvent
+}
+
+func (d *recordingDispatcher) PublishFileUploaded(_ context.Context, evt eventbus.FileUploadedEvent) error {
+	d.uploaded = append(d.uploaded, evt)
+	return nil
+}
+
+func (d *recordingDispatcher) PublishFileAction(context.Context, eventbus.FileActionEvent) error {
+	return nil
+}
 
 func newTestWOPIService(t *testing.T, files *service.FileService) *service.WOPIService {
 	t.Helper()
@@ -70,6 +88,72 @@ func TestRegisterRoutesNoPanic(t *testing.T) {
 	}()
 
 	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, (*eventbus.Bus)(nil), nil)
+}
+
+func TestDirectUploadReturnsSynchronousSourceMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{})
+	tempDir := t.TempDir()
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+	dispatcher := &recordingDispatcher{}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{Storage: config.StorageConfig{TempDir: tempDir}}, files, nil, tasks, quota, nil, dispatcher)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	imageData := bytes.Buffer{}
+	canvas := image.NewRGBA(image.Rect(0, 0, 2, 3))
+	canvas.Set(0, 0, color.RGBA{R: 255, A: 255})
+	if err := png.Encode(&imageData, canvas); err != nil {
+		t.Fatalf("encode image: %v", err)
+	}
+	part, err := writer.CreateFormFile("file", "note.png")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(imageData.Bytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/direct", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var response struct {
+		ID     string `json:"id"`
+		Size   int64  `json:"size"`
+		Hash   string `json:"hash"`
+		Object struct {
+			Meta map[string]any `json:"meta"`
+		} `json:"object"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	if response.ID == "" || response.Size != int64(imageData.Len()) || response.Hash == "" {
+		t.Fatalf("response = %+v, want file id, size, and hash", response)
+	}
+	if response.Object.Meta == nil {
+		t.Fatalf("response object metadata is nil")
+	}
+	if response.Object.Meta["width"] != float64(2) || response.Object.Meta["height"] != float64(3) || response.Object.Meta["blurhash"] == "" {
+		t.Fatalf("response object metadata = %#v, want synchronous image dimensions and blurhash", response.Object.Meta)
+	}
+	if len(dispatcher.uploaded) != 1 || dispatcher.uploaded[0].FileID != response.ID {
+		t.Fatalf("uploaded events = %+v, want one event for %s", dispatcher.uploaded, response.ID)
+	}
 }
 
 func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
