@@ -1026,6 +1026,132 @@ func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, 
 	return files, nil
 }
 
+// UnindexedListOptions describes the database-side filters for the unindexed
+// upload listing. Keeping the filtering here prevents the HTTP handler from
+// loading and enriching every upload before it can apply pagination.
+type UnindexedListOptions struct {
+	Offset, Take                        int
+	Query, Name, Extension, Order       string
+	OrderDesc                           bool
+	Usage, ApplicationType, ContentType string
+	PoolID, ParentID                    string
+	Indexed, Recycled, IsFolder         *bool
+	HasThumbnail, HasCompression        *bool
+	MinSize, MaxSize                    *int64
+	CreatedAfter, CreatedBefore         *time.Time
+	UpdatedAfter, UpdatedBefore         *time.Time
+}
+
+// ListUnindexedPage returns one page and its total count. Object-dependent
+// filters and ordering use a join only when needed; the common listing uses
+// the cloud_files index alone.
+func (s *FileService) ListUnindexedPage(accountID uuid.UUID, opts UnindexedListOptions) ([]database.CloudFile, int64, error) {
+	query := s.db.Model(&database.CloudFile{}).
+		Where("cloud_files.account_id = ? AND cloud_files.indexed = false AND cloud_files.parent_id IS NULL", accountID)
+
+	joinObject := opts.ContentType != "" || opts.HasThumbnail != nil || opts.HasCompression != nil || opts.MinSize != nil || opts.MaxSize != nil || strings.EqualFold(opts.Order, "size")
+	if joinObject {
+		query = query.Joins("LEFT JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL")
+	}
+	if opts.Query != "" {
+		query = query.Where("LOWER(cloud_files.name) LIKE ?", "%"+strings.ToLower(opts.Query)+"%")
+	}
+	if opts.Name != "" {
+		query = query.Where("LOWER(TRIM(cloud_files.name)) = ?", strings.ToLower(strings.TrimSpace(opts.Name)))
+	}
+	if opts.Extension != "" {
+		query = query.Where("LOWER(cloud_files.name) LIKE ?", "%."+strings.ToLower(strings.TrimPrefix(opts.Extension, ".")))
+	}
+	if opts.Usage != "" {
+		query = query.Where("LOWER(TRIM(cloud_files.usage)) = ?", strings.ToLower(strings.TrimSpace(opts.Usage)))
+	}
+	if opts.ApplicationType != "" {
+		query = query.Where("LOWER(TRIM(cloud_files.application_type)) = ?", strings.ToLower(strings.TrimSpace(opts.ApplicationType)))
+	}
+	if opts.ContentType != "" {
+		query = query.Where("LOWER(TRIM(file_objects.mime_type)) = ?", strings.ToLower(strings.TrimSpace(opts.ContentType)))
+	}
+	if opts.PoolID != "" {
+		query = query.Where("LOWER(TRIM(cloud_files.pool_id)) = ?", strings.ToLower(strings.TrimSpace(opts.PoolID)))
+	}
+	if opts.ParentID != "" {
+		query = query.Where("LOWER(TRIM(cloud_files.parent_id)) = ?", strings.ToLower(strings.TrimSpace(opts.ParentID)))
+	}
+	if opts.Indexed != nil {
+		query = query.Where("cloud_files.indexed = ?", *opts.Indexed)
+	}
+	if opts.Recycled != nil {
+		query = query.Where("cloud_files.is_marked_recycle = ?", *opts.Recycled)
+	}
+	if opts.IsFolder != nil {
+		query = query.Where("cloud_files.is_folder = ?", *opts.IsFolder)
+	}
+	if opts.HasThumbnail != nil {
+		if *opts.HasThumbnail {
+			query = query.Where("file_objects.has_thumbnail = true")
+		} else {
+			query = query.Where("file_objects.id IS NULL OR file_objects.has_thumbnail = false")
+		}
+	}
+	if opts.HasCompression != nil {
+		if *opts.HasCompression {
+			query = query.Where("file_objects.has_compression = true")
+		} else {
+			query = query.Where("file_objects.id IS NULL OR file_objects.has_compression = false")
+		}
+	}
+	if opts.MinSize != nil {
+		query = query.Where("COALESCE(file_objects.size, 0) >= ?", *opts.MinSize)
+	}
+	if opts.MaxSize != nil {
+		query = query.Where("COALESCE(file_objects.size, 0) <= ?", *opts.MaxSize)
+	}
+	if opts.CreatedAfter != nil {
+		query = query.Where("cloud_files.created_at >= ?", *opts.CreatedAfter)
+	}
+	if opts.CreatedBefore != nil {
+		query = query.Where("cloud_files.created_at <= ?", *opts.CreatedBefore)
+	}
+	if opts.UpdatedAfter != nil {
+		query = query.Where("cloud_files.updated_at >= ?", *opts.UpdatedAfter)
+	}
+	if opts.UpdatedBefore != nil {
+		query = query.Where("cloud_files.updated_at <= ?", *opts.UpdatedBefore)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	orderColumn := "cloud_files.created_at"
+	if strings.EqualFold(opts.Order, "name") {
+		orderColumn = "cloud_files.name"
+	} else if strings.EqualFold(opts.Order, "size") {
+		orderColumn = "COALESCE(file_objects.size, 0)"
+	}
+	direction := "ASC"
+	if opts.OrderDesc {
+		direction = "DESC"
+	}
+	query = query.Order(orderColumn + " " + direction).Order("cloud_files.id " + direction)
+	if opts.Offset > 0 {
+		query = query.Offset(opts.Offset)
+	}
+	if opts.Take > 0 {
+		query = query.Limit(opts.Take)
+	}
+
+	var files []database.CloudFile
+	if err := query.Preload("Object").Find(&files).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, 0, err
+	}
+	return files, total, nil
+}
+
 func (s *FileService) CreateFolder(accountID uuid.UUID, name string, parentID *string) (*database.CloudFile, error) {
 	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, Indexed: true, IsFolder: true, ParentID: parentID}
 	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {

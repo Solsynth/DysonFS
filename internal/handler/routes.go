@@ -933,15 +933,25 @@ func listUnindexed(c *gin.Context, files *service.FileService) {
 	pool := strings.TrimSpace(c.Query("pool"))
 	recycled := strings.EqualFold(c.Query("recycled"), "true") || c.Query("recycled") == "1"
 	filters := parseListQuery(c, 0, 20)
-	items, err := files.ListUnindexed(uuid.MustParse(result.Account.GetId()))
+	if pool != "" && filters.PoolID == "" {
+		filters.PoolID = pool
+	}
+	if filters.Recycled == nil {
+		filters.Recycled = &recycled
+	}
+	items, total, err := files.ListUnindexedPage(uuid.MustParse(result.Account.GetId()), service.UnindexedListOptions{
+		Offset: filters.Offset, Take: filters.Take, Query: filters.Query, Name: filters.Name, Extension: filters.Extension,
+		Order: filters.Order, OrderDesc: filters.OrderDesc, Usage: filters.Usage, ApplicationType: filters.ApplicationType,
+		ContentType: filters.ContentType, PoolID: filters.PoolID, ParentID: filters.ParentID, Indexed: filters.Indexed,
+		Recycled: filters.Recycled, IsFolder: filters.IsFolder, HasThumbnail: filters.HasThumbnail,
+		HasCompression: filters.HasCompression, MinSize: filters.MinSize, MaxSize: filters.MaxSize,
+		CreatedAfter: filters.CreatedAfter, CreatedBefore: filters.CreatedBefore, UpdatedAfter: filters.UpdatedAfter, UpdatedBefore: filters.UpdatedBefore,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	items = filterAndSortUnindexed(items, pool, recycled, filters)
-	total := len(items)
-	items = paginateFiles(items, filters.Offset, filters.Take)
-	c.Header("X-Total", strconv.Itoa(total))
+	c.Header("X-Total", strconv.FormatInt(total, 10))
 	c.JSON(http.StatusOK, items)
 }
 
