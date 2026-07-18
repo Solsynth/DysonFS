@@ -892,15 +892,12 @@ func listRootIndexed(c *gin.Context, files *service.FileService) {
 		return
 	}
 	filters := parseListQuery(c, 0, 50)
-	items, err := files.ListRoot(uuid.MustParse(result.Account.GetId()))
+	items, total, err := files.ListRootPage(uuid.MustParse(result.Account.GetId()), fileListOptions(filters))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	items = filterAndSortFiles(items, filters)
-	total := len(items)
-	items = paginateFiles(items, filters.Offset, filters.Take)
-	c.Header("X-Total", strconv.Itoa(total))
+	c.Header("X-Total", strconv.FormatInt(total, 10))
 	c.JSON(http.StatusOK, items)
 }
 
@@ -939,20 +936,24 @@ func listUnindexed(c *gin.Context, files *service.FileService) {
 	if filters.Recycled == nil {
 		filters.Recycled = &recycled
 	}
-	items, total, err := files.ListUnindexedPage(uuid.MustParse(result.Account.GetId()), service.UnindexedListOptions{
-		Offset: filters.Offset, Take: filters.Take, Query: filters.Query, Name: filters.Name, Extension: filters.Extension,
-		Order: filters.Order, OrderDesc: filters.OrderDesc, Usage: filters.Usage, ApplicationType: filters.ApplicationType,
-		ContentType: filters.ContentType, PoolID: filters.PoolID, ParentID: filters.ParentID, Indexed: filters.Indexed,
-		Recycled: filters.Recycled, IsFolder: filters.IsFolder, HasThumbnail: filters.HasThumbnail,
-		HasCompression: filters.HasCompression, MinSize: filters.MinSize, MaxSize: filters.MaxSize,
-		CreatedAfter: filters.CreatedAfter, CreatedBefore: filters.CreatedBefore, UpdatedAfter: filters.UpdatedAfter, UpdatedBefore: filters.UpdatedBefore,
-	})
+	items, total, err := files.ListUnindexedPage(uuid.MustParse(result.Account.GetId()), fileListOptions(filters))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.Header("X-Total", strconv.FormatInt(total, 10))
 	c.JSON(http.StatusOK, items)
+}
+
+func fileListOptions(filters fileListFilters) service.FileListOptions {
+	return service.FileListOptions{
+		Offset: filters.Offset, Take: filters.Take, Query: filters.Query, Name: filters.Name, Extension: filters.Extension,
+		Order: filters.Order, OrderDesc: filters.OrderDesc, Usage: filters.Usage, ApplicationType: filters.ApplicationType,
+		ContentType: filters.ContentType, PoolID: filters.PoolID, ParentID: filters.ParentID, Indexed: filters.Indexed,
+		Recycled: filters.Recycled, IsFolder: filters.IsFolder, HasThumbnail: filters.HasThumbnail,
+		HasCompression: filters.HasCompression, MinSize: filters.MinSize, MaxSize: filters.MaxSize,
+		CreatedAfter: filters.CreatedAfter, CreatedBefore: filters.CreatedBefore, UpdatedAfter: filters.UpdatedAfter, UpdatedBefore: filters.UpdatedBefore,
+	}
 }
 
 type fileListFilters struct {

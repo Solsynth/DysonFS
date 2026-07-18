@@ -1026,10 +1026,10 @@ func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, 
 	return files, nil
 }
 
-// UnindexedListOptions describes the database-side filters for the unindexed
-// upload listing. Keeping the filtering here prevents the HTTP handler from
-// loading and enriching every upload before it can apply pagination.
-type UnindexedListOptions struct {
+// FileListOptions describes database-side filters for paged file listings.
+// Keeping these filters in the database prevents HTTP handlers from loading
+// and enriching every matching file before they can apply pagination.
+type FileListOptions struct {
 	Offset, Take                        int
 	Query, Name, Extension, Order       string
 	OrderDesc                           bool
@@ -1042,13 +1042,28 @@ type UnindexedListOptions struct {
 	UpdatedAfter, UpdatedBefore         *time.Time
 }
 
+// UnindexedListOptions is retained as an alias for callers of the unindexed
+// listing API.
+type UnindexedListOptions = FileListOptions
+
 // ListUnindexedPage returns one page and its total count. Object-dependent
 // filters and ordering use a join only when needed; the common listing uses
 // the cloud_files index alone.
 func (s *FileService) ListUnindexedPage(accountID uuid.UUID, opts UnindexedListOptions) ([]database.CloudFile, int64, error) {
 	query := s.db.Model(&database.CloudFile{}).
 		Where("cloud_files.account_id = ? AND cloud_files.indexed = false AND cloud_files.parent_id IS NULL", accountID)
+	return s.listFilesPage(query, opts)
+}
 
+// ListRootPage returns indexed root files. It deliberately shares the same
+// filters and pagination implementation as the unindexed endpoint.
+func (s *FileService) ListRootPage(accountID uuid.UUID, opts FileListOptions) ([]database.CloudFile, int64, error) {
+	query := s.db.Model(&database.CloudFile{}).
+		Where("cloud_files.account_id = ? AND cloud_files.indexed = true AND cloud_files.parent_id IS NULL", accountID)
+	return s.listFilesPage(query, opts)
+}
+
+func (s *FileService) listFilesPage(query *gorm.DB, opts FileListOptions) ([]database.CloudFile, int64, error) {
 	joinObject := opts.ContentType != "" || opts.HasThumbnail != nil || opts.HasCompression != nil || opts.MinSize != nil || opts.MaxSize != nil || strings.EqualFold(opts.Order, "size")
 	if joinObject {
 		query = query.Joins("LEFT JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL")

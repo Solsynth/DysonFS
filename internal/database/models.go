@@ -45,11 +45,11 @@ type CloudFile struct {
 	ID               string           `gorm:"primaryKey;size:36" json:"id"`
 	Name             string           `json:"name"`
 	Description      *string          `json:"description"`
-	AccountID        uuid.UUID        `gorm:"index:idx_cloud_files_unindexed_listing,priority:1" json:"account_id"`
+	AccountID        uuid.UUID        `gorm:"index:idx_cloud_files_unindexed_listing,priority:1;index:idx_cloud_files_root_listing,priority:1" json:"account_id"`
 	PoolID           *string          `gorm:"size:36" json:"pool_id"`
 	ObjectID         *string          `gorm:"size:36" json:"object_id"`
-	ParentID         *string          `gorm:"size:36;index:idx_cloud_files_parent_deleted,priority:1;index:idx_cloud_files_parent_active,where:deleted_at IS NULL;index:idx_cloud_files_unindexed_listing,priority:3" json:"parent_id"`
-	Indexed          bool             `gorm:"index:idx_cloud_files_unindexed_listing,priority:2" json:"indexed"`
+	ParentID         *string          `gorm:"size:36;index:idx_cloud_files_parent_deleted,priority:1;index:idx_cloud_files_parent_active,where:deleted_at IS NULL;index:idx_cloud_files_unindexed_listing,priority:3;index:idx_cloud_files_root_listing,priority:3" json:"parent_id"`
+	Indexed          bool             `gorm:"index:idx_cloud_files_unindexed_listing,priority:2;index:idx_cloud_files_root_listing,priority:2" json:"indexed"`
 	IsFolder         bool             `json:"is_folder"`
 	IsMarkedRecycle  bool             `gorm:"index:idx_cloud_files_unindexed_listing,priority:4" json:"is_marked_recycle"`
 	ExpiredAt        *time.Time       `json:"expired_at"`
@@ -61,7 +61,7 @@ type CloudFile struct {
 	Usage            *string          `json:"usage"`
 	ApplicationType  *string          `json:"application_type"`
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_cloud_files_parent_deleted,priority:2" json:"deleted_at"`
-	CreatedAt        time.Time        `gorm:"index:idx_cloud_files_unindexed_listing,priority:5" json:"created_at"`
+	CreatedAt        time.Time        `gorm:"index:idx_cloud_files_unindexed_listing,priority:5;index:idx_cloud_files_root_listing,priority:4" json:"created_at"`
 	UpdatedAt        time.Time        `json:"updated_at"`
 	Object           *FileObject      `gorm:"foreignKey:ObjectID;references:ID" json:"object,omitempty"`
 	Children         []CloudFile      `gorm:"foreignKey:ParentID;references:ID" json:"children,omitempty"`
