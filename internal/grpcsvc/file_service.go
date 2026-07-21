@@ -129,6 +129,12 @@ func (s *fileServiceServer) UpdateFile(_ context.Context, req *gen.DyUpdateFileR
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
+	if maskIncludes(req.GetUpdateMask(), "sensitive_marks") {
+		sensitiveMarks := req.GetFile().GetSensitiveMarks()
+		if err := s.files.DB().Model(&database.CloudFile{}).Where("id = ?", file.ID).Update("sensitive_marks", sensitiveMarks).Error; err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+	}
 	if maskIncludes(req.GetUpdateMask(), "object") && file.Object != nil && req.GetFile().GetObject() != nil {
 		objUpdates := map[string]any{}
 		if req.GetFile().GetObject().GetMimeType() != "" {
@@ -212,6 +218,9 @@ func toProtoCloudFile(file *database.CloudFile) *gen.DyCloudFile {
 		ApplicationType: file.ApplicationType,
 		MimeType:        file.ResponseMimeType(),
 		ContentType:     file.ResponseMimeType(),
+	}
+	if len(file.SensitiveMarks) > 0 {
+		resp.SensitiveMarks = file.SensitiveMarks
 	}
 	if file.Object != nil {
 		resp.Hash = file.Object.Hash
