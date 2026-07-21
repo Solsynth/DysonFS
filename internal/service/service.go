@@ -1344,6 +1344,10 @@ func (s *FileService) RecycleFile(id string) error {
 	return s.db.Model(&database.CloudFile{}).Where("id = ?", id).Update("is_marked_recycle", true).Error
 }
 
+func (s *FileService) SetSensitiveMarks(fileID string, marks datatypes.JSON) error {
+	return s.db.Model(&database.CloudFile{}).Where("id = ?", fileID).Update("sensitive_marks", marks).Error
+}
+
 func (s *FileService) RecycleBatch(ids []string) (int64, error) {
 	ids = normalizeFileIDs(ids)
 	if len(ids) == 0 {

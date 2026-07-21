@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/datatypes"
 )
 
 func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, wopi *service.WOPIService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
@@ -52,6 +54,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
 		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
 		f.PATCH("/:id", func(c *gin.Context) { patchFile(c, files) })
+		f.PUT("/:id/sensitive", func(c *gin.Context) { setSensitiveMarks(c, files) })
 		f.PATCH("/:id/content", func(c *gin.Context) { patchFileContent(c, files, bus, dispatcher) })
 		f.POST("/recycle/batch", func(c *gin.Context) { batchRecycleFiles(c, files, bus, dispatcher) })
 		f.POST("/restore/batch", func(c *gin.Context) { batchRestoreFiles(c, files, bus, dispatcher) })
@@ -1314,6 +1317,45 @@ func patchFile(c *gin.Context, files *service.FileService) {
 	file.Name = name
 	file.PermissionStatus.Writable = true
 	c.JSON(http.StatusOK, file)
+}
+
+func setSensitiveMarks(c *gin.Context, files *service.FileService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	file, err := files.GetFile(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !result.Account.GetIsSuperuser() && file.AccountID.String() != result.Account.GetId() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	var req struct {
+		Marks []int `json:"marks"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	marksJSON, err := json.Marshal(req.Marks)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid marks payload"})
+		return
+	}
+
+	if err := files.SetSensitiveMarks(file.ID, datatypes.JSON(marksJSON)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func patchFileContent(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {

@@ -58,6 +58,7 @@ type CloudFile struct {
 	StorageKey       *string          `gorm:"size:64" json:"storage_key"`
 	FileMeta         datatypes.JSON   `gorm:"type:jsonb" json:"file_meta"`
 	UserMeta         datatypes.JSON   `gorm:"type:jsonb" json:"user_meta"`
+	SensitiveMarks   datatypes.JSON   `gorm:"type:jsonb" json:"-"`
 	Usage            *string          `json:"usage"`
 	ApplicationType  *string          `json:"application_type"`
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_cloud_files_parent_deleted,priority:2" json:"deleted_at"`
@@ -116,8 +117,15 @@ func (f *CloudFile) LegacyFileMeta() datatypes.JSON {
 	return nil
 }
 
-func (f *CloudFile) LegacySensitiveMarks() []any {
-	return []any{}
+func (f *CloudFile) LegacySensitiveMarks() []int {
+	if f == nil || len(f.SensitiveMarks) == 0 {
+		return []int{}
+	}
+	var marks []int
+	if err := json.Unmarshal(f.SensitiveMarks, &marks); err != nil {
+		return []int{}
+	}
+	return marks
 }
 
 func (f *CloudFile) ResourceIdentifier() string {
