@@ -3,6 +3,7 @@ module src.solsynth.dev/sosys/filesystem
 go 1.26.2
 
 require (
+	github.com/aws/aws-sdk-go v1.38.20
 	github.com/bbrks/go-blurhash v1.2.0
 	github.com/davidbyttow/govips/v2 v2.17.0
 	github.com/gabriel-vasile/mimetype v1.4.9
@@ -29,7 +30,7 @@ require (
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/driver/sqlite v1.4.3
 	gorm.io/gorm v1.30.5
-	src.solsynth.dev/sosys/go v0.2.1-0.20260719030106-e6cb4c4ac9b4
+	src.solsynth.dev/sosys/go v0.2.1-0.20260723135807-a9a0c7e3e06f
 )
 
 require (
@@ -37,7 +38,6 @@ require (
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/PuerkitoBio/purell v1.1.1 // indirect
 	github.com/PuerkitoBio/urlesc v0.0.0-20170810143723-de5bf2ad4578 // indirect
-	github.com/aws/aws-sdk-go v1.38.20 // indirect
 	github.com/bytedance/sonic v1.13.3 // indirect
 	github.com/bytedance/sonic/loader v0.2.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
