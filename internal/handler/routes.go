@@ -50,7 +50,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.POST("/:id/edit", func(c *gin.Context) { createEditSession(c, wopi, files) })
 		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files) })
 		f.GET("/:id/children", func(c *gin.Context) { listChildren(c, files) })
-		f.POST("/folders", func(c *gin.Context) { createFolder(c, files) })
+		f.POST("/folders", func(c *gin.Context) { createFolder(c, files, quota) })
 		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
 		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
 		f.PATCH("/:id", func(c *gin.Context) { patchFile(c, files) })
@@ -82,7 +82,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks, quota) })
 		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks, quota, bus, dispatcher) })
 		u.POST("/chunk/:taskId/:idx", func(c *gin.Context) { uploadChunk(c, cfg, tasks) })
-		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, bus, dispatcher) })
+		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, quota, bus, dispatcher) })
 		u.GET("/tasks", func(c *gin.Context) { listUploadTasks(c, tasks) })
 		u.GET("/progress/:taskId", func(c *gin.Context) { uploadProgress(c, tasks) })
 		u.GET("/resume/:taskId", func(c *gin.Context) { uploadResume(c, tasks) })
@@ -1248,21 +1248,29 @@ func paginateFiles(items []database.CloudFile, offset, take int) []database.Clou
 	return items[offset:end]
 }
 
-func createFolder(c *gin.Context, files *service.FileService) {
+func createFolder(c *gin.Context, files *service.FileService, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 	var req struct {
-		Name     string  `json:"name"`
-		ParentID *string `json:"parent_id"`
+		Name        string  `json:"name"`
+		ParentID    *string `json:"parent_id"`
+		WorkspaceID *string `json:"workspace_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	folder, err := files.CreateFolder(uuid.MustParse(result.Account.GetId()), req.Name, req.ParentID)
+	workspaceID := optionalStringPtr(deref(req.WorkspaceID))
+	if workspaceID != nil {
+		if err := quota.CheckWorkspaceUploadQuota(c.Request.Context(), *workspaceID, result.Account.GetId(), 0); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	folder, err := files.CreateWorkspaceFolder(uuid.MustParse(result.Account.GetId()), workspaceID, req.Name, req.ParentID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1705,6 +1713,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		Index           bool    `json:"index"`
 		FileSize        int64   `json:"file_size"`
 		PoolID          *string `json:"pool_id"`
+		WorkspaceID     *string `json:"workspace_id"`
 		ExpiredAt       *string `json:"expired_at"`
 		ChunkSize       int64   `json:"chunk_size"`
 		ParentID        *string `json:"parent_id"`
@@ -1751,6 +1760,11 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		req.Usage = target.Usage
 		req.ApplicationType = target.ApplicationType
 		req.Index = target.Indexed
+		if req.WorkspaceID != nil && target.WorkspaceID != nil && strings.TrimSpace(*req.WorkspaceID) != strings.TrimSpace(*target.WorkspaceID) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "workspace_id must match the overwritten file"})
+			return
+		}
+		req.WorkspaceID = target.WorkspaceID
 	}
 	if strings.TrimSpace(req.FileName) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file_name is required"})
@@ -1778,13 +1792,20 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	}
 	quotaStart := time.Now()
 	logQuotaCheck(result.Account, req.FileSize, poolMultiplier, "create-upload", false, nil)
-	if err := quota.CheckUploadQuota(result.Account, req.FileSize, poolMultiplier); err != nil {
-		logQuotaCheck(result.Account, req.FileSize, poolMultiplier, "create-upload", true, err)
+	var quotaErr error
+	if workspaceID := optionalStringPtr(deref(req.WorkspaceID)); workspaceID != nil {
+		quotaErr = quota.CheckWorkspaceUploadQuota(c.Request.Context(), *workspaceID, result.Account.GetId(), req.FileSize)
+		req.WorkspaceID = workspaceID
+	} else {
+		quotaErr = quota.CheckUploadQuota(result.Account, req.FileSize, poolMultiplier)
+	}
+	if quotaErr != nil {
+		logQuotaCheck(result.Account, req.FileSize, poolMultiplier, "create-upload", true, quotaErr)
 		status := http.StatusBadRequest
-		if errors.Is(err, service.ErrQuotaExceeded) {
+		if errors.Is(quotaErr, service.ErrQuotaExceeded) {
 			status = http.StatusForbidden
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		c.JSON(status, gin.H{"error": quotaErr.Error()})
 		return
 	}
 	if err := files.ValidatePoolUsage(ctx, req.PoolID, req.FileSize, req.ContentType); err != nil {
@@ -1794,7 +1815,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	quotaDuration := time.Since(quotaStart)
 	chunks := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
 	dbStart := time.Now()
-	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, OverwriteID: req.OverwriteID, FastMode: req.FastMode, ApplicationType: req.ApplicationType, Indexed: req.Index}
+	payload := &database.PersistentTask{Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage, ParentID: req.ParentID, OverwriteID: req.OverwriteID, FastMode: req.FastMode, ApplicationType: req.ApplicationType, Indexed: req.Index, WorkspaceID: req.WorkspaceID}
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), name, payload, req.FileSize, resolvedPoolID, name, req.ContentType, req.ChunkSize, chunks)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1837,6 +1858,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	description := optionalStringPtr(c.PostForm("description"))
 	hash := optionalStringPtr(c.PostForm("hash"))
 	parentID := optionalStringPtr(c.PostForm("parent_id"))
+	workspaceID := optionalStringPtr(c.PostForm("workspace_id"))
 	overwriteID := optionalStringPtr(c.PostForm("overwrite_id"))
 	fastMode := optionalBool(c.PostForm("fast_mode"))
 	usage := optionalStringPtr(c.PostForm("usage"))
@@ -1869,16 +1891,27 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		appType = overwriteTarget.ApplicationType
 		indexed = overwriteTarget.Indexed
 		expiredAt = overwriteTarget.ExpiredAt
+		if workspaceID != nil && overwriteTarget.WorkspaceID != nil && *workspaceID != *overwriteTarget.WorkspaceID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "workspace_id must match the overwritten file"})
+			return
+		}
+		workspaceID = overwriteTarget.WorkspaceID
 	}
 
 	logQuotaCheck(result.Account, fileHeader.Size, 1.0, "direct-upload", false, nil)
-	if err := quota.CheckUploadQuota(result.Account, fileHeader.Size, 1.0); err != nil {
-		logQuotaCheck(result.Account, fileHeader.Size, 1.0, "direct-upload", true, err)
+	var quotaErr error
+	if workspaceID != nil {
+		quotaErr = quota.CheckWorkspaceUploadQuota(c.Request.Context(), *workspaceID, result.Account.GetId(), fileHeader.Size)
+	} else {
+		quotaErr = quota.CheckUploadQuota(result.Account, fileHeader.Size, 1.0)
+	}
+	if quotaErr != nil {
+		logQuotaCheck(result.Account, fileHeader.Size, 1.0, "direct-upload", true, quotaErr)
 		status := http.StatusBadRequest
-		if errors.Is(err, service.ErrQuotaExceeded) {
+		if errors.Is(quotaErr, service.ErrQuotaExceeded) {
 			status = http.StatusForbidden
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		c.JSON(status, gin.H{"error": quotaErr.Error()})
 		return
 	}
 	reader, err := fileHeader.Open()
@@ -1952,7 +1985,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		if overwriteTarget != nil {
 			createdFile, err = files.OverwriteFile(overwriteTarget.ID, object.ID, storageKey)
 		} else {
-			createdFile, err = files.CreateUploadedFile(uuid.MustParse(result.Account.GetId()), fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
+			createdFile, err = files.CreateWorkspaceUploadedFile(uuid.MustParse(result.Account.GetId()), workspaceID, fileHeader.Filename, description, hash, expiredAt, usage, parentID, object.ID, nil, appType, storageKey, indexed)
 		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2089,7 +2122,7 @@ func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService)
 // @Param taskId path string true "Task ID"
 // @Success 200 {object} database.CloudFile
 // @Router /api/files/upload/complete/{taskId} [post]
-func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
 	startedAt := time.Now()
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -2121,6 +2154,16 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	if task.FileSize == nil || task.ChunksUploaded != task.ChunksCount {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "upload is incomplete"})
 		return
+	}
+	if task.WorkspaceID != nil {
+		if err := quota.CheckWorkspaceUploadQuota(c.Request.Context(), *task.WorkspaceID, result.Account.GetId(), *task.FileSize); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, service.ErrQuotaExceeded) {
+				status = http.StatusForbidden
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	mergeDuration := time.Duration(0)
 	stat, err := os.Stat(mergedPath)
@@ -2185,7 +2228,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		if task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
 			created, err = files.OverwriteFile(strings.TrimSpace(*task.OverwriteID), object.ID, storageKey)
 		} else {
-			created, err = files.CreateUploadedFile(task.AccountID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
+			created, err = files.CreateWorkspaceUploadedFile(task.AccountID, task.WorkspaceID, deref(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, storageKey, task.Indexed)
 		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -75,6 +75,7 @@ Both direct upload and chunked upload creation accept the same metadata payload:
   "file_size": 12345,
   "content_type": "video/quicktime",
   "pool_id": "...",
+  "workspace_id": "...",
   "expired_at": "2026-05-17T12:34:56Z",
   "chunk_size": 5242880,
   "parent_id": "...",
@@ -89,6 +90,8 @@ Both direct upload and chunked upload creation accept the same metadata payload:
 - `direct` upload uses multipart form data with the same field names, plus `file`
 - `index` controls whether the file is indexed; defaults to `false`, but automatically becomes `true` when `parent_id` points to an indexed folder
 - `parent_id` is optional and can still be resolved server-side when omitted
+- `workspace_id` is optional; when provided, the uploader must be an active workspace member (role `Member` or higher), the resulting file is owned by that workspace, and the workspace plan's storage limit is used instead of the uploader's personal quota
+- workspace uploads require the `workspace.target` WattEngine gRPC configuration
 - `overwrite_id` is optional; when set, the upload replaces the content of an existing file instead of creating a new `cloud_files` row
 - `fast_mode` is optional; when used with `overwrite_id`, the server tries to overwrite the existing backing object in place
 - fast mode is applied only when the target `object_id` is referenced by exactly one live file

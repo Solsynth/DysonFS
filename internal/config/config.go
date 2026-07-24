@@ -9,26 +9,27 @@ import (
 )
 
 type Config struct {
-	App      AppConfig      `mapstructure:"app"`
-	HTTP     HTTPConfig     `mapstructure:"http"`
-	GRPC     GRPCConfig     `mapstructure:"grpc"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	NATS     NATSConfig     `mapstructure:"nats"`
-	Storage  StorageConfig  `mapstructure:"storage"`
-	Bundled  BundledConfig  `mapstructure:"bundled"`
-	Auth     AuthConfig     `mapstructure:"auth"`
-	Passport PassportConfig `mapstructure:"passport"`
-	Quota    QuotaConfig    `mapstructure:"quota"`
-	Mode     ModeConfig     `mapstructure:"mode"`
-	Files    FileConfig     `mapstructure:"files"`
-	WOPI     WOPIConfig     `mapstructure:"wopi"`
-	WebDAV   WebDAVConfig   `mapstructure:"webdav"`
-	Pools    []PoolConfig   `mapstructure:"pools"`
-	S3           S3Config         `mapstructure:"s3"`
-	MasterS3     MasterS3Config   `mapstructure:"masterS3"`
-	StorageNode  StorageNodeConfig `mapstructure:"storageNode"`
-	Sentry       SentryConfig      `mapstructure:"sentry"`
+	App         AppConfig         `mapstructure:"app"`
+	HTTP        HTTPConfig        `mapstructure:"http"`
+	GRPC        GRPCConfig        `mapstructure:"grpc"`
+	Database    DatabaseConfig    `mapstructure:"database"`
+	Redis       RedisConfig       `mapstructure:"redis"`
+	NATS        NATSConfig        `mapstructure:"nats"`
+	Storage     StorageConfig     `mapstructure:"storage"`
+	Bundled     BundledConfig     `mapstructure:"bundled"`
+	Auth        AuthConfig        `mapstructure:"auth"`
+	Passport    PassportConfig    `mapstructure:"passport"`
+	Workspace   WorkspaceConfig   `mapstructure:"workspace"`
+	Quota       QuotaConfig       `mapstructure:"quota"`
+	Mode        ModeConfig        `mapstructure:"mode"`
+	Files       FileConfig        `mapstructure:"files"`
+	WOPI        WOPIConfig        `mapstructure:"wopi"`
+	WebDAV      WebDAVConfig      `mapstructure:"webdav"`
+	Pools       []PoolConfig      `mapstructure:"pools"`
+	S3          S3Config          `mapstructure:"s3"`
+	MasterS3    MasterS3Config    `mapstructure:"masterS3"`
+	StorageNode StorageNodeConfig `mapstructure:"storageNode"`
+	Sentry      SentryConfig      `mapstructure:"sentry"`
 }
 
 type SentryConfig struct {
@@ -82,6 +83,14 @@ type AuthConfig struct {
 }
 
 type PassportConfig struct {
+	Target        string `mapstructure:"target"`
+	UseTLS        bool   `mapstructure:"useTLS"`
+	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
+}
+
+// WorkspaceConfig configures the WattEngine workspace gRPC endpoint used to
+// validate workspace uploads and retrieve plan storage limits.
+type WorkspaceConfig struct {
 	Target        string `mapstructure:"target"`
 	UseTLS        bool   `mapstructure:"useTLS"`
 	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
@@ -206,6 +215,9 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("passport.target", "")
 	viper.SetDefault("passport.useTLS", false)
 	viper.SetDefault("passport.tlsSkipVerify", false)
+	viper.SetDefault("workspace.target", "")
+	viper.SetDefault("workspace.useTLS", false)
+	viper.SetDefault("workspace.tlsSkipVerify", false)
 	viper.SetDefault("quota.leveling.level1", 512)
 	viper.SetDefault("quota.leveling.level10", 1024)
 	viper.SetDefault("quota.leveling.level60", 5*1024)

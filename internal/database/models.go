@@ -46,6 +46,7 @@ type CloudFile struct {
 	Name             string           `json:"name"`
 	Description      *string          `json:"description"`
 	AccountID        uuid.UUID        `gorm:"index:idx_cloud_files_unindexed_listing,priority:1;index:idx_cloud_files_root_listing,priority:1" json:"account_id"`
+	WorkspaceID      *string          `gorm:"size:36;index" json:"workspace_id,omitempty"`
 	PoolID           *string          `gorm:"size:36" json:"pool_id"`
 	ObjectID         *string          `gorm:"size:36" json:"object_id"`
 	ParentID         *string          `gorm:"size:36;index:idx_cloud_files_parent_deleted,priority:1;index:idx_cloud_files_parent_active,where:deleted_at IS NULL;index:idx_cloud_files_unindexed_listing,priority:3;index:idx_cloud_files_root_listing,priority:3" json:"parent_id"`
@@ -168,6 +169,7 @@ func (f *CloudFile) MarshalJSON() ([]byte, error) {
 		"storage_id":          f.StorageID,
 		"storage_url":         f.StorageURL,
 		"account_id":          f.AccountID,
+		"workspace_id":        f.WorkspaceID,
 		"resource_identifier": f.ResourceIdentifier(),
 		"children_count":      f.ChildrenCount,
 		"permission_status":   f.PermissionStatus,
@@ -266,14 +268,14 @@ type FileLock struct {
 }
 
 type WebDAVToken struct {
-	ID          string         `gorm:"primaryKey;size:36" json:"id"`
-	AccountID   uuid.UUID      `gorm:"index" json:"account_id"`
-	TokenHash   string         `gorm:"size:60;uniqueIndex" json:"-"`
-	Label       string         `gorm:"size:128" json:"label"`
-	LastUsedAt  *time.Time     `json:"last_used_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	ID         string         `gorm:"primaryKey;size:36" json:"id"`
+	AccountID  uuid.UUID      `gorm:"index" json:"account_id"`
+	TokenHash  string         `gorm:"size:60;uniqueIndex" json:"-"`
+	Label      string         `gorm:"size:128" json:"label"`
+	LastUsedAt *time.Time     `json:"last_used_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
 }
 
 func (l *FileLock) BeforeCreate(tx *gorm.DB) error {
@@ -315,6 +317,7 @@ type PersistentTask struct {
 	Type            string         `json:"type"`
 	Status          string         `json:"status"`
 	AccountID       uuid.UUID      `json:"account_id"`
+	WorkspaceID     *string        `gorm:"size:36;index" json:"workspace_id,omitempty"`
 	Progress        float64        `json:"progress"`
 	ChunkSize       int64          `json:"chunk_size"`
 	ChunksCount     int            `json:"chunks_count"`
@@ -386,16 +389,16 @@ func (n *StorageNode) BeforeCreate(tx *gorm.DB) error {
 }
 
 type S3Token struct {
-	ID          string         `gorm:"primaryKey;size:36" json:"id"`
-	AccountID   uuid.UUID      `gorm:"index" json:"account_id"`
-	AccessKey   string         `gorm:"size:128;uniqueIndex" json:"-"`
-	SecretKey   string         `gorm:"size:128" json:"-"`
-	Label       string         `gorm:"size:128" json:"label"`
-	PoolID      *string        `gorm:"size:36" json:"pool_id"`
-	LastUsedAt  *time.Time     `json:"last_used_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	ID         string         `gorm:"primaryKey;size:36" json:"id"`
+	AccountID  uuid.UUID      `gorm:"index" json:"account_id"`
+	AccessKey  string         `gorm:"size:128;uniqueIndex" json:"-"`
+	SecretKey  string         `gorm:"size:128" json:"-"`
+	Label      string         `gorm:"size:128" json:"label"`
+	PoolID     *string        `gorm:"size:36" json:"pool_id"`
+	LastUsedAt *time.Time     `json:"last_used_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
 }
 
 func (t *S3Token) BeforeCreate(tx *gorm.DB) error {

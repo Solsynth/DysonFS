@@ -1168,7 +1168,15 @@ func (s *FileService) listFilesPage(query *gorm.DB, opts FileListOptions) ([]dat
 }
 
 func (s *FileService) CreateFolder(accountID uuid.UUID, name string, parentID *string) (*database.CloudFile, error) {
-	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, Indexed: true, IsFolder: true, ParentID: parentID}
+	return s.CreateWorkspaceFolder(accountID, nil, name, parentID)
+}
+
+func (s *FileService) CreateWorkspaceFolder(accountID uuid.UUID, workspaceID *string, name string, parentID *string) (*database.CloudFile, error) {
+	workspaceID = firstNonEmptyPtr(workspaceID)
+	if err := s.ensureParentWorkspace(parentID, workspaceID); err != nil {
+		return nil, err
+	}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, WorkspaceID: workspaceID, Indexed: true, IsFolder: true, ParentID: parentID}
 	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(file).Error; err != nil {
 			return err
@@ -1182,6 +1190,23 @@ func (s *FileService) CreateFolder(accountID uuid.UUID, name string, parentID *s
 		return nil, err
 	}
 	return file, nil
+}
+
+func (s *FileService) ensureParentWorkspace(parentID, workspaceID *string) error {
+	if parentID == nil || strings.TrimSpace(*parentID) == "" {
+		return nil
+	}
+	var parent database.CloudFile
+	if err := s.db.Select("workspace_id", "is_folder").First(&parent, "id = ? AND deleted_at IS NULL", strings.TrimSpace(*parentID)).Error; err != nil {
+		return fmt.Errorf("load parent folder: %w", err)
+	}
+	if !parent.IsFolder {
+		return errors.New("parent must be a folder")
+	}
+	if firstNonEmptyString(parent.WorkspaceID) != firstNonEmptyString(workspaceID) {
+		return errors.New("parent and file must belong to the same workspace")
+	}
+	return nil
 }
 
 func (s *FileService) countChildren(parentID string) int {
@@ -2575,6 +2600,16 @@ func writeTempObject(r io.Reader) (string, func(), error) {
 }
 
 func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, description *string, hash *string, expiredAt *time.Time, usage *string, parentID *string, objectID string, poolID *string, appType *string, storageKey *string, indexed bool) (*database.CloudFile, error) {
+	return s.CreateWorkspaceUploadedFile(accountID, nil, name, description, hash, expiredAt, usage, parentID, objectID, poolID, appType, storageKey, indexed)
+}
+
+// CreateWorkspaceUploadedFile creates a file owned by a workspace when
+// workspaceID is supplied. AccountID remains the uploader for audit purposes.
+func (s *FileService) CreateWorkspaceUploadedFile(accountID uuid.UUID, workspaceID *string, name string, description *string, hash *string, expiredAt *time.Time, usage *string, parentID *string, objectID string, poolID *string, appType *string, storageKey *string, indexed bool) (*database.CloudFile, error) {
+	workspaceID = firstNonEmptyPtr(workspaceID)
+	if err := s.ensureParentWorkspace(parentID, workspaceID); err != nil {
+		return nil, err
+	}
 	resolvedPoolID := s.resolvedPoolID(poolID)
 	finalIndexed := indexed
 	if !finalIndexed && parentID != nil && strings.TrimSpace(*parentID) != "" {
@@ -2583,7 +2618,7 @@ func (s *FileService) CreateUploadedFile(accountID uuid.UUID, name string, descr
 			finalIndexed = true
 		}
 	}
-	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: finalIndexed, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, WorkspaceID: workspaceID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: finalIndexed, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage}
 	if hash != nil && strings.TrimSpace(*hash) != "" {
 		file.FileMeta = datatypes.JSON([]byte(fmt.Sprintf(`{"hash":%q}`, strings.TrimSpace(*hash))))
 	}
@@ -3010,6 +3045,7 @@ func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload
 		task.OverwriteID = payload.OverwriteID
 		task.FastMode = payload.FastMode
 		task.Indexed = payload.Indexed
+		task.WorkspaceID = firstNonEmptyPtr(payload.WorkspaceID)
 	}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err
@@ -3153,10 +3189,11 @@ func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {
 }
 
 type QuotaService struct {
-	db            *database.DB
-	cache         sharedcache.CacheService
-	profileClient gen.DyProfileServiceClient
-	levelingCfg   config.LevelingQuotaConfig
+	db              *database.DB
+	cache           sharedcache.CacheService
+	profileClient   gen.DyProfileServiceClient
+	workspaceClient gen.DyWorkspaceServiceClient
+	levelingCfg     config.LevelingQuotaConfig
 }
 
 func NewQuotaService(db *database.DB) *QuotaService { return &QuotaService{db: db} }
@@ -3167,6 +3204,10 @@ func (s *QuotaService) SetCache(cache sharedcache.CacheService) {
 
 func (s *QuotaService) SetProfileClient(client gen.DyProfileServiceClient) {
 	s.profileClient = client
+}
+
+func (s *QuotaService) SetWorkspaceClient(client gen.DyWorkspaceServiceClient) {
+	s.workspaceClient = client
 }
 
 func (s *QuotaService) SetLevelingConfig(cfg config.LevelingQuotaConfig) {
@@ -3193,6 +3234,24 @@ func NewProfileClient(cfg config.PassportConfig) (gen.DyProfileServiceClient, *g
 		return nil, nil, fmt.Errorf("dial profile service: %w", err)
 	}
 	return gen.NewDyProfileServiceClient(conn), conn, nil
+}
+
+func NewWorkspaceClient(cfg config.WorkspaceConfig) (gen.DyWorkspaceServiceClient, *grpc.ClientConn, error) {
+	target, useTLS := dyauth.NormalizeAuthGRPCTarget(cfg.Target, cfg.UseTLS)
+	if strings.TrimSpace(target) == "" {
+		return nil, nil, errors.New("workspace gRPC target is empty")
+	}
+	var transportCredentials credentials.TransportCredentials
+	if useTLS {
+		transportCredentials = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.TLSSkipVerify})
+	} else {
+		transportCredentials = insecure.NewCredentials()
+	}
+	conn, err := grpc.Dial(target, grpc.WithTransportCredentials(transportCredentials))
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial workspace service: %w", err)
+	}
+	return gen.NewDyWorkspaceServiceClient(conn), conn, nil
 }
 
 type QuotaSummary struct {
@@ -3242,6 +3301,53 @@ func (s *QuotaService) CheckUploadQuota(account *gen.DyAccount, size int64, cost
 		remainingMB = 0
 	}
 	return fmt.Errorf("%w: used=%dMB total=%dMB remaining=%dMB", ErrQuotaExceeded, usedMB, summary.TotalQuota, remainingMB)
+}
+
+// CheckWorkspaceUploadQuota authorizes the uploader as a workspace member and
+// charges the upload to the workspace's plan storage quota (in bytes).
+func (s *QuotaService) CheckWorkspaceUploadQuota(ctx context.Context, workspaceID, accountID string, size int64) error {
+	if s.workspaceClient == nil {
+		return errors.New("workspace uploads are not configured")
+	}
+	workspaceID = strings.TrimSpace(workspaceID)
+	accountID = strings.TrimSpace(accountID)
+	if _, err := uuid.Parse(workspaceID); err != nil {
+		return fmt.Errorf("invalid workspace id: %w", err)
+	}
+	if _, err := uuid.Parse(accountID); err != nil {
+		return fmt.Errorf("invalid account id: %w", err)
+	}
+	workspace, err := s.workspaceClient.GetWorkspace(ctx, &gen.DyGetWorkspaceRequest{Query: &gen.DyGetWorkspaceRequest_Id{Id: workspaceID}})
+	if err != nil {
+		return fmt.Errorf("get workspace: %w", err)
+	}
+	member, err := s.workspaceClient.IsMemberWithRole(ctx, &gen.DyIsWorkspaceMemberWithRoleRequest{WorkspaceId: workspaceID, AccountId: accountID, RequiredRoles: []int32{50}})
+	if err != nil {
+		return fmt.Errorf("check workspace membership: %w", err)
+	}
+	if !member.GetValue() {
+		return errors.New("workspace membership with member role is required")
+	}
+	planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{Plan: workspace.GetPlan()})
+	if err != nil {
+		return fmt.Errorf("get workspace plan quota: %w", err)
+	}
+	var usedBytes int64
+	if err := s.db.DB.Model(&database.CloudFile{}).
+		Select("COALESCE(SUM(file_objects.size), 0)").
+		Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
+		Where("cloud_files.workspace_id = ? AND cloud_files.deleted_at IS NULL", workspaceID).
+		Scan(&usedBytes).Error; err != nil {
+		return fmt.Errorf("calculate workspace storage usage: %w", err)
+	}
+	if size < 0 || usedBytes > planQuota.GetMaxStorageBytes()-size {
+		remaining := planQuota.GetMaxStorageBytes() - usedBytes
+		if remaining < 0 {
+			remaining = 0
+		}
+		return fmt.Errorf("%w: workspace used=%dB total=%dB remaining=%dB", ErrQuotaExceeded, usedBytes, planQuota.GetMaxStorageBytes(), remaining)
+	}
+	return nil
 }
 
 func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord, error) {
