@@ -48,11 +48,11 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, []any{}) })
 		f.POST("/:id/edit", func(c *gin.Context) { createEditSession(c, wopi, files) })
-		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files) })
-		f.GET("/:id/children", func(c *gin.Context) { listChildren(c, files) })
+		f.GET("/root/children", func(c *gin.Context) { listRootIndexed(c, files, quota) })
+		f.GET("/:id/children", func(c *gin.Context) { listChildren(c, files, quota) })
 		f.POST("/folders", func(c *gin.Context) { createFolder(c, files, quota) })
-		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files) })
-		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files) })
+		f.GET("/me", func(c *gin.Context) { listRootOwned(c, files, quota) })
+		f.GET("/unindexed", func(c *gin.Context) { listUnindexed(c, files, quota) })
 		f.PATCH("/:id", func(c *gin.Context) { patchFile(c, files) })
 		f.PUT("/:id/sensitive", func(c *gin.Context) { setSensitiveMarks(c, files) })
 		f.PATCH("/:id/content", func(c *gin.Context) { patchFileContent(c, files, bus, dispatcher) })
@@ -112,6 +112,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		b.GET("quota/records", func(c *gin.Context) { listQuotaRecords(c, quota) })
 		b.GET("usage", func(c *gin.Context) { getUsage(c, quota) })
 		b.GET("usage/:poolId", func(c *gin.Context) { getPoolUsage(c, quota) })
+		b.GET("workspaces/:workspaceId/quota", func(c *gin.Context) { getWorkspaceQuota(c, quota) })
 	}
 
 	if cfg.WebDAV.Enabled {
@@ -180,7 +181,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 // @Failure 404 {object} map[string]any
 // @Router /api/files/{id}/info [get]
 func fileInfo(c *gin.Context, files *service.FileService) {
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -255,7 +256,7 @@ type breadcrumbItem struct {
 }
 
 func fileBreadcrumb(c *gin.Context, files *service.FileService) {
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -298,7 +299,7 @@ func createEditSession(c *gin.Context, wopi *service.WOPIService, files *service
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -452,7 +453,7 @@ func bearerToken(header string) string {
 // @Router /api/files/{id} [get]
 // @Router /api/files/{id}/open [get]
 func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -466,7 +467,7 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		}
 	} else if variant := c.Query("original"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
 		if isDerivedVariant(file) && file.ParentID != nil {
-			if parent, err := files.GetFile(*file.ParentID); err == nil {
+			if parent, err := getRequestedFile(c, files, *file.ParentID); err == nil {
 				file = parent
 			}
 		}
@@ -638,19 +639,28 @@ func legacyDerivedFile(file *database.CloudFile, kind string) *database.CloudFil
 	return &legacy
 }
 
-func listChildren(c *gin.Context, files *service.FileService) {
-	parent, err := files.GetFile(c.Param("id"))
+func listChildren(c *gin.Context, files *service.FileService, quota *service.QuotaService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	workspaceID, err := selectedWorkspaceID(c, quota, result.Account.GetId())
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+	parent, err := files.GetFileInWorkspace(c.Param("id"), workspaceID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	result, _, ok := auth.GetAuth(c)
-	if !ok && !files.CanAccessFile(nil, nil, parent, "read") {
+	if workspaceID == nil && !files.CanAccessFile(result.Account, result.Session, parent, "read") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
 	filters := parseListQuery(c, 0, 50)
-	items, err := files.GetChildren(c.Param("id"))
+	items, err := files.GetChildrenInWorkspace(c.Param("id"), workspaceID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -660,7 +670,7 @@ func listChildren(c *gin.Context, files *service.FileService) {
 	items = paginateFiles(items, filters.Offset, filters.Take)
 	filtered := make([]database.CloudFile, 0, len(items))
 	for _, item := range items {
-		if !ok || files.CanAccessFile(result.Account, result.Session, &item, "read") {
+		if workspaceID != nil || files.CanAccessFile(result.Account, result.Session, &item, "read") {
 			filtered = append(filtered, item)
 		}
 	}
@@ -764,6 +774,26 @@ func getUsage(c *gin.Context, quota *service.QuotaService) {
 	c.JSON(http.StatusOK, summary)
 }
 
+// @Summary Get workspace storage quota
+// @Tags billing
+// @Produce json
+// @Param workspaceId path string true "Workspace ID"
+// @Success 200 {object} service.WorkspaceUsageSummary
+// @Router /api/billing/workspaces/{workspaceId}/quota [get]
+func getWorkspaceQuota(c *gin.Context, quota *service.QuotaService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	summary, err := quota.GetWorkspaceUsage(c.Request.Context(), c.Param("workspaceId"), result.Account.GetId())
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, summary)
+}
+
 // @Summary Get pool usage
 // @Tags billing
 // @Produce json
@@ -842,7 +872,7 @@ func getFilePermissions(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -865,7 +895,7 @@ func updateFilePermissions(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -888,14 +918,25 @@ func updateFilePermissions(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func listRootIndexed(c *gin.Context, files *service.FileService) {
+func listRootIndexed(c *gin.Context, files *service.FileService, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 	filters := parseListQuery(c, 0, 50)
-	items, total, err := files.ListRootPage(uuid.MustParse(result.Account.GetId()), fileListOptions(filters))
+	workspaceID, err := selectedWorkspaceID(c, quota, result.Account.GetId())
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+	var items []database.CloudFile
+	var total int64
+	if workspaceID == nil {
+		items, total, err = files.ListRootPage(uuid.MustParse(result.Account.GetId()), fileListOptions(filters))
+	} else {
+		items, total, err = files.ListWorkspaceRootPage(*workspaceID, fileListOptions(filters))
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -904,14 +945,24 @@ func listRootIndexed(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, items)
 }
 
-func listRootOwned(c *gin.Context, files *service.FileService) {
+func listRootOwned(c *gin.Context, files *service.FileService, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 	filters := parseListQuery(c, 0, 20)
-	items, err := files.ListOwned(uuid.MustParse(result.Account.GetId()))
+	workspaceID, err := selectedWorkspaceID(c, quota, result.Account.GetId())
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+	var items []database.CloudFile
+	if workspaceID == nil {
+		items, err = files.ListOwned(uuid.MustParse(result.Account.GetId()))
+	} else {
+		items, err = files.ListWorkspaceOwned(*workspaceID)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -924,7 +975,7 @@ func listRootOwned(c *gin.Context, files *service.FileService) {
 	c.JSON(http.StatusOK, items)
 }
 
-func listUnindexed(c *gin.Context, files *service.FileService) {
+func listUnindexed(c *gin.Context, files *service.FileService, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -939,13 +990,45 @@ func listUnindexed(c *gin.Context, files *service.FileService) {
 	if filters.Recycled == nil {
 		filters.Recycled = &recycled
 	}
-	items, total, err := files.ListUnindexedPage(uuid.MustParse(result.Account.GetId()), fileListOptions(filters))
+	workspaceID, err := selectedWorkspaceID(c, quota, result.Account.GetId())
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+	var items []database.CloudFile
+	var total int64
+	if workspaceID == nil {
+		items, total, err = files.ListUnindexedPage(uuid.MustParse(result.Account.GetId()), fileListOptions(filters))
+	} else {
+		items, total, err = files.ListWorkspaceUnindexedPage(*workspaceID, fileListOptions(filters))
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.Header("X-Total", strconv.FormatInt(total, 10))
 	c.JSON(http.StatusOK, items)
+}
+
+// selectedWorkspaceID keeps workspace data opt-in: no query parameter means
+// the caller receives only personal files. When set, membership is verified
+// before any workspace file query is issued.
+func selectedWorkspaceID(c *gin.Context, quota *service.QuotaService, accountID string) (*string, error) {
+	workspaceID := optionalStringPtr(c.Query("workspace_id"))
+	if workspaceID == nil {
+		return nil, nil
+	}
+	if _, err := quota.GetWorkspaceUsage(c.Request.Context(), *workspaceID, accountID); err != nil {
+		return nil, err
+	}
+	return workspaceID, nil
+}
+
+// getRequestedFile scopes every HTTP file lookup to the explicitly selected
+// namespace. Without workspace_id, a workspace file is indistinguishable from
+// a missing file and is never queried as part of the personal namespace.
+func getRequestedFile(c *gin.Context, files *service.FileService, fileID string) (*database.CloudFile, error) {
+	return files.GetFileInWorkspace(fileID, optionalStringPtr(c.Query("workspace_id")))
 }
 
 func fileListOptions(filters fileListFilters) service.FileListOptions {
@@ -1285,7 +1368,7 @@ func patchFile(c *gin.Context, files *service.FileService) {
 		return
 	}
 
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1317,7 +1400,7 @@ func patchFile(c *gin.Context, files *service.FileService) {
 		return
 	}
 	file.Name = name
-	file, err = files.GetFile(file.ID)
+	file, err = getRequestedFile(c, files, file.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1334,7 +1417,7 @@ func setSensitiveMarks(c *gin.Context, files *service.FileService) {
 		return
 	}
 
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1374,7 +1457,7 @@ func patchFileContent(c *gin.Context, files *service.FileService, bus *eventbus.
 	}
 
 	fileID := c.Param("id")
-	file, err := files.GetFile(fileID)
+	file, err := getRequestedFile(c, files, fileID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1412,7 +1495,7 @@ func deleteFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, d
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1436,7 +1519,7 @@ func recycleFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, 
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1459,7 +1542,7 @@ func restoreFile(c *gin.Context, files *service.FileService, bus *eventbus.Bus, 
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	file, err := files.GetFile(c.Param("id"))
+	file, err := getRequestedFile(c, files, c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1733,7 +1816,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		return
 	}
 	if req.OverwriteID != nil {
-		target, err := files.GetFile(strings.TrimSpace(*req.OverwriteID))
+		target, err := files.GetFileInWorkspace(strings.TrimSpace(*req.OverwriteID), optionalStringPtr(deref(req.WorkspaceID)))
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
@@ -1871,7 +1954,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	}
 	var overwriteTarget *database.CloudFile
 	if overwriteID != nil {
-		overwriteTarget, err = files.GetFile(strings.TrimSpace(*overwriteID))
+		overwriteTarget, err = files.GetFileInWorkspace(strings.TrimSpace(*overwriteID), workspaceID)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
@@ -2013,7 +2096,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		return
 	}
 	if createdFile.Object == nil {
-		createdFile, err = files.GetFile(createdFile.ID)
+		createdFile, err = files.GetFileInWorkspace(createdFile.ID, workspaceID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -2256,7 +2339,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		return
 	}
 	if created.Object == nil {
-		created, err = files.GetFile(created.ID)
+		created, err = files.GetFileInWorkspace(created.ID, task.WorkspaceID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

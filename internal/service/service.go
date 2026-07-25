@@ -334,6 +334,41 @@ func (s *FileService) GetChildren(parentID string) ([]database.CloudFile, error)
 	return files, nil
 }
 
+func (s *FileService) GetFileInWorkspace(id string, workspaceID *string) (*database.CloudFile, error) {
+	query := s.db.Preload("Object").Where("id = ?", id)
+	if workspaceID == nil || strings.TrimSpace(*workspaceID) == "" {
+		query = query.Where("workspace_id IS NULL")
+	} else {
+		query = query.Where("workspace_id = ?", strings.TrimSpace(*workspaceID))
+	}
+	var file database.CloudFile
+	if err := query.First(&file).Error; err != nil {
+		return nil, err
+	}
+	if file.IsFolder {
+		file.ChildrenCount = s.countChildren(file.ID)
+	}
+	file.PermissionStatus = s.permissionStatus(&file)
+	return &file, nil
+}
+
+func (s *FileService) GetChildrenInWorkspace(parentID string, workspaceID *string) ([]database.CloudFile, error) {
+	query := s.db.Preload("Object").Where("parent_id = ?", parentID).Where("deleted_at IS NULL")
+	if workspaceID == nil || strings.TrimSpace(*workspaceID) == "" {
+		query = query.Where("workspace_id IS NULL")
+	} else {
+		query = query.Where("workspace_id = ?", strings.TrimSpace(*workspaceID))
+	}
+	var files []database.CloudFile
+	if err := query.Find(&files).Error; err != nil {
+		return nil, err
+	}
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
 func (s *FileService) GetPool(id string) (*Pool, error) {
 	var pool database.FilePool
 	if err := s.db.First(&pool, "id = ?", id).Error; err != nil {
@@ -980,7 +1015,7 @@ func acceptTypeAllowed(acceptTypes []string, contentType string) bool {
 
 func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error) {
 	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ? AND parent_id IS NULL AND indexed = true", accountID).Find(&files).Error; err != nil {
+	if err := s.db.Preload("Object").Where("account_id = ? AND workspace_id IS NULL AND parent_id IS NULL AND indexed = true", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
 	if err := s.populateFilesMetadata(files); err != nil {
@@ -991,7 +1026,7 @@ func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error
 
 func (s *FileService) ListRootOwned(accountID uuid.UUID, take int) ([]database.CloudFile, error) {
 	var files []database.CloudFile
-	query := s.db.Preload("Object").Where("account_id = ? AND parent_id IS NULL", accountID).Order("created_at desc")
+	query := s.db.Preload("Object").Where("account_id = ? AND workspace_id IS NULL AND parent_id IS NULL", accountID).Order("created_at desc")
 	if take > 0 {
 		query = query.Limit(take)
 	}
@@ -1006,7 +1041,7 @@ func (s *FileService) ListRootOwned(accountID uuid.UUID, take int) ([]database.C
 
 func (s *FileService) ListOwned(accountID uuid.UUID) ([]database.CloudFile, error) {
 	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ?", accountID).Find(&files).Error; err != nil {
+	if err := s.db.Preload("Object").Where("account_id = ? AND workspace_id IS NULL", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
 	if err := s.populateFilesMetadata(files); err != nil {
@@ -1017,7 +1052,7 @@ func (s *FileService) ListOwned(accountID uuid.UUID) ([]database.CloudFile, erro
 
 func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, error) {
 	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ? AND indexed = false AND parent_id IS NULL", accountID).Find(&files).Error; err != nil {
+	if err := s.db.Preload("Object").Where("account_id = ? AND workspace_id IS NULL AND indexed = false AND parent_id IS NULL", accountID).Find(&files).Error; err != nil {
 		return nil, err
 	}
 	if err := s.populateFilesMetadata(files); err != nil {
@@ -1051,7 +1086,7 @@ type UnindexedListOptions = FileListOptions
 // the cloud_files index alone.
 func (s *FileService) ListUnindexedPage(accountID uuid.UUID, opts UnindexedListOptions) ([]database.CloudFile, int64, error) {
 	query := s.db.Model(&database.CloudFile{}).
-		Where("cloud_files.account_id = ? AND cloud_files.indexed = false AND cloud_files.parent_id IS NULL", accountID)
+		Where("cloud_files.account_id = ? AND cloud_files.workspace_id IS NULL AND cloud_files.indexed = false AND cloud_files.parent_id IS NULL", accountID)
 	return s.listFilesPage(query, opts)
 }
 
@@ -1059,8 +1094,33 @@ func (s *FileService) ListUnindexedPage(accountID uuid.UUID, opts UnindexedListO
 // filters and pagination implementation as the unindexed endpoint.
 func (s *FileService) ListRootPage(accountID uuid.UUID, opts FileListOptions) ([]database.CloudFile, int64, error) {
 	query := s.db.Model(&database.CloudFile{}).
-		Where("cloud_files.account_id = ? AND cloud_files.indexed = true AND cloud_files.parent_id IS NULL", accountID)
+		Where("cloud_files.account_id = ? AND cloud_files.workspace_id IS NULL AND cloud_files.indexed = true AND cloud_files.parent_id IS NULL", accountID)
 	return s.listFilesPage(query, opts)
+}
+
+// ListWorkspaceRootPage is deliberately separate from the personal listing
+// methods: a workspace must always be selected before its files are queried.
+func (s *FileService) ListWorkspaceRootPage(workspaceID string, opts FileListOptions) ([]database.CloudFile, int64, error) {
+	query := s.db.Model(&database.CloudFile{}).
+		Where("cloud_files.workspace_id = ? AND cloud_files.indexed = true AND cloud_files.parent_id IS NULL", workspaceID)
+	return s.listFilesPage(query, opts)
+}
+
+func (s *FileService) ListWorkspaceUnindexedPage(workspaceID string, opts UnindexedListOptions) ([]database.CloudFile, int64, error) {
+	query := s.db.Model(&database.CloudFile{}).
+		Where("cloud_files.workspace_id = ? AND cloud_files.indexed = false AND cloud_files.parent_id IS NULL", workspaceID)
+	return s.listFilesPage(query, opts)
+}
+
+func (s *FileService) ListWorkspaceOwned(workspaceID string) ([]database.CloudFile, error) {
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("workspace_id = ?", workspaceID).Find(&files).Error; err != nil {
+		return nil, err
+	}
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 func (s *FileService) listFilesPage(query *gorm.DB, opts FileListOptions) ([]database.CloudFile, int64, error) {
@@ -3269,6 +3329,14 @@ type UsageSummary struct {
 	TotalUsageBytes int64 `json:"total_usage_bytes"`
 }
 
+type WorkspaceUsageSummary struct {
+	WorkspaceID    string `json:"workspace_id"`
+	UsedBytes      int64  `json:"used_bytes"`
+	TotalBytes     int64  `json:"total_bytes"`
+	RemainingBytes int64  `json:"remaining_bytes"`
+	TotalFileCount int64  `json:"total_file_count"`
+}
+
 var ErrQuotaExceeded = errors.New("quota exceeded")
 
 const quotaUnitBytes int64 = 1024 * 1024
@@ -3306,31 +3374,48 @@ func (s *QuotaService) CheckUploadQuota(account *gen.DyAccount, size int64, cost
 // CheckWorkspaceUploadQuota authorizes the uploader as a workspace member and
 // charges the upload to the workspace's plan storage quota (in bytes).
 func (s *QuotaService) CheckWorkspaceUploadQuota(ctx context.Context, workspaceID, accountID string, size int64) error {
+	usage, err := s.workspaceUsage(ctx, workspaceID, accountID)
+	if err != nil {
+		return err
+	}
+	if size < 0 || usage.UsedBytes > usage.TotalBytes-size {
+		return fmt.Errorf("%w: workspace used=%dB total=%dB remaining=%dB", ErrQuotaExceeded, usage.UsedBytes, usage.TotalBytes, usage.RemainingBytes)
+	}
+	return nil
+}
+
+// GetWorkspaceUsage returns the selected workspace's plan limit and live file
+// usage. It never falls back to an account quota.
+func (s *QuotaService) GetWorkspaceUsage(ctx context.Context, workspaceID, accountID string) (WorkspaceUsageSummary, error) {
+	return s.workspaceUsage(ctx, workspaceID, accountID)
+}
+
+func (s *QuotaService) workspaceUsage(ctx context.Context, workspaceID, accountID string) (WorkspaceUsageSummary, error) {
 	if s.workspaceClient == nil {
-		return errors.New("workspace uploads are not configured")
+		return WorkspaceUsageSummary{}, errors.New("workspace uploads are not configured")
 	}
 	workspaceID = strings.TrimSpace(workspaceID)
 	accountID = strings.TrimSpace(accountID)
 	if _, err := uuid.Parse(workspaceID); err != nil {
-		return fmt.Errorf("invalid workspace id: %w", err)
+		return WorkspaceUsageSummary{}, fmt.Errorf("invalid workspace id: %w", err)
 	}
 	if _, err := uuid.Parse(accountID); err != nil {
-		return fmt.Errorf("invalid account id: %w", err)
+		return WorkspaceUsageSummary{}, fmt.Errorf("invalid account id: %w", err)
 	}
 	workspace, err := s.workspaceClient.GetWorkspace(ctx, &gen.DyGetWorkspaceRequest{Query: &gen.DyGetWorkspaceRequest_Id{Id: workspaceID}})
 	if err != nil {
-		return fmt.Errorf("get workspace: %w", err)
+		return WorkspaceUsageSummary{}, fmt.Errorf("get workspace: %w", err)
 	}
 	member, err := s.workspaceClient.IsMemberWithRole(ctx, &gen.DyIsWorkspaceMemberWithRoleRequest{WorkspaceId: workspaceID, AccountId: accountID, RequiredRoles: []int32{50}})
 	if err != nil {
-		return fmt.Errorf("check workspace membership: %w", err)
+		return WorkspaceUsageSummary{}, fmt.Errorf("check workspace membership: %w", err)
 	}
 	if !member.GetValue() {
-		return errors.New("workspace membership with member role is required")
+		return WorkspaceUsageSummary{}, errors.New("workspace membership with member role is required")
 	}
 	planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{Plan: workspace.GetPlan()})
 	if err != nil {
-		return fmt.Errorf("get workspace plan quota: %w", err)
+		return WorkspaceUsageSummary{}, fmt.Errorf("get workspace plan quota: %w", err)
 	}
 	var usedBytes int64
 	if err := s.db.DB.Model(&database.CloudFile{}).
@@ -3338,16 +3423,17 @@ func (s *QuotaService) CheckWorkspaceUploadQuota(ctx context.Context, workspaceI
 		Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
 		Where("cloud_files.workspace_id = ? AND cloud_files.deleted_at IS NULL", workspaceID).
 		Scan(&usedBytes).Error; err != nil {
-		return fmt.Errorf("calculate workspace storage usage: %w", err)
+		return WorkspaceUsageSummary{}, fmt.Errorf("calculate workspace storage usage: %w", err)
 	}
-	if size < 0 || usedBytes > planQuota.GetMaxStorageBytes()-size {
-		remaining := planQuota.GetMaxStorageBytes() - usedBytes
-		if remaining < 0 {
-			remaining = 0
-		}
-		return fmt.Errorf("%w: workspace used=%dB total=%dB remaining=%dB", ErrQuotaExceeded, usedBytes, planQuota.GetMaxStorageBytes(), remaining)
+	var totalFiles int64
+	if err := s.db.DB.Model(&database.CloudFile{}).Where("workspace_id = ? AND deleted_at IS NULL", workspaceID).Count(&totalFiles).Error; err != nil {
+		return WorkspaceUsageSummary{}, fmt.Errorf("count workspace files: %w", err)
 	}
-	return nil
+	remaining := planQuota.GetMaxStorageBytes() - usedBytes
+	if remaining < 0 {
+		remaining = 0
+	}
+	return WorkspaceUsageSummary{WorkspaceID: workspaceID, UsedBytes: usedBytes, TotalBytes: planQuota.GetMaxStorageBytes(), RemainingBytes: remaining, TotalFileCount: totalFiles}, nil
 }
 
 func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord, error) {

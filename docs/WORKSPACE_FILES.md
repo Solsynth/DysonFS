@@ -31,6 +31,34 @@ check is performed when a chunked task is created and again when it completes,
 so a plan change or concurrent uploads cannot bypass the limit. Personal files,
 which omit `workspace_id`, retain the existing account quota behavior.
 
+## Browsing workspace files and quota
+
+Personal listing routes deliberately query only files where `workspace_id` is
+unset. To browse a workspace, explicitly select it with `workspace_id`:
+
+```text
+GET /api/files/root/children?workspace_id=WORKSPACE_ID
+GET /api/files/unindexed?workspace_id=WORKSPACE_ID
+GET /api/files/:folderId/children?workspace_id=WORKSPACE_ID
+```
+
+Workspace membership is verified before these queries run. View its storage
+limit and current usage with:
+
+```text
+GET /api/billing/workspaces/WORKSPACE_ID/quota
+```
+
+The response contains `used_bytes`, `total_bytes`, `remaining_bytes`, and
+`total_file_count`.
+
+Workspace uploads can be indexed or unindexed, independently of personal
+files. Omit `index` (or set it to `false`) when uploading to create an
+unindexed workspace file, then list it with
+`GET /api/files/unindexed?workspace_id=WORKSPACE_ID`. Setting `index` to
+`true`, or uploading beneath an indexed workspace folder, places it in that
+workspace's normal file tree.
+
 ## Creating folders
 
 Create a workspace folder with `POST /api/files/folders`:
@@ -83,6 +111,7 @@ file when `POST /api/files/upload/complete/:taskId` succeeds.
 
 ## Overwrites
 
-An overwrite always keeps the target file's workspace ownership. Supplying a
-different `workspace_id` is rejected with `400 Bad Request`; omitting it is
-safe because DysonFS derives the workspace from the target file.
+An overwrite always keeps the target file's workspace ownership. Supply the
+target workspace's `workspace_id` when overwriting a workspace file; omitting
+it searches only personal files. A different workspace ID is rejected with
+`400 Bad Request`.
