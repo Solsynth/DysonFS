@@ -27,6 +27,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
+	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	gen "src.solsynth.dev/sosys/go/proto"
 
@@ -1459,6 +1460,10 @@ func (s *FileService) PurgeFile(id string) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("database not configured")
 	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return gorm.ErrRecordNotFound
+	}
 	affectedIDs, err := s.loadDescendantIDsIncludingDeleted([]string{id})
 	if err != nil {
 		return err
@@ -1603,6 +1608,12 @@ func (s *FileService) loadDescendantIDsIncludingDeleted(fileIDs []string) ([]str
 	return s.loadDescendantIDsWithDeleted(fileIDs, true)
 }
 
+// LoadDescendantIDsIncludingDeleted returns [fileIDs] plus every nested child,
+// including soft-deleted rows (used by batch purge root filtering).
+func (s *FileService) LoadDescendantIDsIncludingDeleted(fileIDs []string) ([]string, error) {
+	return s.loadDescendantIDsIncludingDeleted(fileIDs)
+}
+
 func (s *FileService) loadDescendantIDsWithDeleted(fileIDs []string, includeDeleted bool) ([]string, error) {
 	fileIDs = normalizeFileIDs(fileIDs)
 	if len(fileIDs) == 0 {
@@ -1666,7 +1677,10 @@ func (s *FileService) invalidatePermissionCaches(ctx context.Context, fileIDs []
 
 func (s *FileService) purgeObjectIfDereferenced(tx *gorm.DB, file *database.CloudFile, objectID string) error {
 	var refCount int64
-	if err := tx.Model(&database.CloudFile{}).Where("object_id = ? AND deleted_at IS NULL", objectID).Count(&refCount).Error; err != nil {
+	// Count any remaining live OR soft-deleted cloud_file rows still pointing
+	// at this object. Soft-deleted recycle entries must keep the blob until
+	// they are purged too.
+	if err := tx.Unscoped().Model(&database.CloudFile{}).Where("object_id = ?", objectID).Count(&refCount).Error; err != nil {
 		return err
 	}
 	if refCount > 0 {
@@ -1685,10 +1699,12 @@ func (s *FileService) purgeObjectIfDereferenced(tx *gorm.DB, file *database.Clou
 	if storageKey != nil && strings.TrimSpace(*storageKey) != "" {
 		backend, err := s.backendForStorageTarget(file.StorageID, file.PoolID)
 		if err != nil {
-			return err
-		}
-		if err := backend.Delete(context.Background(), *storageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+			// Metadata purge should still succeed if the storage target is gone.
+			logging.Log.Warn().Err(err).Str("objectId", objectID).Msg("storage backend unavailable during purge")
+		} else if err := backend.Delete(context.Background(), *storageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+			// Keep going: leave a dangling blob rather than fail the whole
+			// user-facing delete when remote storage is flaky.
+			logging.Log.Warn().Err(err).Str("objectId", objectID).Str("storageKey", *storageKey).Msg("failed to delete remote object during purge")
 		}
 	}
 

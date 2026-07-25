@@ -30,6 +30,7 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileService, wopi *service.WOPIService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
@@ -1644,9 +1645,21 @@ func batchDeleteFiles(c *gin.Context, files *service.FileService, bus *eventbus.
 		handleBatchFileLookupError(c, err)
 		return
 	}
+	// When a selection includes both a folder and its children, purging the
+	// parent already removes the children. Only purge top-level selected IDs
+	// so we don't 500 on record-not-found for already-cascaded deletes.
+	roots, err := filterTopLevelBatchFiles(files, batchFiles)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	count := int64(0)
-	for _, file := range batchFiles {
+	for _, file := range roots {
 		if err := files.PurgeFile(file.ID); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// Already removed as a descendant of an earlier purge.
+				continue
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -1743,6 +1756,43 @@ func loadBatchFilesForAccount(files *service.FileService, accountID string, ids 
 		}
 	}
 	return batchFiles, nil
+}
+
+// filterTopLevelBatchFiles drops selected IDs that are descendants of other
+// selected IDs, so nested multi-select can purge each tree once.
+func filterTopLevelBatchFiles(files *service.FileService, batchFiles []database.CloudFile) ([]database.CloudFile, error) {
+	if len(batchFiles) <= 1 {
+		return batchFiles, nil
+	}
+	selected := make(map[string]database.CloudFile, len(batchFiles))
+	ids := make([]string, 0, len(batchFiles))
+	for _, file := range batchFiles {
+		selected[file.ID] = file
+		ids = append(ids, file.ID)
+	}
+	descendantOfSelected := make(map[string]struct{})
+	for _, id := range ids {
+		descendants, err := files.LoadDescendantIDsIncludingDeleted([]string{id})
+		if err != nil {
+			return nil, err
+		}
+		for _, descendantID := range descendants {
+			if descendantID == id {
+				continue
+			}
+			if _, ok := selected[descendantID]; ok {
+				descendantOfSelected[descendantID] = struct{}{}
+			}
+		}
+	}
+	roots := make([]database.CloudFile, 0, len(batchFiles))
+	for _, file := range batchFiles {
+		if _, nested := descendantOfSelected[file.ID]; nested {
+			continue
+		}
+		roots = append(roots, file)
+	}
+	return roots, nil
 }
 
 var (

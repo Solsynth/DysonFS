@@ -30,7 +30,7 @@ require (
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/driver/sqlite v1.4.3
 	gorm.io/gorm v1.30.5
-	src.solsynth.dev/sosys/go v0.2.1-0.20260723135807-a9a0c7e3e06f
+	src.solsynth.dev/sosys/go v0.2.1-0.20260719030106-e6cb4c4ac9b4
 )
 
 require (
