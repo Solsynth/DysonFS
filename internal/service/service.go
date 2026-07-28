@@ -3110,7 +3110,7 @@ func NewTaskService(db *database.DB) *TaskService { return &TaskService{db: db} 
 func (s *TaskService) DB() *database.DB { return s.db }
 
 func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload *database.PersistentTask, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
-	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
+	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, ContentType: firstNonEmptyPtr(&contentType), PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
 	if payload != nil {
 		task.Description = payload.Description
 		task.Hash = payload.Hash
@@ -3267,9 +3267,13 @@ func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {
 type QuotaService struct {
 	db              *database.DB
 	cache           sharedcache.CacheService
-	profileClient   gen.DyProfileServiceClient
+	profileClient   profileAccountClient
 	workspaceClient gen.DyWorkspaceServiceClient
 	levelingCfg     config.LevelingQuotaConfig
+}
+
+type profileAccountClient interface {
+	GetAccount(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error)
 }
 
 func NewQuotaService(db *database.DB) *QuotaService { return &QuotaService{db: db} }
@@ -3278,7 +3282,7 @@ func (s *QuotaService) SetCache(cache sharedcache.CacheService) {
 	s.cache = cache
 }
 
-func (s *QuotaService) SetProfileClient(client gen.DyProfileServiceClient) {
+func (s *QuotaService) SetProfileClient(client profileAccountClient) {
 	s.profileClient = client
 }
 

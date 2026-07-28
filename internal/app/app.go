@@ -207,7 +207,11 @@ func (a *App) startMaster(ctx context.Context) error {
 		grpcOpts = append(grpcOpts, grpc.Creds(creds))
 	}
 	a.grpcSrv = grpc.NewServer(grpcOpts...)
-	grpcsvc.Register(a.grpcSrv, a.files)
+	if a.bus == nil {
+		grpcsvc.Register(a.grpcSrv, a.cfg, a.files, a.tasks, a.quota, nil)
+	} else {
+		grpcsvc.Register(a.grpcSrv, a.cfg, a.files, a.tasks, a.quota, a.bus)
+	}
 	reflection.Register(a.grpcSrv)
 
 	go func() { _ = a.grpcSrv.Serve(lis) }()
@@ -243,7 +247,7 @@ func (a *App) startBundled(ctx context.Context) error {
 		grpcOpts = append(grpcOpts, grpc.Creds(creds))
 	}
 	a.grpcSrv = grpc.NewServer(grpcOpts...)
-	grpcsvc.Register(a.grpcSrv, a.files)
+	grpcsvc.Register(a.grpcSrv, a.cfg, a.files, a.tasks, a.quota, a.dispatcher)
 	reflection.Register(a.grpcSrv)
 	go func() { _ = a.grpcSrv.Serve(lis) }()
 	go func() { _ = a.httpSrv.ListenAndServe() }()

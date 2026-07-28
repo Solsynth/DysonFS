@@ -333,6 +333,7 @@ type PersistentTask struct {
 	UpdatedAt       time.Time      `json:"updated_at"`
 	FileName        *string        `json:"file_name"`
 	FileSize        *int64         `json:"file_size"`
+	ContentType     *string        `json:"content_type"`
 	PoolID          *string        `gorm:"size:36" json:"pool_id"`
 	ParentID        *string        `gorm:"size:36" json:"parent_id"`
 	OverwriteID     *string        `gorm:"size:36" json:"overwrite_id"`

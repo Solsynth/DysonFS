@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 
+	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
+	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	gen "src.solsynth.dev/sosys/go/proto"
 
@@ -39,11 +41,19 @@ func extractSourceMeta(file *database.CloudFile) (width, height int, blurhash st
 
 type fileServiceServer struct {
 	gen.UnimplementedDyFileServiceServer
-	files *service.FileService
+	cfg       *config.Config
+	files     *service.FileService
+	tasks     *service.TaskService
+	quota     *service.QuotaService
+	publisher uploadEventPublisher
 }
 
-func Register(s *grpc.Server, files *service.FileService) {
-	gen.RegisterDyFileServiceServer(s, &fileServiceServer{files: files})
+type uploadEventPublisher interface {
+	PublishFileUploaded(context.Context, eventbus.FileUploadedEvent) error
+}
+
+func Register(s *grpc.Server, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, publisher uploadEventPublisher) {
+	gen.RegisterDyFileServiceServer(s, &fileServiceServer{cfg: cfg, files: files, tasks: tasks, quota: quota, publisher: publisher})
 }
 
 func (s *fileServiceServer) GetFile(_ context.Context, req *gen.DyGetFileRequest) (*gen.DyCloudFile, error) {
