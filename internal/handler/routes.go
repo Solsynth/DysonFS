@@ -122,20 +122,20 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 			prefix = "/webdav"
 		}
 		srvWebDAV := func(c *gin.Context) {
-			handleWebDAV(c, files, bus, dispatcher, prefix)
+			handleWebDAV(c, files, quota, bus, dispatcher, prefix)
 		}
 		r.Any(prefix+"/*path", srvWebDAV)
 		// Gin's cleanPath strips trailing slashes, so /webdav/ routes to /webdav.
 		// Rewrite the URL so the webdav handler always sees the trailing slash.
 		r.Any(prefix, func(c *gin.Context) {
 			c.Request.URL.Path = prefix + "/"
-			handleWebDAV(c, files, bus, dispatcher, prefix)
+			handleWebDAV(c, files, quota, bus, dispatcher, prefix)
 		})
 		for _, method := range []string{"PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK"} {
 			r.Handle(method, prefix+"/*path", srvWebDAV)
 			r.Handle(method, prefix, func(c *gin.Context) {
 				c.Request.URL.Path = prefix + "/"
-				handleWebDAV(c, files, bus, dispatcher, prefix)
+				handleWebDAV(c, files, quota, bus, dispatcher, prefix)
 			})
 		}
 

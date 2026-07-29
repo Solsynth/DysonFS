@@ -26,20 +26,21 @@ type webdavFile struct {
 	fileSize int64         // from Object.Size, known before fetch
 	seekSkip int64         // bytes to discard before first Read (Range seek)
 
-	reader   io.ReadCloser
-	tempFile *os.File
-	info     os.FileInfo
-	winfo    *webdavFileInfo
-	isWrite  bool
-	isNew    bool
-	existing *database.CloudFile
-	parentID *string
-	accountID string
-	files    *service.FileService
-	bus      *eventbus.Bus
-	dispatcher dispatch.Dispatcher
-	mu       sync.Mutex
-	closed   bool
+	reader      io.ReadCloser
+	tempFile    *os.File
+	info        os.FileInfo
+	winfo       *webdavFileInfo
+	isWrite     bool
+	isNew       bool
+	existing    *database.CloudFile
+	parentID    *string
+	accountID   string
+	workspaceID *string
+	files       *service.FileService
+	bus         *eventbus.Bus
+	dispatcher  dispatch.Dispatcher
+	mu          sync.Mutex
+	closed      bool
 }
 
 func (f *webdavFile) Read(p []byte) (int, error) {
@@ -218,8 +219,8 @@ func (f *webdavFile) closeNewFile() error {
 	}
 
 	accountUUID := parseUUID(f.accountID)
-	created, err := f.files.CreateUploadedFile(
-		accountUUID, f.winfo.name, nil, &object.Hash, nil, nil,
+	created, err := f.files.CreateWorkspaceUploadedFile(
+		accountUUID, f.workspaceID, f.winfo.name, nil, &object.Hash, nil, nil,
 		f.parentID, object.ID, nil, nil, &object.ID, true,
 	)
 	if err != nil {
@@ -247,8 +248,8 @@ func (f *webdavFile) createEmptyFile() error {
 	}
 
 	accountUUID := parseUUID(f.accountID)
-	created, err := f.files.CreateUploadedFile(
-		accountUUID, f.winfo.name, nil, nil, nil, nil,
+	created, err := f.files.CreateWorkspaceUploadedFile(
+		accountUUID, f.workspaceID, f.winfo.name, nil, nil, nil, nil,
 		f.parentID, object.ID, nil, nil, &object.ID, true,
 	)
 	if err != nil {
@@ -324,7 +325,7 @@ func (d *webdavDirFile) Stat() (os.FileInfo, error) {
 
 func (d *webdavDirFile) Readdir(count int) ([]os.FileInfo, error) {
 	if d.items == nil {
-		children, err := d.fs.files.GetChildren(d.file.ID)
+		children, err := d.fs.files.GetChildrenInWorkspace(d.file.ID, d.fs.workspaceID)
 		if err != nil {
 			return nil, err
 		}

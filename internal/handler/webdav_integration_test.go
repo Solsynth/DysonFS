@@ -24,20 +24,20 @@ func newWebDAVTestServer(t *testing.T, accountID uuid.UUID, files *service.FileS
 	r := gin.New()
 	handler := func(c *gin.Context) {
 		c.Set(WebDAVAccountIDKey, accountID.String())
-		handleWebDAV(c, files, nil, nil, "/webdav")
+		handleWebDAV(c, files, nil, nil, nil, "/webdav")
 	}
 	r.Any("/webdav/*path", handler)
 	r.Any("/webdav", func(c *gin.Context) {
 		c.Request.URL.Path = "/webdav/"
 		c.Set(WebDAVAccountIDKey, accountID.String())
-		handleWebDAV(c, files, nil, nil, "/webdav")
+		handleWebDAV(c, files, nil, nil, nil, "/webdav")
 	})
 	for _, method := range []string{"PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK"} {
 		r.Handle(method, "/webdav/*path", handler)
 		r.Handle(method, "/webdav", func(c *gin.Context) {
 			c.Request.URL.Path = "/webdav/"
 			c.Set(WebDAVAccountIDKey, accountID.String())
-			handleWebDAV(c, files, nil, nil, "/webdav")
+			handleWebDAV(c, files, nil, nil, nil, "/webdav")
 		})
 	}
 	return httptest.NewServer(r)
@@ -67,7 +67,7 @@ type multistatus struct {
 }
 
 type davResponse struct {
-	Href     string       `xml:"href"`
+	Href     string        `xml:"href"`
 	PropStat []davPropStat `xml:"propstat"`
 }
 

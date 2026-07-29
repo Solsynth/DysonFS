@@ -56,6 +56,20 @@ GET /api/billing/workspaces/WORKSPACE_ID/quota
 The response contains `used_bytes`, `total_bytes`, `remaining_bytes`, and
 `total_file_count`.
 
+## WebDAV
+
+WebDAV uses the personal namespace by default. Select a workspace by adding
+`workspace_id` to the WebDAV URL:
+
+```text
+https://files.example.com/webdav/?workspace_id=WORKSPACE_ID
+```
+
+DysonFS verifies active workspace membership before serving the request. All
+WebDAV listing, path resolution, folder creation, and uploaded files stay in
+the selected workspace namespace. Omitting `workspace_id` continues to use
+the authenticated user's personal files.
+
 Workspace uploads can be indexed or unindexed, independently of personal
 files. Omit `index` (or set it to `false`) when uploading to create an
 unindexed workspace file, then list it with

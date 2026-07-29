@@ -25,7 +25,7 @@ import (
 
 const WebDAVAccountIDKey = "webdav_account_id"
 
-func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher, prefix string) {
+func handleWebDAV(c *gin.Context, files *service.FileService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher, prefix string) {
 	accountID := ""
 
 	if id, ok := c.Get(WebDAVAccountIDKey); ok {
@@ -55,10 +55,21 @@ func handleWebDAV(c *gin.Context, files *service.FileService, bus *eventbus.Bus,
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
 	}
+	workspaceID := optionalStringPtr(c.Query("workspace_id"))
+	if workspaceID != nil {
+		if quota == nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "workspace quota service is unavailable"})
+			return
+		}
+		if _, err := quota.GetWorkspaceUsage(c.Request.Context(), *workspaceID, accountID); err != nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
 	h := &webdav.Handler{
 		Prefix:     prefix,
-		FileSystem: &webdavFS{files: files, bus: bus, dispatcher: dispatcher, accountID: accountID},
+		FileSystem: &webdavFS{files: files, bus: bus, dispatcher: dispatcher, accountID: accountID, workspaceID: workspaceID},
 		LockSystem: &webdavLockSystem{files: files, accountID: accountID},
 		Logger: func(r *http.Request, err error) {
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -87,10 +98,11 @@ func parseAccountID(result *auth.AuthResult) (string, error) {
 }
 
 type webdavFS struct {
-	files      *service.FileService
-	bus        *eventbus.Bus
-	dispatcher dispatch.Dispatcher
-	accountID  string
+	files       *service.FileService
+	bus         *eventbus.Bus
+	dispatcher  dispatch.Dispatcher
+	accountID   string
+	workspaceID *string
 	// ponytail: per-request cache — a fresh webdavFS is created per request in handleWebDAV
 	pathCache map[string]*database.CloudFile
 }
@@ -108,7 +120,7 @@ func (fs *webdavFS) Stat(ctx context.Context, name string) (os.FileInfo, error) 
 
 func (fs *webdavFS) ReadDir(ctx context.Context, name string, _ int) ([]os.FileInfo, error) {
 	if isWebDAVRoot(name) {
-		rootFiles, err := fs.files.ListRoot(parseUUID(fs.accountID))
+		rootFiles, err := fs.listRootFiles()
 		if err != nil {
 			log.Error().Err(err).Str("accountId", fs.accountID).Msg("webdav: ListRoot failed")
 			return nil, err
@@ -131,7 +143,7 @@ func (fs *webdavFS) ReadDir(ctx context.Context, name string, _ int) ([]os.FileI
 	if !f.IsFolder {
 		return nil, os.ErrInvalid
 	}
-	children, err := fs.files.GetChildren(f.ID)
+	children, err := fs.files.GetChildrenInWorkspace(f.ID, fs.workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +176,9 @@ func (fs *webdavFS) Mkdir(ctx context.Context, name string, _ os.FileMode) error
 		}
 		parentID = &parent.ID
 	}
-	_, err := fs.files.CreateFolder(
+	_, err := fs.files.CreateWorkspaceFolder(
 		parseUUID(fs.accountID),
+		fs.workspaceID,
 		dirName,
 		parentID,
 	)
@@ -183,7 +196,7 @@ func (fs *webdavFS) OpenFile(ctx context.Context, name string, flag int, _ os.Fi
 
 func (fs *webdavFS) openForRead(ctx context.Context, name string) (webdav.File, error) {
 	if isWebDAVRoot(name) {
-		rootFiles, err := fs.files.ListRoot(parseUUID(fs.accountID))
+		rootFiles, err := fs.listRootFiles()
 		if err != nil {
 			return nil, err
 		}
@@ -273,18 +286,19 @@ func (fs *webdavFS) openForWrite(ctx context.Context, name string, flag int) (we
 
 	winfo := &webdavFileInfo{name: fileName, isDir: false}
 	return &webdavFile{
-		tempFile:   tempFile,
-		info:       winfo,
-		winfo:      winfo,
-		isWrite:    true,
-		isNew:      existingFile == nil,
-		existing:   existingFile,
-		parentID:   parentID,
-		accountID:  fs.accountID,
-		files:      fs.files,
-		bus:        fs.bus,
-		dispatcher: fs.dispatcher,
-		mu:         sync.Mutex{},
+		tempFile:    tempFile,
+		info:        winfo,
+		winfo:       winfo,
+		isWrite:     true,
+		isNew:       existingFile == nil,
+		existing:    existingFile,
+		parentID:    parentID,
+		accountID:   fs.accountID,
+		workspaceID: fs.workspaceID,
+		files:       fs.files,
+		bus:         fs.bus,
+		dispatcher:  fs.dispatcher,
+		mu:          sync.Mutex{},
 	}, nil
 }
 
@@ -348,7 +362,7 @@ func (fs *webdavFS) resolvePath(ctx context.Context, p string) (*database.CloudF
 		return cached, nil
 	}
 
-	rootFiles, err := fs.files.ListRoot(parseUUID(fs.accountID))
+	rootFiles, err := fs.listRootFiles()
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +379,7 @@ func (fs *webdavFS) resolvePath(ctx context.Context, p string) (*database.CloudF
 				}
 			}
 		} else {
-			children, err := fs.files.GetChildren(current.ID)
+			children, err := fs.files.GetChildrenInWorkspace(current.ID, fs.workspaceID)
 			if err != nil {
 				return nil, err
 			}
@@ -412,7 +426,7 @@ func isWebDAVRoot(name string) bool {
 }
 
 func (fs *webdavFS) listRoot(ctx context.Context) ([]os.FileInfo, error) {
-	rootFiles, err := fs.files.ListRoot(parseUUID(fs.accountID))
+	rootFiles, err := fs.listRootFiles()
 	if err != nil {
 		return nil, err
 	}
@@ -425,6 +439,14 @@ func (fs *webdavFS) listRoot(ctx context.Context) ([]os.FileInfo, error) {
 		infos = append(infos, info)
 	}
 	return infos, nil
+}
+
+func (fs *webdavFS) listRootFiles() ([]database.CloudFile, error) {
+	if fs.workspaceID == nil {
+		return fs.files.ListRoot(parseUUID(fs.accountID))
+	}
+	files, _, err := fs.files.ListWorkspaceRootPage(*fs.workspaceID, service.FileListOptions{})
+	return files, err
 }
 
 func (fs *webdavFS) openFileContent(ctx context.Context, f *database.CloudFile) (io.ReadCloser, error) {
