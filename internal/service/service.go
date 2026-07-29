@@ -293,6 +293,29 @@ func (s *FileService) GetFiles(ids []string) ([]database.CloudFile, error) {
 	return files, nil
 }
 
+// GetFilesInWorkspace fetches metadata only from the selected namespace.
+// Passing nil deliberately means personal files (workspace_id IS NULL), never
+// an unrestricted lookup.
+func (s *FileService) GetFilesInWorkspace(ids []string, workspaceID *string) ([]database.CloudFile, error) {
+	if len(ids) == 0 {
+		return []database.CloudFile{}, nil
+	}
+	query := s.db.Preload("Object").Where("id IN ?", ids)
+	if workspaceID == nil || strings.TrimSpace(*workspaceID) == "" {
+		query = query.Where("workspace_id IS NULL")
+	} else {
+		query = query.Where("workspace_id = ?", strings.TrimSpace(*workspaceID))
+	}
+	var files []database.CloudFile
+	if err := query.Find(&files).Error; err != nil {
+		return nil, err
+	}
+	if err := s.populateFilesMetadata(files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
 func (s *FileService) GetBreadcrumb(fileID string) ([]database.CloudFile, error) {
 	ids, err := s.loadAncestorIDs(fileID)
 	if err != nil {

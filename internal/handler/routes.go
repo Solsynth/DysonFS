@@ -208,6 +208,8 @@ func listFilesMetadata(c *gin.Context, files *service.FileService) {
 		return
 	}
 
+	// Metadata lookups are ID-based and intentionally span personal and
+	// workspace namespaces. Listing endpoints remain workspace-scoped.
 	items, err := files.GetFiles(ids)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1025,11 +1027,11 @@ func selectedWorkspaceID(c *gin.Context, quota *service.QuotaService, accountID 
 	return workspaceID, nil
 }
 
-// getRequestedFile scopes every HTTP file lookup to the explicitly selected
-// namespace. Without workspace_id, a workspace file is indistinguishable from
-// a missing file and is never queried as part of the personal namespace.
+// getRequestedFile is intentionally an ID-based lookup. Direct file access
+// and metadata can bypass namespace selection; only browse/list endpoints are
+// constrained by workspace_id.
 func getRequestedFile(c *gin.Context, files *service.FileService, fileID string) (*database.CloudFile, error) {
-	return files.GetFileInWorkspace(fileID, optionalStringPtr(c.Query("workspace_id")))
+	return files.GetFile(fileID)
 }
 
 func fileListOptions(filters fileListFilters) service.FileListOptions {
