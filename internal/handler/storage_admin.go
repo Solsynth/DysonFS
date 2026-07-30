@@ -10,9 +10,9 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/go/pkg/auth"
-	gen "src.solsynth.dev/sosys/go/proto"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -47,6 +47,12 @@ type adminStoragePoolStats struct {
 	UsedBytes int64  `json:"used_bytes"`
 }
 
+type poolMigrationRequest struct {
+	SourcePoolID string   `json:"source_pool_id" binding:"required"`
+	TargetPoolID string   `json:"target_pool_id" binding:"required"`
+	FileIDs      []string `json:"file_ids"`
+}
+
 func requireStorageAdminPermission(c *gin.Context, files *service.FileService) bool {
 	result, _, ok := auth.GetAuth(c)
 	if !ok || result == nil || result.Account == nil {
@@ -67,11 +73,61 @@ func requireStorageAdminPermission(c *gin.Context, files *service.FileService) b
 	return true
 }
 
+func createPoolMigration(c *gin.Context, files *service.FileService, tasks *service.TaskService) {
+	if !requireStorageAdminPermission(c, files) {
+		return
+	}
+	if tasks == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "task service unavailable"})
+		return
+	}
+	var req poolMigrationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.SourcePoolID == req.TargetPoolID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source and target pools must be different"})
+		return
+	}
+	if _, err := files.GetPool(req.SourcePoolID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "source pool not found"})
+		return
+	}
+	if _, err := files.GetPool(req.TargetPoolID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "target pool not found"})
+		return
+	}
+	result, _, _ := auth.GetAuth(c)
+	task, err := tasks.CreatePoolMigrationTask(uuid.MustParse(result.Account.GetId()), req.SourcePoolID, req.TargetPoolID, req.FileIDs)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, task)
+}
+
+func getPoolMigration(c *gin.Context, files *service.FileService, tasks *service.TaskService) {
+	if !requireStorageAdminPermission(c, files) {
+		return
+	}
+	if tasks == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "task service unavailable"})
+		return
+	}
+	task, err := tasks.GetTask(c.Param("taskId"))
+	if err != nil || task.Type != service.PoolMigrationTaskType {
+		c.JSON(http.StatusNotFound, gin.H{"error": "pool migration task not found"})
+		return
+	}
+	c.JSON(http.StatusOK, task)
+}
+
 func getAdminStorageConfig(c *gin.Context, files *service.FileService) {
 	if !requireStorageAdminPermission(c, files) {
 		return
 	}
-	pools, err := files.ListPools(service.AccessContext{Account: &gen.DyAccount{IsSuperuser: true}})
+	pools, err := files.ListAllPools()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

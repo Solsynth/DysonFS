@@ -3,11 +3,13 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -50,6 +52,7 @@ func (w *Worker) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	go w.processPoolMigrations(ctx)
 	go w.runMaintenance(ctx)
 	logging.Log.Info().Msg("worker loop started")
 	return nil
@@ -69,8 +72,139 @@ func (w *Worker) runMaintenance(ctx context.Context) {
 			w.cleanupStaleTasks()
 		case <-rehashTicker.C:
 			w.processRehashQueue(ctx)
+			w.processPoolMigrations(ctx)
 		}
 	}
+}
+
+func (w *Worker) processPoolMigrations(ctx context.Context) {
+	if w.db == nil || w.files == nil {
+		return
+	}
+	_ = w.db.Model(&database.PersistentTask{}).Where("type = ? AND status = ? AND last_activity < ?", service.PoolMigrationTaskType, "processing", time.Now().Add(-15*time.Minute)).Updates(map[string]any{"status": "pending", "last_activity": time.Now()}).Error
+	for {
+		var candidates []database.PersistentTask
+		if err := w.db.Where("type = ? AND status = ?", service.PoolMigrationTaskType, "pending").Order("created_at asc").Limit(10).Find(&candidates).Error; err != nil {
+			logging.Log.Error().Err(err).Msg("failed to query pool migration tasks")
+			return
+		}
+		if len(candidates) == 0 {
+			return
+		}
+		claimed := false
+		for _, task := range candidates {
+			result := w.db.Model(&database.PersistentTask{}).Where("task_id = ? AND status = ?", task.TaskID, "pending").Updates(map[string]any{"status": "processing", "last_activity": time.Now()})
+			if result.Error != nil || result.RowsAffected == 0 {
+				continue
+			}
+			claimed = true
+			if err := w.runPoolMigration(ctx, &task); err != nil {
+				message := err.Error()
+				_ = w.db.Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Updates(map[string]any{"status": "failed", "error_message": message, "last_activity": time.Now()}).Error
+				logging.Log.Error().Err(err).Str("taskId", task.TaskID).Msg("pool migration failed")
+			}
+			break
+		}
+		if !claimed {
+			return
+		}
+	}
+}
+
+func (w *Worker) runPoolMigration(ctx context.Context, task *database.PersistentTask) error {
+	var params service.PoolMigrationParameters
+	if err := json.Unmarshal(task.Parameters, &params); err != nil || params.SourcePoolID == "" || params.TargetPoolID == "" || params.SourcePoolID == params.TargetPoolID {
+		return fmt.Errorf("invalid pool migration parameters")
+	}
+	sourcePool, err := w.files.GetPool(params.SourcePoolID)
+	if err != nil {
+		return fmt.Errorf("get source pool: %w", err)
+	}
+	targetPool, err := w.files.GetPool(params.TargetPoolID)
+	if err != nil {
+		return fmt.Errorf("get target pool: %w", err)
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var file database.CloudFile
+		query := w.db.Preload("Object").Where("pool_id = ?", params.SourcePoolID)
+		if len(params.FileIDs) > 0 {
+			query = query.Where("id IN ?", params.FileIDs)
+		}
+		err := query.Order("id asc").First(&file).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return w.db.Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Updates(map[string]any{"status": "completed", "progress": 1.0, "last_activity": time.Now()}).Error
+		}
+		if err != nil {
+			return err
+		}
+		if err := w.moveFileToPool(ctx, &file, sourcePool, targetPool); err != nil {
+			return fmt.Errorf("move file %s: %w", file.ID, err)
+		}
+		if err := w.db.Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Updates(map[string]any{
+			"chunks_uploaded": gorm.Expr("chunks_uploaded + 1"),
+			"progress":        gorm.Expr("CASE WHEN chunks_count > 0 THEN CAST(chunks_uploaded + 1 AS REAL) / chunks_count ELSE 1 END"),
+			"last_activity":   time.Now(),
+		}).Error; err != nil {
+			return err
+		}
+	}
+}
+
+func (w *Worker) moveFileToPool(ctx context.Context, file *database.CloudFile, sourcePool, targetPool *service.Pool) error {
+	key := ""
+	if file.StorageKey != nil {
+		key = strings.TrimSpace(*file.StorageKey)
+	}
+	if key == "" && file.Object != nil && file.Object.StorageKey != nil {
+		key = strings.TrimSpace(*file.Object.StorageKey)
+	}
+	if key == "" && file.ObjectID != nil {
+		key = strings.TrimSpace(*file.ObjectID)
+	}
+	if key != "" && !reflect.DeepEqual(sourcePool.StorageConfig, targetPool.StorageConfig) {
+		source, err := w.files.BackendForPoolID(&sourcePool.ID)
+		if err != nil {
+			return err
+		}
+		target, err := w.files.BackendForPoolID(&targetPool.ID)
+		if err != nil {
+			return err
+		}
+		reader, info, err := source.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+		contentType := info.MimeType
+		if file.Object != nil && file.Object.MimeType != "" {
+			contentType = file.Object.MimeType
+		}
+		if err := target.Put(ctx, key, reader, info.Size, contentType); err != nil {
+			return err
+		}
+	}
+	if err := w.db.Model(&database.CloudFile{}).Where("id = ?", file.ID).Updates(map[string]any{"pool_id": targetPool.ID, "storage_id": targetPool.ID}).Error; err != nil {
+		return err
+	}
+	if key != "" && !reflect.DeepEqual(sourcePool.StorageConfig, targetPool.StorageConfig) {
+		var refs int64
+		if err := w.db.Model(&database.CloudFile{}).Where("storage_id = ? AND storage_key = ?", sourcePool.ID, key).Count(&refs).Error; err != nil {
+			return err
+		}
+		if refs == 0 {
+			source, err := w.files.BackendForPoolID(&sourcePool.ID)
+			if err != nil {
+				return err
+			}
+			if err := source.Delete(ctx, key); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (w *Worker) cleanupTempArtifacts() {

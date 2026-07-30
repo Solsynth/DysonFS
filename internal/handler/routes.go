@@ -172,6 +172,8 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		adminStorage.GET("/health", func(c *gin.Context) { getAdminStorageHealth(c, files) })
 		adminStorage.GET("/stats", func(c *gin.Context) { getAdminStorageStats(c, files) })
 		adminStorage.GET("/failures", func(c *gin.Context) { getAdminStorageFailures(c, files) })
+		adminStorage.POST("/pool-migrations", func(c *gin.Context) { createPoolMigration(c, files, tasks) })
+		adminStorage.GET("/pool-migrations/:taskId", func(c *gin.Context) { getPoolMigration(c, files, tasks) })
 	}
 
 	dfs := r.Group("/_dfs")

@@ -1690,6 +1690,63 @@ func TestCheckUploadQuotaEnrichesAccountOnce(t *testing.T) {
 	}
 }
 
+func TestListPoolsReturnsOnlyPoolsOwnedByCurrentAccount(t *testing.T) {
+	db := openTestDB(t, &database.FilePool{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.New()
+	otherID := uuid.New()
+	privatePoolID := database.NewID()
+	otherPoolID := database.NewID()
+
+	for _, pool := range []database.FilePool{
+		{ID: privatePoolID, Name: "private", AccountID: ownerID, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`)), IsHidden: true},
+		{ID: otherPoolID, Name: "other-user-public", AccountID: otherID, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`))},
+	} {
+		if err := db.Create(&pool).Error; err != nil {
+			t.Fatalf("create pool: %v", err)
+		}
+	}
+
+	pools, err := svc.ListPools(AccessContext{Account: &gen.DyAccount{Id: otherID.String()}})
+	if err != nil {
+		t.Fatalf("ListPools() error = %v", err)
+	}
+	if len(pools) != 1 || pools[0].ID != otherPoolID {
+		t.Fatalf("pools = %#v, want only pool owned by %q", pools, otherID)
+	}
+	privatePool, err := svc.GetPool(privatePoolID)
+	if err != nil {
+		t.Fatalf("GetPool() error = %v", err)
+	}
+	if svc.CanUsePool(AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, privatePool, "write") {
+		t.Fatal("non-owner can use hidden pool")
+	}
+
+	pools, err = svc.ListPools(AccessContext{Account: &gen.DyAccount{Id: ownerID.String()}})
+	if err != nil {
+		t.Fatalf("ListPools() as owner error = %v", err)
+	}
+	if len(pools) != 1 || pools[0].ID != privatePoolID {
+		t.Fatalf("owner pools = %#v, want only private pool %q", pools, privatePoolID)
+	}
+
+	pools, err = svc.ListPools(AccessContext{Account: &gen.DyAccount{Id: ownerID.String(), IsSuperuser: true}})
+	if err != nil {
+		t.Fatalf("ListPools() as superuser error = %v", err)
+	}
+	if len(pools) != 1 || pools[0].ID != privatePoolID {
+		t.Fatalf("superuser pools = %#v, want only pools owned by %q", pools, ownerID)
+	}
+
+	pools, err = svc.ListAllPools()
+	if err != nil {
+		t.Fatalf("ListAllPools() error = %v", err)
+	}
+	if len(pools) != 2 {
+		t.Fatalf("all pools = %#v, want both pools", pools)
+	}
+}
+
 func openTestDB(t *testing.T, models ...any) *gorm.DB {
 	t.Helper()
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))

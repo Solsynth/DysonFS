@@ -417,10 +417,25 @@ func (s *FileService) GetPool(id string) (*Pool, error) {
 }
 
 func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
+	if ctx.Account == nil {
+		return []Pool{}, nil
+	}
+	var pools []database.FilePool
+	if err := s.db.Where("account_id = ?", ctx.Account.GetId()).Find(&pools).Error; err != nil {
+		return nil, err
+	}
+	return poolsToServicePools(pools), nil
+}
+
+func (s *FileService) ListAllPools() ([]Pool, error) {
 	var pools []database.FilePool
 	if err := s.db.Find(&pools).Error; err != nil {
 		return nil, err
 	}
+	return poolsToServicePools(pools), nil
+}
+
+func poolsToServicePools(pools []database.FilePool) []Pool {
 	out := make([]Pool, 0, len(pools))
 	for _, p := range pools {
 		var policy PoolConfig
@@ -430,11 +445,9 @@ func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
 		_ = json.Unmarshal(p.BillingConfig, &billing)
 		_ = json.Unmarshal(p.StorageConfig, &storage)
 		pool := &Pool{ID: p.ID, Name: p.Name, Description: p.Description, AccountID: p.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: p.IsHidden, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
-		if s.CanUsePool(ctx, pool, "read") {
-			out = append(out, *pool)
-		}
+		out = append(out, *pool)
 	}
-	return out, nil
+	return out
 }
 
 func (s *FileService) ListOwnedPools(accountID uuid.UUID) ([]Pool, error) {
@@ -528,6 +541,9 @@ func (s *FileService) CanAccessPool(account *gen.DyAccount, pool *Pool, permissi
 	if account != nil && pool.AccountID.String() == account.GetId() {
 		return true
 	}
+	if pool.IsHidden {
+		return false
+	}
 	if pool.PolicyConfig.PublicUsable {
 		return true
 	}
@@ -550,6 +566,9 @@ func (s *FileService) CanUsePool(ctx AccessContext, pool *Pool, permission strin
 	}
 	if ctx.Account != nil && pool.AccountID.String() == ctx.Account.GetId() {
 		return true
+	}
+	if pool.IsHidden {
+		return false
 	}
 	if pool.PolicyConfig.PublicUsable {
 		return true
@@ -3137,6 +3156,14 @@ func firstNonEmptyString(values ...*string) string {
 
 type TaskService struct{ db *database.DB }
 
+const PoolMigrationTaskType = "pool.migration"
+
+type PoolMigrationParameters struct {
+	SourcePoolID string   `json:"source_pool_id"`
+	TargetPoolID string   `json:"target_pool_id"`
+	FileIDs      []string `json:"file_ids,omitempty"`
+}
+
 func NewTaskService(db *database.DB) *TaskService { return &TaskService{db: db} }
 
 func (s *TaskService) DB() *database.DB { return s.db }
@@ -3161,12 +3188,46 @@ func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload
 	return task, nil
 }
 
+func (s *TaskService) CreatePoolMigrationTask(accountID uuid.UUID, sourcePoolID, targetPoolID string, fileIDs []string) (*database.PersistentTask, error) {
+	if strings.TrimSpace(sourcePoolID) == "" || strings.TrimSpace(targetPoolID) == "" || sourcePoolID == targetPoolID {
+		return nil, fmt.Errorf("source and target pools must be different")
+	}
+	fileIDs = normalizeFileIDs(fileIDs)
+	var count int64
+	query := s.db.Model(&database.CloudFile{}).Where("pool_id = ?", sourcePoolID)
+	if len(fileIDs) > 0 {
+		query = query.Where("id IN ?", fileIDs)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return nil, err
+	}
+	if len(fileIDs) > 0 && count != int64(len(fileIDs)) {
+		return nil, fmt.Errorf("some files do not belong to the source pool")
+	}
+	params, err := json.Marshal(PoolMigrationParameters{SourcePoolID: sourcePoolID, TargetPoolID: targetPoolID, FileIDs: fileIDs})
+	if err != nil {
+		return nil, err
+	}
+	task := &database.PersistentTask{
+		ID: database.NewID(), TaskID: database.NewID(), Name: "Move pool files", Type: PoolMigrationTaskType,
+		Status: "pending", AccountID: accountID, ChunksCount: int(count), Parameters: datatypes.JSON(params), LastActivity: time.Now(),
+	}
+	if err := s.db.Create(task).Error; err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
 func (s *TaskService) GetUploadTask(taskID string) (*database.PersistentTask, error) {
 	var task database.PersistentTask
 	if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
 		return nil, err
 	}
 	return &task, nil
+}
+
+func (s *TaskService) GetTask(taskID string) (*database.PersistentTask, error) {
+	return s.GetUploadTask(taskID)
 }
 
 func (s *TaskService) GetUploadTaskWithChunks(taskID string) (*database.PersistentTask, error) {
