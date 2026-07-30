@@ -33,6 +33,12 @@ type recordingDispatcher struct {
 	uploaded []eventbus.FileUploadedEvent
 }
 
+type permissionCheckerFunc func(context.Context, string, string) (bool, error)
+
+func (f permissionCheckerFunc) HasPermission(ctx context.Context, accountID, key string) (bool, error) {
+	return f(ctx, accountID, key)
+}
+
 func (d *recordingDispatcher) PublishFileUploaded(_ context.Context, evt eventbus.FileUploadedEvent) error {
 	d.uploaded = append(d.uploaded, evt)
 	return nil
@@ -153,6 +159,58 @@ func TestDirectUploadReturnsSynchronousSourceMetadata(t *testing.T) {
 	}
 	if len(dispatcher.uploaded) != 1 || dispatcher.uploaded[0].FileID != response.ID {
 		t.Fatalf("uploaded events = %+v, want one event for %s", dispatcher.uploaded, response.ID)
+	}
+}
+
+func TestDirectUploadRequiresFilesUploadPermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{})
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	accountID := uuid.New()
+	files.SetPermissionChecker(permissionCheckerFunc(func(_ context.Context, gotAccountID, key string) (bool, error) {
+		if gotAccountID != accountID.String() {
+			t.Fatalf("permission account ID = %q, want %q", gotAccountID, accountID)
+		}
+		if key != service.PermissionFilesUpload {
+			t.Fatalf("permission key = %q, want %q", key, service.PermissionFilesUpload)
+		}
+		return false, nil
+	}))
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{Storage: config.StorageConfig{TempDir: t.TempDir()}}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/files/upload/direct", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+}
+
+func TestAdminStorageConfigRequiresFilesManagePermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.StorageNode{})
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	accountID := uuid.New()
+	files.SetPermissionChecker(permissionCheckerFunc(func(_ context.Context, gotAccountID, key string) (bool, error) {
+		if gotAccountID != accountID.String() {
+			t.Fatalf("permission account ID = %q, want %q", gotAccountID, accountID)
+		}
+		if key != service.PermissionFilesManage {
+			t.Fatalf("permission key = %q, want %q", key, service.PermissionFilesManage)
+		}
+		return false, nil
+	}))
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/admin/storage/config", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusForbidden, w.Body.String())
 	}
 }
 

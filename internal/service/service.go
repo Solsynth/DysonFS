@@ -115,11 +115,12 @@ type AccessContext struct {
 }
 
 type FileService struct {
-	db            *database.DB
-	stor          storage.Backend
-	cache         sharedcache.CacheService
-	defaultPoolID string
-	accessSecret  string
+	db                *database.DB
+	stor              storage.Backend
+	cache             sharedcache.CacheService
+	defaultPoolID     string
+	accessSecret      string
+	permissionChecker PermissionChecker
 }
 
 const systemPoolName = "system"
@@ -3355,6 +3356,24 @@ func NewWorkspaceClient(cfg config.WorkspaceConfig) (gen.DyWorkspaceServiceClien
 		return nil, nil, fmt.Errorf("dial workspace service: %w", err)
 	}
 	return gen.NewDyWorkspaceServiceClient(conn), conn, nil
+}
+
+func NewPermissionClient(cfg config.AuthConfig) (gen.DyPermissionServiceClient, *grpc.ClientConn, error) {
+	target, useTLS := dyauth.NormalizeAuthGRPCTarget(cfg.Target, cfg.UseTLS)
+	if strings.TrimSpace(target) == "" {
+		return nil, nil, errors.New("permission gRPC target is empty")
+	}
+	var transportCredentials credentials.TransportCredentials
+	if useTLS {
+		transportCredentials = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.TLSSkipVerify})
+	} else {
+		transportCredentials = insecure.NewCredentials()
+	}
+	conn, err := grpc.Dial(target, grpc.WithTransportCredentials(transportCredentials))
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial permission service: %w", err)
+	}
+	return gen.NewDyPermissionServiceClient(conn), conn, nil
 }
 
 type QuotaSummary struct {

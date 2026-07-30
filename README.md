@@ -508,6 +508,8 @@ Key settings:
 - `storage.tempDir`
 - `storage.localDir`
 - `auth.target`
+- `auth.target` also supplies the Padlock permission service; uploads require
+  the `files.upload` permission node (or superuser access)
 - `auth.useTLS`
 - `passport.target`
 - `passport.useTLS`

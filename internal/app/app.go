@@ -32,25 +32,26 @@ import (
 )
 
 type App struct {
-	cfg           *config.Config
-	mode          string
-	db            *database.DB
-	bus           *eventbus.Bus
-	redis         *redis.Client
-	stor          storage.Backend
-	files         *service.FileService
-	wopi          *service.WOPIService
-	tasks         *service.TaskService
-	quota         *service.QuotaService
-	worker        *worker.Worker
-	dispatcher    dispatch.Dispatcher
-	httpSrv       *http.Server
-	masterS3Srv   *http.Server
-	grpcSrv       *grpc.Server
-	profileConn   *grpc.ClientConn
-	workspaceConn *grpc.ClientConn
-	natsConn      *nats.Conn
-	logger        zerolog.Logger
+	cfg            *config.Config
+	mode           string
+	db             *database.DB
+	bus            *eventbus.Bus
+	redis          *redis.Client
+	stor           storage.Backend
+	files          *service.FileService
+	wopi           *service.WOPIService
+	tasks          *service.TaskService
+	quota          *service.QuotaService
+	worker         *worker.Worker
+	dispatcher     dispatch.Dispatcher
+	httpSrv        *http.Server
+	masterS3Srv    *http.Server
+	grpcSrv        *grpc.Server
+	profileConn    *grpc.ClientConn
+	permissionConn *grpc.ClientConn
+	workspaceConn  *grpc.ClientConn
+	natsConn       *nats.Conn
+	logger         zerolog.Logger
 }
 
 func (a *App) Files() *service.FileService { return a.files }
@@ -110,6 +111,14 @@ func New(cfg *config.Config, mode string) (*App, error) {
 		}
 		app.profileConn = profileConn
 		app.quota.SetProfileClient(profileClient)
+	}
+	if cfg.Auth.Target != "" {
+		permissionClient, permissionConn, err := service.NewPermissionClient(cfg.Auth)
+		if err != nil {
+			return nil, err
+		}
+		app.permissionConn = permissionConn
+		app.files.SetPermissionClient(permissionClient)
 	}
 	if cfg.Workspace.Target != "" {
 		workspaceClient, workspaceConn, err := service.NewWorkspaceClient(cfg.Workspace)
@@ -177,6 +186,9 @@ func (a *App) Stop(ctx context.Context) error {
 	}
 	if a.profileConn != nil {
 		_ = a.profileConn.Close()
+	}
+	if a.permissionConn != nil {
+		_ = a.permissionConn.Close()
 	}
 	if a.workspaceConn != nil {
 		_ = a.workspaceConn.Close()

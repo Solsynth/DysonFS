@@ -503,6 +503,24 @@ Content-Type: application/json
 | `DELETE` | `/api/storage-nodes/:id` | Deregister a node |
 | `POST` | `/api/storage-nodes/heartbeat/:machineId` | Node heartbeat |
 
+### Storage Administration
+
+The global storage administration API follows Dyson Network's admin-controller
+pattern. Every endpoint requires the Padlock `files.manage` permission node
+(or a superuser account). Credentials are never returned; configuration
+responses expose only whether each S3 credential is configured.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/admin/storage/config` | Inspect all pool storage configuration (secrets redacted) |
+| `PATCH` | `/api/admin/storage/config/:poolId` | Update a pool's storage configuration |
+| `GET` | `/api/admin/storage/status` | List node status and heartbeat-derived health |
+| `GET` | `/api/admin/storage/health` | Get aggregate `healthy`, `degraded`, or `unhealthy` status |
+| `GET` | `/api/admin/storage/stats` | Get file count and used bytes per pool |
+
+Nodes are healthy when their status is `online` and they have sent a heartbeat
+within the last two minutes.
+
 ### Heartbeat
 
 Storage nodes should periodically send heartbeats to the master to report their status:

@@ -27,6 +27,8 @@ enable = false
 worker_num = 1
 
 [auth]
+# Padlock gRPC endpoint. It authenticates requests and authorizes uploads with
+# the files.upload permission node.
 target = ""
 useTLS = false
 tlsSkipVerify = false

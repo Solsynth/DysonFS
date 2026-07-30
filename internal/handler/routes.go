@@ -82,7 +82,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	{
 		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks, quota) })
 		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks, quota, bus, dispatcher) })
-		u.POST("/chunk/:taskId/:idx", func(c *gin.Context) { uploadChunk(c, cfg, tasks) })
+		u.POST("/chunk/:taskId/:idx", func(c *gin.Context) { uploadChunk(c, cfg, files, tasks) })
 		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, quota, bus, dispatcher) })
 		u.GET("/tasks", func(c *gin.Context) { listUploadTasks(c, tasks) })
 		u.GET("/progress/:taskId", func(c *gin.Context) { uploadProgress(c, tasks) })
@@ -162,6 +162,15 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		sn.PATCH("/:id", func(c *gin.Context) { updateStorageNode(c, files) })
 		sn.DELETE("/:id", func(c *gin.Context) { deleteStorageNode(c, files) })
 		sn.POST("/heartbeat/:machineId", func(c *gin.Context) { storageNodeHeartbeat(c, files) })
+	}
+
+	adminStorage := r.Group("/api/admin/storage")
+	{
+		adminStorage.GET("/config", func(c *gin.Context) { getAdminStorageConfig(c, files) })
+		adminStorage.PATCH("/config/:poolId", func(c *gin.Context) { updateAdminStorageConfig(c, files) })
+		adminStorage.GET("/status", func(c *gin.Context) { getAdminStorageStatus(c, files) })
+		adminStorage.GET("/health", func(c *gin.Context) { getAdminStorageHealth(c, files) })
+		adminStorage.GET("/stats", func(c *gin.Context) { getAdminStorageStats(c, files) })
 	}
 
 	dfs := r.Group("/_dfs")
@@ -1841,6 +1850,9 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	if !requireUploadPermission(c, files, result) {
+		return
+	}
 	var req struct {
 		Hash            *string `json:"hash"`
 		FileName        string  `json:"file_name"`
@@ -1973,6 +1985,25 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 	c.JSON(http.StatusOK, gin.H{"task_id": task.TaskID, "chunk_size": task.ChunkSize, "chunks_count": task.ChunksCount})
 }
 
+func requireUploadPermission(c *gin.Context, files *service.FileService, result *auth.AuthResult) bool {
+	if result == nil || result.Account == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return false
+	}
+	if result.Account.GetIsSuperuser() {
+		return true
+	}
+	if err := files.RequireAccountPermission(c.Request.Context(), result.Account.GetId(), service.PermissionFilesUpload); err != nil {
+		if errors.Is(err, service.ErrPermissionDenied) {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return false
+	}
+	return true
+}
+
 // @Summary Direct upload
 // @Tags uploads
 // @Produce json
@@ -1983,6 +2014,9 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if !requireUploadPermission(c, files, result) {
 		return
 	}
 	fileHeader, err := c.FormFile("file")
@@ -2187,11 +2221,14 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	c.JSON(http.StatusOK, createdFile)
 }
 
-func uploadChunk(c *gin.Context, cfg *config.Config, tasks *service.TaskService) {
+func uploadChunk(c *gin.Context, cfg *config.Config, files *service.FileService, tasks *service.TaskService) {
 	startedAt := time.Now()
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if !requireUploadPermission(c, files, result) {
 		return
 	}
 	taskID := c.Param("taskId")
@@ -2262,6 +2299,9 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if !requireUploadPermission(c, files, result) {
 		return
 	}
 	taskID := c.Param("taskId")

@@ -217,6 +217,9 @@ func (s *fileServiceServer) UploadMultipartPart(stream grpc.ClientStreamingServe
 	if task.Type != "file.upload" {
 		return status.Error(codes.InvalidArgument, "upload_id does not identify a multipart upload")
 	}
+	if err := s.requireUploadPermission(stream.Context(), task.AccountID); err != nil {
+		return err
+	}
 	if task.Status != "pending" {
 		return status.Errorf(codes.FailedPrecondition, "multipart upload is %s", task.Status)
 	}
@@ -311,6 +314,9 @@ func (s *fileServiceServer) CompleteMultipartUpload(ctx context.Context, req *ge
 	if task.Type != "file.upload" {
 		return nil, status.Error(codes.InvalidArgument, "upload_id does not identify a multipart upload")
 	}
+	if err := s.requireUploadPermission(ctx, task.AccountID); err != nil {
+		return nil, err
+	}
 	if task.Status != "pending" {
 		return nil, status.Errorf(codes.FailedPrecondition, "multipart upload is %s", task.Status)
 	}
@@ -376,6 +382,9 @@ func (s *fileServiceServer) prepareUpload(ctx context.Context, input *gen.DyFile
 	accountID, err := uuid.Parse(strings.TrimSpace(input.GetAccountId()))
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "account_id must be a UUID")
+	}
+	if err := s.requireUploadPermission(ctx, accountID); err != nil {
+		return nil, err
 	}
 	fileName := strings.TrimSpace(input.GetFileName())
 	if fileName == "" {
@@ -625,6 +634,8 @@ func uploadStatus(err error) error {
 		return err
 	}
 	switch {
+	case errors.Is(err, service.ErrPermissionDenied):
+		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, service.ErrQuotaExceeded):
 		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, gorm.ErrRecordNotFound):
@@ -636,4 +647,11 @@ func uploadStatus(err error) error {
 	default:
 		return status.Error(codes.Internal, fmt.Sprintf("upload failed: %v", err))
 	}
+}
+
+func (s *fileServiceServer) requireUploadPermission(ctx context.Context, accountID uuid.UUID) error {
+	if s.files == nil {
+		return status.Error(codes.FailedPrecondition, "file service is not configured")
+	}
+	return uploadStatus(s.files.RequireAccountPermission(ctx, accountID.String(), service.PermissionFilesUpload))
 }
