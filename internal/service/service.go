@@ -121,13 +121,14 @@ type FileService struct {
 	defaultPoolID     string
 	accessSecret      string
 	permissionChecker PermissionChecker
+	failureLog        *ServerFailureLog
 }
 
 const systemPoolName = "system"
 const compressedImageTargetBytes = 100 * 1024
 
 func NewFileService(db *database.DB, stor storage.Backend) *FileService {
-	return &FileService{db: db, stor: stor}
+	return &FileService{db: db, stor: stor, failureLog: NewServerFailureLog()}
 }
 
 func (s *FileService) SetCache(cache sharedcache.CacheService) {
@@ -143,6 +144,13 @@ func (s *FileService) SetStorage(stor storage.Backend) { s.stor = stor }
 func (s *FileService) SetAccessSecret(secret string) { s.accessSecret = secret }
 
 func (s *FileService) AccessSecret() string { return s.accessSecret }
+
+func (s *FileService) FailureLog() *ServerFailureLog {
+	if s == nil {
+		return nil
+	}
+	return s.failureLog
+}
 
 func (s *FileService) SeedPools(cfg *config.Config) (string, error) {
 	if len(cfg.Pools) == 0 {

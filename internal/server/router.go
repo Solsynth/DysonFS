@@ -24,6 +24,7 @@ import (
 
 func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi *service.WOPIService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) *gin.Engine {
 	r := gin.New()
+	r.Use(recordServerFailures(files))
 	r.Use(gin.Recovery())
 
 	if cfg.Auth.Target != "" {

@@ -1,9 +1,11 @@
 package server
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
@@ -11,7 +13,31 @@ import (
 
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
+	"src.solsynth.dev/sosys/filesystem/internal/storage"
 )
+
+func TestRecordServerFailuresCountsUploadFailuresAndCapturesDetail(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	files := service.NewFileService(&database.DB{}, storage.NewLocalBackend(t.TempDir()))
+	r := gin.New()
+	r.Use(recordServerFailures(files))
+	r.GET("/api/files/upload/direct", func(c *gin.Context) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage unavailable"})
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/files/upload/direct?token=do-not-log", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	snapshot := files.FailureLog().Snapshot(1)
+	if snapshot.ServerFailureCount != 1 || snapshot.UploadFailureCount != 1 {
+		t.Fatalf("failure counts = %+v, want one of each", snapshot)
+	}
+	if len(snapshot.Events) != 1 || snapshot.Events[0].Path != "/api/files/upload/direct" || snapshot.Events[0].Detail != `{"error":"storage unavailable"}` {
+		t.Fatalf("event = %+v, want upload path and response detail", snapshot.Events)
+	}
+}
 
 func TestAuthenticateWebDAVAcceptsTokenIDAndSecret(t *testing.T) {
 	files := newWebDAVAuthTestService(t)

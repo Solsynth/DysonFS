@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -195,6 +196,22 @@ func getAdminStorageStats(c *gin.Context, files *service.FileService) {
 		items = append(items, adminStoragePoolStats{PoolID: poolID, FileCount: row.FileCount, UsedBytes: row.UsedBytes})
 	}
 	c.JSON(http.StatusOK, gin.H{"calculated_at": time.Now(), "pools": items})
+}
+
+func getAdminStorageFailures(c *gin.Context, files *service.FileService) {
+	if !requireStorageAdminPermission(c, files) {
+		return
+	}
+	limit := 100
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > service.MaxServerFailureEvents {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be between 1 and 100"})
+			return
+		}
+		limit = parsed
+	}
+	c.JSON(http.StatusOK, files.FailureLog().Snapshot(limit))
 }
 
 func redactAdminStorageConfig(pool *service.Pool) adminStorageConfigResponse {

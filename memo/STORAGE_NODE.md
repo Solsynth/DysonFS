@@ -517,9 +517,14 @@ responses expose only whether each S3 credential is configured.
 | `GET` | `/api/admin/storage/status` | List node status and heartbeat-derived health |
 | `GET` | `/api/admin/storage/health` | Get aggregate `healthy`, `degraded`, or `unhealthy` status |
 | `GET` | `/api/admin/storage/stats` | Get file count and used bytes per pool |
+| `GET` | `/api/admin/storage/failures` | Inspect the newest server-side 5xx events and cumulative counters |
 
 Nodes are healthy when their status is `online` and they have sent a heartbeat
 within the last two minutes.
+
+The server retains at most 100 detailed failure events in memory. Its total
+server-failure and upload-failure counters continue increasing after older
+details are evicted.
 
 ### Heartbeat
 
