@@ -66,6 +66,10 @@ func (d *Bundled) PublishFileAction(_ context.Context, evt eventbus.FileActionEv
 	return nil
 }
 
+func (d *Bundled) PublishFileMetadataUpdated(_ context.Context, _ eventbus.FileMetadataUpdatedEvent) error {
+	return nil
+}
+
 func (d *Bundled) runUploadWorker(w *worker.Worker) {
 	for evt := range d.uploadQueue {
 		if err := w.ProcessUploadedFile(context.Background(), evt); err != nil {

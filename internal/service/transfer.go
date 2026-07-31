@@ -134,6 +134,20 @@ func (s *FileService) CreateUploadedObject(storageKey string, info *StagedFileIn
 	return object, nil
 }
 
+func (s *FileService) CreateStoredObject(storageKey string, info *StagedFileInfo) (*database.FileObject, error) {
+	if info == nil || strings.TrimSpace(storageKey) == "" {
+		return nil, fmt.Errorf("storage key and file info are required")
+	}
+	object := &database.FileObject{
+		ID: database.NewID(), Size: info.Size, MimeType: info.ContentType,
+		Hash: info.Hash, StorageKey: &storageKey, Meta: datatypes.JSON([]byte(`{}`)),
+	}
+	if err := s.db.Create(object).Error; err != nil {
+		return nil, fmt.Errorf("create file object: %w", err)
+	}
+	return object, nil
+}
+
 func (s *FileService) createFileObject(storageKey string, info *stagedFileInfo) (*database.FileObject, error) {
 	object := &database.FileObject{
 		ID:             storageKey,

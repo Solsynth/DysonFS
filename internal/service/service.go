@@ -124,6 +124,29 @@ type FileService struct {
 	failureLog        *ServerFailureLog
 }
 
+func (s *FileService) DirectUploadBackend(poolID *string) (storage.DirectUploadBackend, error) {
+	resolved := s.resolvedPoolID(poolID)
+	if resolved == nil {
+		return nil, fmt.Errorf("storage pool is not configured")
+	}
+	pool, err := s.GetPool(*resolved)
+	if err != nil {
+		return nil, err
+	}
+	if !pool.StorageConfig.EnableSigned {
+		return nil, fmt.Errorf("storage pool does not allow direct uploads; use proxied upload")
+	}
+	backend, err := s.BackendForPoolID(resolved)
+	if err != nil {
+		return nil, err
+	}
+	direct, ok := backend.(storage.DirectUploadBackend)
+	if !ok {
+		return nil, fmt.Errorf("storage pool does not support direct uploads; use proxied upload")
+	}
+	return direct, nil
+}
+
 const systemPoolName = "system"
 const compressedImageTargetBytes = 100 * 1024
 
@@ -2745,7 +2768,7 @@ func (s *FileService) CreateWorkspaceUploadedFile(accountID uuid.UUID, workspace
 			finalIndexed = true
 		}
 	}
-	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, WorkspaceID: workspaceID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: finalIndexed, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, WorkspaceID: workspaceID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: finalIndexed, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage, UploadStatus: database.UploadStatusCompleted}
 	if hash != nil && strings.TrimSpace(*hash) != "" {
 		file.FileMeta = datatypes.JSON([]byte(fmt.Sprintf(`{"hash":%q}`, strings.TrimSpace(*hash))))
 	}
@@ -2754,6 +2777,18 @@ func (s *FileService) CreateWorkspaceUploadedFile(accountID uuid.UUID, workspace
 	}); err != nil {
 		return nil, err
 	}
+	return file, nil
+}
+
+func (s *FileService) CreatePendingUploadedFile(accountID uuid.UUID, workspaceID *string, name string, description *string, hash *string, expiredAt *time.Time, usage *string, parentID *string, objectID string, poolID *string, appType *string, storageKey *string, indexed bool) (*database.CloudFile, error) {
+	file, err := s.CreateWorkspaceUploadedFile(accountID, workspaceID, name, description, hash, expiredAt, usage, parentID, objectID, poolID, appType, storageKey, indexed)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.db.Model(&database.CloudFile{}).Where("id = ?", file.ID).Update("upload_status", database.UploadStatusProcessing).Error; err != nil {
+		return nil, err
+	}
+	file.UploadStatus = database.UploadStatusProcessing
 	return file, nil
 }
 
@@ -3169,7 +3204,7 @@ func NewTaskService(db *database.DB) *TaskService { return &TaskService{db: db} 
 func (s *TaskService) DB() *database.DB { return s.db }
 
 func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload *database.PersistentTask, size int64, poolID *string, fileName string, contentType string, chunkSize int64, chunksCount int) (*database.PersistentTask, error) {
-	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, ContentType: firstNonEmptyPtr(&contentType), PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
+	task := &database.PersistentTask{ID: database.NewID(), TaskID: database.NewID(), Name: name, Type: "file.upload", Status: "pending", UploadStatus: database.UploadStatusUploading, AccountID: accountID, Progress: 0, LastActivity: time.Now(), FileName: &fileName, FileSize: &size, ContentType: firstNonEmptyPtr(&contentType), PoolID: poolID, ChunkSize: chunkSize, ChunksCount: chunksCount, UploadedChunks: datatypes.JSON([]byte(`[]`))}
 	if payload != nil {
 		task.Description = payload.Description
 		task.Hash = payload.Hash
@@ -3349,7 +3384,22 @@ func (s *TaskService) ResetPending(taskID string) error {
 }
 
 func (s *TaskService) MarkCompleted(taskID string) error {
-	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"status": "completed", "progress": 1.0, "updated_at": time.Now(), "last_activity": time.Now()}).Error
+	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"status": "completed", "upload_status": database.UploadStatusCompleted, "progress": 1.0, "updated_at": time.Now(), "last_activity": time.Now()}).Error
+}
+
+func (s *TaskService) MarkProcessing(taskID, sourceKey string) error {
+	result := s.db.Model(&database.PersistentTask{}).Where("task_id = ? AND upload_status = ?", taskID, database.UploadStatusUploading).Updates(map[string]any{"status": "processing", "upload_status": database.UploadStatusProcessing, "source_key": sourceKey, "updated_at": time.Now(), "last_activity": time.Now()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrInvalidData
+	}
+	return nil
+}
+
+func (s *TaskService) MarkFailed(taskID, message string) error {
+	return s.db.Model(&database.PersistentTask{}).Where("task_id = ?", taskID).Updates(map[string]any{"status": "failed", "upload_status": database.UploadStatusFailed, "processing_error": message, "updated_at": time.Now(), "last_activity": time.Now()}).Error
 }
 
 func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {

@@ -80,12 +80,15 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 
 	u := r.Group("/api/files/upload")
 	{
+		u.POST("/prepare", func(c *gin.Context) { prepareDirectUpload(c, files, tasks, quota) })
+		u.POST("/complete-direct/:taskId", func(c *gin.Context) { completeDirectUpload(c, files, tasks, bus, dispatcher) })
 		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks, quota) })
 		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks, quota, bus, dispatcher) })
 		u.POST("/chunk/:taskId/:idx", func(c *gin.Context) { uploadChunk(c, cfg, files, tasks) })
 		u.POST("/complete/:taskId", func(c *gin.Context) { completeUpload(c, cfg, files, tasks, quota, bus, dispatcher) })
 		u.GET("/tasks", func(c *gin.Context) { listUploadTasks(c, tasks) })
 		u.GET("/progress/:taskId", func(c *gin.Context) { uploadProgress(c, tasks) })
+		u.GET("/status/:taskId", func(c *gin.Context) { uploadStatus(c, tasks) })
 		u.GET("/resume/:taskId", func(c *gin.Context) { uploadResume(c, tasks) })
 		u.DELETE("/task/:taskId", func(c *gin.Context) { cancelUpload(c, tasks) })
 		u.GET("/stats", func(c *gin.Context) { uploadStats(c, tasks) })
@@ -2007,6 +2010,221 @@ func requireUploadPermission(c *gin.Context, files *service.FileService, result 
 	return true
 }
 
+type metadataEventDispatcher interface {
+	PublishFileMetadataUpdated(context.Context, eventbus.FileMetadataUpdatedEvent) error
+}
+
+func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if !requireUploadPermission(c, files, result) {
+		return
+	}
+	var req struct {
+		Hash            *string `json:"hash"`
+		FileName        string  `json:"file_name"`
+		Description     *string `json:"description"`
+		Index           bool    `json:"index"`
+		FileSize        int64   `json:"file_size"`
+		PoolID          *string `json:"pool_id"`
+		WorkspaceID     *string `json:"workspace_id"`
+		ExpiredAt       *string `json:"expired_at"`
+		ParentID        *string `json:"parent_id"`
+		OverwriteID     *string `json:"overwrite_id"`
+		Usage           *string `json:"usage"`
+		ApplicationType *string `json:"application_type"`
+		ContentType     string  `json:"content_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.FileName) == "" || req.FileSize <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_name and positive file_size are required"})
+		return
+	}
+	if strings.TrimSpace(req.ContentType) == "" {
+		req.ContentType = "application/octet-stream"
+	}
+	expiredAt, err := parseRFC3339Ptr(req.ExpiredAt)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.OverwriteID != nil {
+		target, targetErr := files.GetFileInWorkspace(strings.TrimSpace(*req.OverwriteID), req.WorkspaceID)
+		if targetErr != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": targetErr.Error()})
+			return
+		}
+		if target.IsFolder || (!result.Account.GetIsSuperuser() && target.AccountID.String() != result.Account.GetId()) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "invalid overwrite target"})
+			return
+		}
+		req.FileName, req.Description, req.ParentID = target.Name, target.Description, target.ParentID
+		req.Usage, req.ApplicationType, req.Index, expiredAt = target.Usage, target.ApplicationType, target.Indexed, target.ExpiredAt
+		req.WorkspaceID = target.WorkspaceID
+	}
+	if req.WorkspaceID != nil {
+		if err := quota.CheckWorkspaceUploadQuota(c.Request.Context(), *req.WorkspaceID, result.Account.GetId(), req.FileSize); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+	} else if err := quota.CheckUploadQuota(result.Account, req.FileSize, 1.0); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+	if err := files.ValidatePoolUsage(service.AccessContext{Account: result.Account, Session: result.Session}, req.PoolID, req.FileSize, req.ContentType); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	direct, err := files.DirectUploadBackend(req.PoolID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "use_proxied_upload": true})
+		return
+	}
+	poolID := files.ResolvedPoolID(req.PoolID)
+	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), req.FileName, &database.PersistentTask{
+		Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage,
+		ParentID: req.ParentID, OverwriteID: req.OverwriteID, ApplicationType: req.ApplicationType,
+		Indexed: req.Index, WorkspaceID: req.WorkspaceID,
+	}, req.FileSize, poolID, req.FileName, req.ContentType, 0, 0)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	sourceKey := "uploads/" + task.TaskID + "/source"
+	if err := tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Updates(map[string]any{"source_key": sourceKey}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	url, err := direct.PresignedPutURL(c.Request.Context(), sourceKey, 15*time.Minute, req.ContentType)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task_id": task.TaskID, "status": database.UploadStatusUploading, "object_key": sourceKey, "upload_url": url, "expires_in": 900, "content_type": req.ContentType})
+}
+
+func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if !requireUploadPermission(c, files, result) {
+		return
+	}
+	task, err := tasks.GetUploadTask(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if task.AccountID.String() != result.Account.GetId() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if task.UploadStatus == database.UploadStatusProcessing || task.UploadStatus == database.UploadStatusCompleted {
+		if task.CreatedFileID != nil {
+			file, fileErr := files.GetFileInWorkspace(*task.CreatedFileID, task.WorkspaceID)
+			if fileErr == nil {
+				c.JSON(http.StatusOK, file)
+				return
+			}
+		}
+	}
+	if task.UploadStatus != database.UploadStatusUploading || task.SourceKey == nil || strings.TrimSpace(*task.SourceKey) == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "upload is not awaiting completion", "status": task.UploadStatus})
+		return
+	}
+	backend, err := files.BackendForPoolID(task.PoolID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "use_proxied_upload": true})
+		return
+	}
+	info, err := backend.Stat(c.Request.Context(), *task.SourceKey)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "uploaded object is unavailable"})
+		return
+	}
+	if task.FileSize == nil || info.Size != *task.FileSize {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "uploaded object size does not match file_size"})
+		return
+	}
+	if err := tasks.MarkProcessing(task.TaskID, *task.SourceKey); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	contentType := stringValue(task.ContentType)
+	if strings.TrimSpace(info.MimeType) != "" {
+		contentType = info.MimeType
+	}
+	object, err := files.CreateStoredObject(*task.SourceKey, &service.StagedFileInfo{Size: info.Size, ContentType: contentType})
+	if err != nil {
+		_ = tasks.MarkFailed(task.TaskID, err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var file *database.CloudFile
+	if task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
+		file, err = files.OverwriteFile(*task.OverwriteID, object.ID, object.StorageKey)
+	} else {
+		file, err = files.CreatePendingUploadedFile(task.AccountID, task.WorkspaceID, stringValue(task.FileName), task.Description, task.Hash, task.ExpiredAt, task.Usage, task.ParentID, object.ID, task.PoolID, task.ApplicationType, object.StorageKey, task.Indexed)
+	}
+	if err != nil {
+		_ = tasks.MarkFailed(task.TaskID, err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	file.Object = object
+	if err := tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Update("created_file_id", file.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{
+		FileID: file.ID, TaskID: task.TaskID, ContentType: contentType, StorageKey: *object.StorageKey,
+	}); err != nil {
+		_ = tasks.MarkFailed(task.TaskID, err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := publishFileMetadataUpdated(c.Request.Context(), bus, dispatcher, file, task.TaskID); err != nil {
+		logging.Log.Error().Err(err).Str("fileId", file.ID).Msg("failed to publish direct upload state")
+	}
+	c.JSON(http.StatusOK, file)
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func publishFileMetadataUpdated(ctx context.Context, bus *eventbus.Bus, dispatcher dispatch.Dispatcher, file *database.CloudFile, taskID string) error {
+	if file == nil {
+		return fmt.Errorf("file is required")
+	}
+	snapshot := eventbus.FileMetadataSnapshot{ID: file.ID, Name: file.Name, Status: int(file.UploadStatus), UpdatedAt: file.UpdatedAt, Usage: file.Usage, ApplicationType: file.ApplicationType}
+	if file.Object != nil {
+		snapshot.MimeType, snapshot.Size, snapshot.HasCompression, snapshot.HasThumbnail = file.Object.MimeType, file.Object.Size, file.Object.HasCompression, file.Object.HasThumbnail
+		snapshot.Hash = file.Object.Hash
+	}
+	evt := eventbus.FileMetadataUpdatedEvent{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events", FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot}
+	if dispatcher != nil {
+		if d, ok := dispatcher.(metadataEventDispatcher); ok {
+			return d.PublishFileMetadataUpdated(ctx, evt)
+		}
+	}
+	if bus != nil {
+		return bus.PublishFileMetadataUpdated(ctx, evt)
+	}
+	return fmt.Errorf("no metadata event sink configured")
+}
+
 // @Summary Direct upload
 // @Tags uploads
 // @Produce json
@@ -2651,6 +2869,24 @@ func uploadProgress(c *gin.Context, tasks *service.TaskService) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"task_id": task.TaskID, "progress": task.Progress})
+}
+
+func uploadStatus(c *gin.Context, tasks *service.TaskService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	task, err := tasks.GetUploadTask(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if task.AccountID.String() != result.Account.GetId() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task_id": task.TaskID, "status": task.UploadStatus, "progress": task.Progress, "file_id": task.CreatedFileID, "error": task.ProcessingError})
 }
 
 func uploadResume(c *gin.Context, tasks *service.TaskService) {

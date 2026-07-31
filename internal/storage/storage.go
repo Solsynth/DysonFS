@@ -13,6 +13,13 @@ type ObjectInfo struct {
 	ETag     string
 }
 
+// DirectUploadBackend is implemented by object-storage backends that can issue
+// browser-upload URLs without proxying the file through DysonFS.
+type DirectUploadBackend interface {
+	Backend
+	PresignedPutURL(ctx context.Context, key string, ttl time.Duration, contentType string) (string, error)
+}
+
 type Backend interface {
 	Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
 	Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error)

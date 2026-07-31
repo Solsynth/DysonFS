@@ -12,6 +12,16 @@ import (
 
 const FolderMimeType = "folder/folder"
 
+type UploadStatus int
+
+const (
+	UploadStatusUnknown UploadStatus = iota
+	UploadStatusUploading
+	UploadStatusProcessing
+	UploadStatusCompleted
+	UploadStatusFailed
+)
+
 type FilePool struct {
 	ID            string         `gorm:"primaryKey;size:36" json:"id"`
 	Name          string         `json:"name"`
@@ -62,6 +72,7 @@ type CloudFile struct {
 	SensitiveMarks   datatypes.JSON   `gorm:"type:jsonb" json:"-"`
 	Usage            *string          `json:"usage"`
 	ApplicationType  *string          `json:"application_type"`
+	UploadStatus     UploadStatus     `gorm:"index" json:"status"`
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_cloud_files_parent_deleted,priority:2" json:"deleted_at"`
 	CreatedAt        time.Time        `gorm:"index:idx_cloud_files_unindexed_listing,priority:5;index:idx_cloud_files_root_listing,priority:4" json:"created_at"`
 	UpdatedAt        time.Time        `json:"updated_at"`
@@ -165,6 +176,7 @@ func (f *CloudFile) MarshalJSON() ([]byte, error) {
 		"is_folder":           f.IsFolder,
 		"usage":               f.Usage,
 		"application_type":    f.ApplicationType,
+		"status":              f.UploadStatus,
 		"is_marked_recycle":   f.IsMarkedRecycle,
 		"storage_id":          f.StorageID,
 		"storage_url":         f.StorageURL,
@@ -343,6 +355,10 @@ type PersistentTask struct {
 	ExpiredAt       *time.Time     `json:"expired_at"`
 	Usage           *string        `json:"usage"`
 	ApplicationType *string        `json:"application_type"`
+	UploadStatus    UploadStatus   `gorm:"index" json:"upload_status"`
+	SourceKey       *string        `gorm:"size:255" json:"source_key"`
+	CreatedFileID   *string        `gorm:"size:36" json:"created_file_id"`
+	ProcessingError *string        `json:"processing_error"`
 	StorageKey      *string        `gorm:"size:36" json:"storage_key"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }

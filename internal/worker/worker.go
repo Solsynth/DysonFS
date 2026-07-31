@@ -340,10 +340,13 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 		Msg("processing uploaded file")
 	parent, err := w.files.GetFile(evt.FileID)
 	if err != nil {
+		w.markUploadFailed(evt, err)
 		return err
 	}
 	if parent.Object == nil {
-		return fmt.Errorf("file object missing")
+		err := fmt.Errorf("file object missing")
+		w.markUploadFailed(evt, err)
+		return err
 	}
 	path := evt.ProcessingFilePath
 	if path != "" {
@@ -355,19 +358,27 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 	if path == "" {
 		rc, err := w.openSourceObject(context.Background(), parent)
 		if err != nil {
+			w.markUploadFailed(evt, err)
 			return err
 		}
 		defer rc.Close()
 		path, err = writeTempFile(rc, parent.ID)
 		if err != nil {
+			w.markUploadFailed(evt, err)
 			return err
 		}
 		defer os.Remove(path)
 	}
 	if path == "" {
-		return fmt.Errorf("processing file path missing")
+		err := fmt.Errorf("processing file path missing")
+		w.markUploadFailed(evt, err)
+		return err
 	}
 	if err := w.processDerived(path, evt, parent); err != nil {
+		w.markUploadFailed(evt, err)
+		return err
+	}
+	if err := w.markUploadCompleted(evt, parent); err != nil {
 		return err
 	}
 	if evt.IsTempFile && evt.ProcessingFilePath != "" {
@@ -378,6 +389,51 @@ func (w *Worker) ProcessUploadedFile(_ context.Context, evt eventbus.FileUploade
 		Str("taskId", evt.TaskID).
 		Msg("uploaded file processing completed")
 	return nil
+}
+
+func (w *Worker) markUploadFailed(evt eventbus.FileUploadedEvent, processingErr error) {
+	if w.db == nil {
+		return
+	}
+	message := processingErr.Error()
+	now := time.Now()
+	if evt.TaskID != "" {
+		_ = w.db.Model(&database.PersistentTask{}).Where("task_id = ?", evt.TaskID).Updates(map[string]any{"status": "failed", "upload_status": database.UploadStatusFailed, "processing_error": message, "updated_at": now, "last_activity": now}).Error
+	}
+	_ = w.db.Model(&database.CloudFile{}).Where("id = ?", evt.FileID).Update("upload_status", database.UploadStatusFailed).Error
+	if file, err := w.files.GetFile(evt.FileID); err == nil {
+		w.publishMetadata(file, evt.TaskID)
+	}
+}
+
+func (w *Worker) markUploadCompleted(evt eventbus.FileUploadedEvent, parent *database.CloudFile) error {
+	if w.db == nil {
+		return nil
+	}
+	now := time.Now()
+	if err := w.db.Model(&database.CloudFile{}).Where("id = ?", evt.FileID).Update("upload_status", database.UploadStatusCompleted).Error; err != nil {
+		return err
+	}
+	if evt.TaskID != "" {
+		if err := w.db.Model(&database.PersistentTask{}).Where("task_id = ?", evt.TaskID).Updates(map[string]any{"status": "completed", "upload_status": database.UploadStatusCompleted, "progress": 1.0, "updated_at": now, "last_activity": now}).Error; err != nil {
+			return err
+		}
+	}
+	parent.UploadStatus = database.UploadStatusCompleted
+	w.publishMetadata(parent, evt.TaskID)
+	return nil
+}
+
+func (w *Worker) publishMetadata(file *database.CloudFile, taskID string) {
+	if w.bus == nil || file == nil {
+		return
+	}
+	snapshot := eventbus.FileMetadataSnapshot{ID: file.ID, Name: file.Name, Status: int(file.UploadStatus), UpdatedAt: file.UpdatedAt, Usage: file.Usage, ApplicationType: file.ApplicationType}
+	if file.Object != nil {
+		snapshot.MimeType, snapshot.Size, snapshot.Hash = file.Object.MimeType, file.Object.Size, file.Object.Hash
+		snapshot.HasCompression, snapshot.HasThumbnail = file.Object.HasCompression, file.Object.HasThumbnail
+	}
+	_ = w.bus.PublishFileMetadataUpdated(context.Background(), eventbus.FileMetadataUpdatedEvent{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events", FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot})
 }
 
 func (w *Worker) openSourceObject(ctx context.Context, file *database.CloudFile) (io.ReadCloser, error) {

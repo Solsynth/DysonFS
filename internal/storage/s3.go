@@ -107,3 +107,14 @@ func (b *S3Backend) SignedURL(ctx context.Context, key string, ttl time.Duration
 	}
 	return urlObj.String(), nil
 }
+
+func (b *S3Backend) PresignedPutURL(ctx context.Context, key string, ttl time.Duration, contentType string) (string, error) {
+	if b == nil || b.client == nil {
+		return "", fmt.Errorf("s3 backend not configured")
+	}
+	urlObj, err := b.client.PresignedPutObject(ctx, b.bucket, path.Clean(key), ttl)
+	if err != nil {
+		return "", err
+	}
+	return urlObj.String(), nil
+}
