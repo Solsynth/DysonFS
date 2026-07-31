@@ -167,7 +167,7 @@ client to retry while it is still `Uploading`.
 
 ## Processing
 
-The existing upload worker consumes the `file_uploaded` processing event. It
+The existing upload worker consumes the `filesystem.file.uploaded.v1` processing event. It
 loads the source from the file's storage backend when no local processing path
 is present.
 
@@ -205,15 +205,17 @@ The `error` field contains the processing error when `status` is `Failed`.
 
 ### Processing event
 
-The direct completion path publishes the existing processing event:
+The direct completion path publishes the processing event:
 
 ```text
-file_uploaded
+filesystem.file.uploaded.v1
 ```
 
-Its payload includes the file ID, task ID, content type, storage key, and the
-source processing path when one exists. Existing DysonFS workers continue to
-consume this subject for compatibility with proxied uploads.
+Its payload includes the shared-style event envelope plus the file ID, task ID,
+content type, storage key, and the source processing path when one exists. All
+DysonFS worker instances consume this subject from the durable
+`dysonfs_file_processing` JetStream consumer. The queue group distributes each
+upload to one processing worker instance.
 
 ### File metadata update event
 
@@ -296,8 +298,8 @@ chunk behavior.
 ## Current Limitations
 
 - Direct multipart presigning is not implemented yet.
-- The current DysonFS processing subject remains the legacy core-NATS
-  `file_uploaded` subject for compatibility.
+- The DysonFS processing subject is JetStream-backed and uses the shared-style
+  `filesystem.file.uploaded.v1` event envelope.
 - File metadata updates use JetStream, but a transactional outbox is not yet
   implemented. A process failure between the database commit and event
   publication can require reconciliation.
