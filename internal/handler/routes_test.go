@@ -1559,15 +1559,22 @@ func TestPrepareDirectUploadMultipartResumesByHash(t *testing.T) {
 		t.Fatalf("new task uploaded_parts = %v, want []", other["uploaded_parts"])
 	}
 
-	// Both tasks address the same hash-derived object key.
+	// Keys stay task-derived and unique: no two tasks (and no task and a
+	// completed file) may ever share an object key, so the expiry sweep can
+	// never touch a file's object.
+	seen := map[string]bool{}
 	for _, id := range []string{taskID, other["task_id"].(string)} {
 		task, err := tasks.GetUploadTask(id)
 		if err != nil {
 			t.Fatalf("get task %s: %v", id, err)
 		}
-		if task.SourceKey == nil || *task.SourceKey != "uploads/"+hash+"/source" {
-			t.Fatalf("task %s source_key = %v, want uploads/%s/source", id, task.SourceKey, hash)
+		if task.SourceKey == nil || *task.SourceKey != "uploads/"+id+"/source" {
+			t.Fatalf("task %s source_key = %v, want uploads/%s/source", id, task.SourceKey, id)
 		}
+		if seen[*task.SourceKey] {
+			t.Fatalf("tasks share source_key %q", *task.SourceKey)
+		}
+		seen[*task.SourceKey] = true
 	}
 }
 

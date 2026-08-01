@@ -68,15 +68,18 @@ new task:
 - Multipart responses additionally return `uploaded_parts` — the part numbers
   already uploaded for the session — so the client only uploads the missing
   parts.
-- The object key is derived from the hash (`uploads/<hash>/source`) rather
-  than the task id, so both attempts address the same S3 object. A resumed
-  single-PUT simply overwrites the object in place.
+- The object key stays task-derived (`uploads/<task-id>/source`), so both
+  attempts address the same object while the same task is in flight. A
+  resumed single-PUT simply overwrites the object in place.
 - Resuming refreshes the task's activity, so the hourly expiry sweep keeps
   collecting only genuinely idle sessions.
 
-A different destination (for example the same file uploaded to another folder)
-never resumes — it gets its own task, which is safe because the shared object
-key always holds identical content for the same hash.
+Keys are always derived from the task id — never from the hash — so an
+in-flight upload can never collide with a completed file's object: completed
+files keep their `uploads/<task-id>/source` key, and the expiry sweep only
+deletes keys of `Uploading` tasks, which no file references. A different
+destination (for example the same file uploaded to another folder) never
+resumes — it gets its own task and its own key.
 
 The client sends metadata to:
 

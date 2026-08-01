@@ -1645,6 +1645,104 @@ func TestExpireStaleUploadTasksSkipsCompletedAndConcurrentClaim(t *testing.T) {
 	}
 }
 
+func TestExpireStaleUploadTasksNeverDeletesFileObjects(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.PersistentTask{})
+	inner := storage.NewLocalBackend(t.TempDir())
+	backend := &recordingMultipartBackend{Backend: inner}
+	svc := NewFileService(&database.DB{DB: db}, backend)
+	ctx := context.Background()
+
+	// A completed file whose object lives at its own task-derived key.
+	completedKey := "uploads/completed-task/source"
+	completedPayload := []byte("historic file bytes")
+	if err := inner.Put(ctx, completedKey, bytes.NewReader(completedPayload), int64(len(completedPayload)), "application/octet-stream"); err != nil {
+		t.Fatalf("put completed object: %v", err)
+	}
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: int64(len(completedPayload)), MimeType: "application/octet-stream", Hash: "h", StorageKey: &completedKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create file object: %v", err)
+	}
+	fileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "old.bin", AccountID: uuid.New(), ObjectID: &objectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create cloud file: %v", err)
+	}
+
+	// A stale in-flight upload of the same file hash, with its own key.
+	seedUploadTask(t, db, "stale-inflight", true)
+	staleKey := "uploads/stale-inflight/source"
+	if err := db.Exec("UPDATE persistent_tasks SET source_key = ? WHERE task_id = ?", staleKey, "stale-inflight").Error; err != nil {
+		t.Fatalf("set stale task key: %v", err)
+	}
+	if err := inner.Put(ctx, staleKey, bytes.NewReader(completedPayload), int64(len(completedPayload)), "application/octet-stream"); err != nil {
+		t.Fatalf("put stale object: %v", err)
+	}
+
+	expired, err := svc.ExpireStaleUploadTasks(ctx)
+	if err != nil {
+		t.Fatalf("ExpireStaleUploadTasks() error = %v", err)
+	}
+	if expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+
+	// The stale upload's object is gone, but the completed file's object
+	// survives untouched.
+	if _, err := inner.Stat(ctx, staleKey); err == nil {
+		t.Fatalf("stale upload object still exists after expiry")
+	}
+	rc, _, err := inner.Get(ctx, completedKey)
+	if err != nil {
+		t.Fatalf("completed file object deleted by sweep: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(got, completedPayload) {
+		t.Fatalf("completed file object corrupted: %q", got)
+	}
+}
+
+func TestExpireStaleUploadTasksIgnoresNullUploadStatus(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.PersistentTask{})
+	inner := storage.NewLocalBackend(t.TempDir())
+	backend := &recordingMultipartBackend{Backend: inner}
+	svc := NewFileService(&database.DB{DB: db}, backend)
+	ctx := context.Background()
+
+	// A legacy row whose upload_status is NULL (old code / raw inserts) with
+	// an object under its source key, idle far beyond the expiry window.
+	legacyKey := "uploads/legacy-null/source"
+	staleAt := time.Now().Add(-48 * time.Hour)
+	if err := db.Exec("INSERT INTO persistent_tasks (id, task_id, name, type, status, upload_status, account_id, source_key, created_at, updated_at, last_activity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		database.NewID(), "legacy-null", "old.bin", "file.upload", "pending", nil, uuid.New(), legacyKey, time.Now(), staleAt, staleAt).Error; err != nil {
+		t.Fatalf("insert legacy task: %v", err)
+	}
+	payload := []byte("legacy bytes")
+	if err := inner.Put(ctx, legacyKey, bytes.NewReader(payload), int64(len(payload)), "application/octet-stream"); err != nil {
+		t.Fatalf("put legacy object: %v", err)
+	}
+
+	// SQL three-valued logic: upload_status = 1 never matches NULL, and the
+	// claim guard repeats the same predicate, so the row and its object are
+	// untouched.
+	expired, err := svc.ExpireStaleUploadTasks(ctx)
+	if err != nil {
+		t.Fatalf("ExpireStaleUploadTasks() error = %v", err)
+	}
+	if expired != 0 {
+		t.Fatalf("expired = %d, want 0 for NULL upload_status rows", expired)
+	}
+	if _, err := inner.Stat(ctx, legacyKey); err != nil {
+		t.Fatalf("legacy object deleted by sweep: %v", err)
+	}
+	var task database.PersistentTask
+	if err := db.First(&task, "task_id = ?", "legacy-null").Error; err != nil {
+		t.Fatalf("reload legacy task: %v", err)
+	}
+	if task.UploadStatus != database.UploadStatusUnknown {
+		t.Fatalf("legacy task upload_status = %d, want unchanged (0)", task.UploadStatus)
+	}
+}
+
 func TestListReanalysisCandidatesIncludesVideoMetadataGaps(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))

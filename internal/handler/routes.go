@@ -2118,9 +2118,11 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 
 	// Resume: a prepare for the same file (hash), size, and destination that
 	// already has an in-progress direct upload continues it instead of
-	// starting over. The deterministic source key derived from the hash keeps
-	// both attempts addressing the same object, so already-uploaded multipart
-	// parts are skipped and a repeated single-PUT overwrites in place.
+	// starting over. The same task is returned, so both attempts share its
+	// task-derived object key: already-uploaded multipart parts are skipped
+	// and a repeated single-PUT overwrites in place. Keys are derived from
+	// the task id (unique per upload), never from the hash, so an in-flight
+	// upload can never collide with a completed file's object.
 	resumeHash := ""
 	if req.Hash != nil {
 		resumeHash = strings.TrimSpace(*req.Hash)
@@ -2130,7 +2132,10 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 			// Keep the session alive so the hourly expiry sweep does not
 			// collect a task the client is actively continuing.
 			_ = tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", existing.TaskID).Updates(map[string]any{"updated_at": time.Now(), "last_activity": time.Now()}).Error
-			resumeKey := "uploads/" + resumeHash + "/source"
+			resumeKey := "uploads/" + existing.TaskID + "/source"
+			if existing.SourceKey != nil && strings.TrimSpace(*existing.SourceKey) != "" {
+				resumeKey = strings.TrimSpace(*existing.SourceKey)
+			}
 			if req.Multipart && existing.UploadID != nil && strings.TrimSpace(*existing.UploadID) != "" {
 				uploaded := []int{}
 				if parts, listErr := multipartBackend.ListParts(c.Request.Context(), resumeKey, *existing.UploadID); listErr == nil {
@@ -2168,9 +2173,6 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		return
 	}
 	sourceKey := "uploads/" + task.TaskID + "/source"
-	if resumeHash != "" {
-		sourceKey = "uploads/" + resumeHash + "/source"
-	}
 	if err := tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Updates(map[string]any{"source_key": sourceKey}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
