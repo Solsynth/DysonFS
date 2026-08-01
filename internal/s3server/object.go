@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -150,7 +151,7 @@ func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, buck
 func (s *Server) handleInitiateMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	uploadID := fmt.Sprintf("%d", time.Now().UnixNano())
 	s.mu.Lock()
-	s.multipart[uploadID] = &multipartUpload{bucket: bucket, key: key, parts: make(map[int][]byte)}
+	s.multipart[uploadID] = &multipartUpload{bucket: bucket, key: key, parts: make(map[int]uploadedPart)}
 	s.mu.Unlock()
 
 	result := InitiateMultipartUploadResult{
@@ -194,11 +195,42 @@ func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket
 	etag := "\"" + hex.EncodeToString(hash[:]) + "\""
 
 	s.mu.Lock()
-	upload.parts[partNumber] = data
+	upload.parts[partNumber] = uploadedPart{data: data, etag: etag}
 	s.mu.Unlock()
 
 	w.Header().Set("ETag", etag)
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleListParts(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	uploadID := r.URL.Query().Get("uploadId")
+	if uploadID == "" {
+		xmlError(w, http.StatusBadRequest, "InvalidArgument", "uploadId is required", "/"+bucket+"/"+key)
+		return
+	}
+	s.mu.Lock()
+	upload, ok := s.multipart[uploadID]
+	s.mu.Unlock()
+	if !ok {
+		xmlError(w, http.StatusNotFound, "NoSuchUpload", "The specified upload does not exist.", "/"+bucket+"/"+key)
+		return
+	}
+	result := ListPartsResult{Bucket: bucket, Key: key, UploadID: uploadID}
+	numbers := make([]int, 0, len(upload.parts))
+	for n := range upload.parts {
+		numbers = append(numbers, n)
+	}
+	sort.Ints(numbers)
+	for _, n := range numbers {
+		part := upload.parts[n]
+		result.Parts = append(result.Parts, ListPartsEntry{
+			PartNumber:   n,
+			LastModified: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+			ETag:         part.etag,
+			Size:         int64(len(part.data)),
+		})
+	}
+	xmlResponse(w, http.StatusOK, result)
 }
 
 func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {

@@ -11,17 +11,22 @@ import (
 type multipartUpload struct {
 	bucket string
 	key    string
-	parts  map[int][]byte
+	parts  map[int]uploadedPart
+}
+
+type uploadedPart struct {
+	data []byte
+	etag string
 }
 
 func (u *multipartUpload) complete(ctx context.Context, backend Backend) error {
 	var combined []byte
 	for i := 1; i <= len(u.parts); i++ {
-		data, ok := u.parts[i]
+		part, ok := u.parts[i]
 		if !ok {
 			continue
 		}
-		combined = append(combined, data...)
+		combined = append(combined, part.data...)
 	}
 	return backend.PutObject(ctx, u.bucket, u.key, bytes.NewReader(combined), int64(len(combined)), "application/octet-stream")
 }
@@ -99,12 +104,14 @@ func (s *Server) Handler() http.HandlerFunc {
 			return
 		}
 
-		if r.URL.Query().Get("uploads") != "" && r.Method == http.MethodPost {
+		if r.URL.Query().Has("uploads") && r.Method == http.MethodPost {
 			s.handleInitiateMultipartUpload(w, r, bucket, key)
 			return
 		}
 		if r.URL.Query().Get("uploadId") != "" {
 			switch r.Method {
+			case http.MethodGet:
+				s.handleListParts(w, r, bucket, key)
 			case http.MethodPost:
 				s.handleCompleteMultipartUpload(w, r, bucket, key)
 			case http.MethodPut:

@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +26,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
+	"src.solsynth.dev/sosys/filesystem/internal/s3server"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
@@ -1082,5 +1086,364 @@ func TestWOPIEndpointsAcceptBearerAccessToken(t *testing.T) {
 	r.ServeHTTP(infoRes, infoReq)
 	if infoRes.Code != http.StatusOK {
 		t.Fatalf("checkfileinfo status = %d, body = %s", infoRes.Code, infoRes.Body.String())
+	}
+}
+
+// memS3Backend is a thread-safe in-memory s3server.Backend used to host the
+// mock S3 endpoint for multipart direct-upload handler tests.
+type memS3Backend struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+	buckets map[string]bool
+}
+
+func newMemS3Backend() *memS3Backend {
+	return &memS3Backend{objects: map[string][]byte{}, buckets: map[string]bool{}}
+}
+
+func (b *memS3Backend) ListBuckets(context.Context) ([]s3server.BucketInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []s3server.BucketInfo
+	for name := range b.buckets {
+		out = append(out, s3server.BucketInfo{Name: name})
+	}
+	return out, nil
+}
+
+func (b *memS3Backend) HeadBucket(_ context.Context, bucket string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.buckets[bucket] {
+		return fmt.Errorf("bucket not found")
+	}
+	return nil
+}
+
+func (b *memS3Backend) CreateBucket(_ context.Context, bucket string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buckets[bucket] = true
+	return nil
+}
+
+func (b *memS3Backend) DeleteBucket(_ context.Context, bucket string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.buckets, bucket)
+	return nil
+}
+
+func (b *memS3Backend) ListObjects(_ context.Context, bucket, prefix, marker string, maxKeys int) ([]s3server.ObjectEntry, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []s3server.ObjectEntry
+	for key, data := range b.objects {
+		if !strings.HasPrefix(key, bucket+"/") {
+			continue
+		}
+		objKey := key[len(bucket)+1:]
+		if prefix != "" && !strings.HasPrefix(objKey, prefix) {
+			continue
+		}
+		if marker != "" && objKey <= marker {
+			continue
+		}
+		out = append(out, s3server.ObjectEntry{Key: objKey, Size: int64(len(data)), LastModified: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), StorageClass: "STANDARD"})
+	}
+	return out, false, nil
+}
+
+func (b *memS3Backend) GetObject(_ context.Context, bucket, key string) (io.ReadCloser, s3server.ObjectInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	data, ok := b.objects[bucket+"/"+key]
+	if !ok {
+		return nil, s3server.ObjectInfo{}, fmt.Errorf("not found")
+	}
+	return io.NopCloser(bytes.NewReader(data)), s3server.ObjectInfo{Size: int64(len(data)), ModTime: time.Now()}, nil
+}
+
+func (b *memS3Backend) PutObject(_ context.Context, bucket, key string, reader io.Reader, _ int64, _ string) error {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.objects[bucket+"/"+key] = data
+	return nil
+}
+
+func (b *memS3Backend) DeleteObject(_ context.Context, bucket, key string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.objects, bucket+"/"+key)
+	return nil
+}
+
+func (b *memS3Backend) StatObject(_ context.Context, bucket, key string) (s3server.ObjectInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	data, ok := b.objects[bucket+"/"+key]
+	if !ok {
+		return s3server.ObjectInfo{}, fmt.Errorf("not found")
+	}
+	return s3server.ObjectInfo{Size: int64(len(data)), ModTime: time.Now()}, nil
+}
+
+func (b *memS3Backend) SignedURL(context.Context, string, string, time.Duration, string, bool) (string, error) {
+	return "", nil
+}
+
+// startNoAuthMockS3 starts the mock S3 server without credential checks and
+// returns its host:port endpoint.
+func startNoAuthMockS3(t *testing.T, bucket string) string {
+	t.Helper()
+	srv := s3server.New(newMemS3Backend(), "", "")
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	endpoint := ts.Listener.Addr().String()
+	req, err := http.NewRequest(http.MethodPut, "http://"+endpoint+"/"+bucket, nil)
+	if err != nil {
+		t.Fatalf("bucket request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create bucket status = %d", resp.StatusCode)
+	}
+	return endpoint
+}
+
+func putURL(t *testing.T, url string, body []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new PUT request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT %s: status = %d", url, resp.StatusCode)
+	}
+}
+
+func TestPrepareDirectUploadMultipartFallsBackToProxied(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+
+	body := `{"file_name":"a.bin","file_size":1024,"content_type":"application/octet-stream","multipart":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Error         string `json:"error"`
+		UseProxied    bool   `json:"use_proxied_upload"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode prepare response: %v", err)
+	}
+	if !resp.UseProxied {
+		t.Fatalf("prepare response = %+v, want use_proxied_upload = true", resp)
+	}
+}
+
+func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	endpoint := startNoAuthMockS3(t, "testbucket")
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+
+	poolID := database.NewID()
+	pool := database.FilePool{
+		ID:        poolID,
+		Name:      "test-s3",
+		AccountID: accountID,
+		StorageConfig: datatypes.JSON([]byte(fmt.Sprintf(
+			`{"enable_signed":true,"enable_ssl":false,"endpoint":%q,"bucket":"testbucket","secret_id":"ak","secret_key":"sk"}`,
+			endpoint))),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	dispatcher := &recordingDispatcher{}
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, dispatcher)
+
+	fileSize := int64(12*1024*1024 + 7) // 3 parts at 5 MiB
+	prepareBody := fmt.Sprintf(`{"file_name":"big.bin","file_size":%d,"content_type":"application/octet-stream","multipart":true,"pool_id":%q}`, fileSize, poolID)
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("prepare status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	var prepared struct {
+		TaskID    string `json:"task_id"`
+		UploadID  string `json:"upload_id"`
+		PartSize  int64  `json:"part_size"`
+		PartCount int    `json:"part_count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare response: %v", err)
+	}
+	if prepared.TaskID == "" || prepared.UploadID == "" {
+		t.Fatalf("prepare response = %+v, want task_id and upload_id", prepared)
+	}
+	if prepared.PartSize != 5*1024*1024 || prepared.PartCount != 3 {
+		t.Fatalf("prepare part plan = size %d count %d, want 5242880 x 3", prepared.PartSize, prepared.PartCount)
+	}
+
+	// Completing with no uploaded parts must be rejected and leave the task
+	// awaiting upload.
+	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/complete-direct/"+prepared.TaskID, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("early complete status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+
+	// Upload each part through its presigned URL.
+	partPayloads := [][]byte{
+		bytes.Repeat([]byte{0x01}, 5*1024*1024),
+		bytes.Repeat([]byte{0x02}, 5*1024*1024),
+		bytes.Repeat([]byte{0x03}, int(fileSize-10*1024*1024)),
+	}
+	for i := 1; i <= 3; i++ {
+		partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/part/"+prepared.TaskID, strings.NewReader(fmt.Sprintf(`{"part_number":%d}`, i)))
+		partReq.Header.Set("Content-Type", "application/json")
+		partRes := httptest.NewRecorder()
+		r.ServeHTTP(partRes, partReq)
+		if partRes.Code != http.StatusOK {
+			t.Fatalf("presign part %d status = %d, body = %s", i, partRes.Code, partRes.Body.String())
+		}
+		var part struct {
+			UploadURL string `json:"upload_url"`
+		}
+		if err := json.Unmarshal(partRes.Body.Bytes(), &part); err != nil {
+			t.Fatalf("decode presign part response: %v", err)
+		}
+		if part.UploadURL == "" {
+			t.Fatalf("presign part %d returned empty upload_url", i)
+		}
+		putURL(t, part.UploadURL, partPayloads[i-1])
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/complete-direct/"+prepared.TaskID, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("complete-direct status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	var file struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &file); err != nil {
+		t.Fatalf("decode complete-direct response: %v", err)
+	}
+	if file.ID == "" {
+		t.Fatalf("complete-direct response missing file id: %s", w.Body.String())
+	}
+	created, err := files.GetFile(file.ID)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if created.Object == nil || created.Object.Size != fileSize {
+		t.Fatalf("created file size = %+v, want %d", created.Object, fileSize)
+	}
+}
+
+func TestPresignUploadPartRejectsOutOfRangeAndUnknownTask(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	endpoint := startNoAuthMockS3(t, "testbucket")
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+
+	poolID := database.NewID()
+	pool := database.FilePool{
+		ID:        poolID,
+		Name:      "test-s3",
+		AccountID: accountID,
+		StorageConfig: datatypes.JSON([]byte(fmt.Sprintf(
+			`{"enable_signed":true,"enable_ssl":false,"endpoint":%q,"bucket":"testbucket","secret_id":"ak","secret_key":"sk"}`,
+			endpoint))),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+
+	prepareBody := `{"file_name":"small.bin","file_size":1024,"content_type":"application/octet-stream","multipart":true,"pool_id":"` + poolID + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("prepare status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var prepared struct {
+		TaskID    string `json:"task_id"`
+		PartCount int    `json:"part_count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare response: %v", err)
+	}
+
+	// 1024 bytes at 5 MiB parts is exactly one part.
+	for _, invalid := range []int{0, 2} {
+		partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/part/"+prepared.TaskID, strings.NewReader(fmt.Sprintf(`{"part_number":%d}`, invalid)))
+		partReq.Header.Set("Content-Type", "application/json")
+		partRes := httptest.NewRecorder()
+		r.ServeHTTP(partRes, partReq)
+		if partRes.Code != http.StatusBadRequest {
+			t.Fatalf("part_number %d status = %d, want 400, body = %s", invalid, partRes.Code, partRes.Body.String())
+		}
+	}
+
+	// Unknown task id.
+	partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/part/nope", strings.NewReader(`{"part_number":1}`))
+	partReq.Header.Set("Content-Type", "application/json")
+	partRes := httptest.NewRecorder()
+	r.ServeHTTP(partRes, partReq)
+	if partRes.Code != http.StatusNotFound {
+		t.Fatalf("unknown task status = %d, want 404, body = %s", partRes.Code, partRes.Body.String())
 	}
 }

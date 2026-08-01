@@ -50,10 +50,9 @@ the client to use a proxied upload instead:
 }
 ```
 
-The direct implementation currently supports one presigned `PUT` object per
-upload. Multipart presigned part URLs are not yet exposed by these endpoints;
-clients that need multipart resume behavior should use the existing proxied
-chunk upload flow until multipart direct-upload support is added.
+The direct path supports two shapes: a single presigned `PUT` for the whole
+object (default), and multipart presigning for large files that want resumable,
+parallel part uploads (see [Multipart Direct Upload](#multipart-direct-upload)).
 
 ## Flow
 
@@ -259,6 +258,113 @@ Consumers must tolerate duplicate events and should not assume that events are
 delivered exactly once. They should compare the snapshot's `updated_at` with
 the stored reference before applying an older event.
 
+## Multipart Direct Upload
+
+For larger files, the client can request a multipart session instead of a
+single presigned `PUT`. The server creates an S3 multipart upload, presigns
+one `PUT` URL per part on demand, and completes the session server-side with
+authoritative verification of the uploaded parts.
+
+### 1. Prepare
+
+Set `multipart: true` in the same `POST /api/files/upload/prepare` request
+used for single-PUT uploads:
+
+```json
+{
+  "file_name": "movie.mov",
+  "file_size": 10737418240,
+  "content_type": "video/quicktime",
+  "multipart": true,
+  "pool_id": "pool-id"
+}
+```
+
+On success the response carries the session and part plan instead of a single
+`upload_url`:
+
+```json
+{
+  "task_id": "01J...",
+  "status": 1,
+  "object_key": "uploads/01J.../source",
+  "upload_id": "QmFzZTY0Li4u",
+  "part_size": 5242880,
+  "part_count": 2048,
+  "expires_in": 900,
+  "content_type": "video/quicktime"
+}
+```
+
+`part_size` is 5 MiB (5242880 bytes); `part_count` is derived from the
+declared file size. Parts are numbered 1 through `part_count`, and every part
+except the last is exactly `part_size` bytes. Pools that cannot presign
+multipart part URLs are rejected with the same
+`{ "error": ..., "use_proxied_upload": true }` response as unsupported direct
+uploads; the client should fall back to the proxied chunked flow.
+
+### 2. Presign a part
+
+Issue one presigned URL per part, on demand:
+
+```http
+POST /api/files/upload/part/<task-id>
+Authorization: Bearer <session-token>
+Content-Type: application/json
+```
+
+```json
+{ "part_number": 7 }
+```
+
+Response:
+
+```json
+{
+  "part_number": 7,
+  "upload_url": "https://s3.example.com/bucket/uploads/01J.../source?partNumber=7&uploadId=...&X-Amz-...",
+  "expires_in": 900,
+  "content_type": "video/quicktime"
+}
+```
+
+The URL is valid for 15 minutes and authorizes exactly one `PUT` of that part:
+
+```http
+PUT <upload_url>
+Content-Type: video/quicktime
+
+<part bytes>
+```
+
+Requesting parts one at a time (instead of materializing every URL in prepare)
+keeps responses small and makes resume natural: after an interruption the
+client re-requests the parts it still needs. The endpoint validates task
+ownership, the `Uploading` status, and that `part_number` falls within
+`1..part_count`.
+
+### 3. Complete
+
+`POST /api/files/upload/complete-direct/<task-id>` behaves as described in the
+single-PUT flow, with one extra step for multipart sessions: before the `Stat`
+check, the server lists the uploaded parts, verifies the count matches
+`part_count`, the part numbers are contiguous `1..N`, and the part sizes sum
+exactly to the declared `file_size`, then calls S3's complete-multipart
+operation. After completion the object exists under the same `object_key` and
+the normal verification and file-creation steps run unchanged.
+
+If parts are missing or sizes do not match, the endpoint returns a 400 error
+and leaves the task `Uploading` so the client can upload the missing parts and
+retry. The session is only discarded explicitly, via cancel:
+
+```http
+DELETE /api/files/upload/task/<task-id>
+Authorization: Bearer <session-token>
+```
+
+Cancel aborts the multipart session (discarding uploaded parts) and marks the
+task failed.
+
 ## Proxied Fallback
 
 Clients should use the existing proxied endpoints when direct upload is not
@@ -297,7 +403,11 @@ chunk behavior.
 
 ## Current Limitations
 
-- Direct multipart presigning is not implemented yet.
+- Multipart direct uploads require an S3-compatible pool that supports
+  multipart presigning (all S3 backends do); local and unsigned pools fall
+  back to proxied uploads.
+- The client tracks which parts it has uploaded. The server verifies part
+  completeness only at completion time; there is no per-part status endpoint.
 - The DysonFS processing subject is JetStream-backed and uses the shared-style
   `filesystem.file.uploaded.v1` event envelope.
 - File metadata updates use JetStream, but a transactional outbox is not yet

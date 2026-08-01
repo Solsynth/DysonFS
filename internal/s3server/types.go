@@ -62,6 +62,24 @@ type CompleteMultipartUploadResult struct {
 	ETag     string   `xml:"ETag"`
 }
 
+// ListPartsResult mirrors the S3 ListParts response so minio-go's
+// ListObjectParts client call can round-trip against the mock.
+type ListPartsResult struct {
+	XMLName     xml.Name         `xml:"ListPartsResult"`
+	Bucket      string           `xml:"Bucket"`
+	Key         string           `xml:"Key"`
+	UploadID    string           `xml:"UploadId"`
+	Parts       []ListPartsEntry `xml:"Part"`
+	IsTruncated bool             `xml:"IsTruncated"`
+}
+
+type ListPartsEntry struct {
+	PartNumber   int    `xml:"PartNumber"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+}
+
 type InitiateMultipartUploadResult struct {
 	XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
 	Bucket   string   `xml:"Bucket"`

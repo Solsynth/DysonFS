@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -117,4 +119,71 @@ func (b *S3Backend) PresignedPutURL(ctx context.Context, key string, ttl time.Du
 		return "", err
 	}
 	return urlObj.String(), nil
+}
+
+func (b *S3Backend) core() *minio.Core {
+	return &minio.Core{Client: b.client}
+}
+
+func (b *S3Backend) CreateMultipartUpload(ctx context.Context, key, contentType string) (string, error) {
+	if b == nil || b.client == nil {
+		return "", fmt.Errorf("s3 backend not configured")
+	}
+	return b.core().NewMultipartUpload(ctx, b.bucket, path.Clean(key), minio.PutObjectOptions{ContentType: contentType})
+}
+
+func (b *S3Backend) PresignPartUpload(ctx context.Context, key, uploadID string, partNumber int, ttl time.Duration) (string, error) {
+	if b == nil || b.client == nil {
+		return "", fmt.Errorf("s3 backend not configured")
+	}
+	params := make(url.Values)
+	params.Set("partNumber", strconv.Itoa(partNumber))
+	params.Set("uploadId", uploadID)
+	urlObj, err := b.client.Presign(ctx, http.MethodPut, b.bucket, path.Clean(key), ttl, params)
+	if err != nil {
+		return "", err
+	}
+	return urlObj.String(), nil
+}
+
+func (b *S3Backend) ListParts(ctx context.Context, key, uploadID string) ([]MultipartPart, error) {
+	if b == nil || b.client == nil {
+		return nil, fmt.Errorf("s3 backend not configured")
+	}
+	var parts []MultipartPart
+	marker := 0
+	for {
+		result, err := b.core().ListObjectParts(ctx, b.bucket, path.Clean(key), uploadID, marker, 1000)
+		if err != nil {
+			return nil, err
+		}
+		for _, part := range result.ObjectParts {
+			parts = append(parts, MultipartPart{PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size})
+		}
+		if !result.IsTruncated {
+			break
+		}
+		marker = result.NextPartNumberMarker
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+	return parts, nil
+}
+
+func (b *S3Backend) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []MultipartPart) error {
+	if b == nil || b.client == nil {
+		return fmt.Errorf("s3 backend not configured")
+	}
+	complete := make([]minio.CompletePart, 0, len(parts))
+	for _, part := range parts {
+		complete = append(complete, minio.CompletePart{PartNumber: part.PartNumber, ETag: part.ETag})
+	}
+	_, err := b.core().CompleteMultipartUpload(ctx, b.bucket, path.Clean(key), uploadID, complete, minio.PutObjectOptions{})
+	return err
+}
+
+func (b *S3Backend) AbortMultipartUpload(ctx context.Context, key, uploadID string) error {
+	if b == nil || b.client == nil {
+		return fmt.Errorf("s3 backend not configured")
+	}
+	return b.core().AbortMultipartUpload(ctx, b.bucket, path.Clean(key), uploadID)
 }

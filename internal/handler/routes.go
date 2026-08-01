@@ -22,6 +22,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
+	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	"src.solsynth.dev/sosys/go/pkg/auth"
 	gen "src.solsynth.dev/sosys/go/proto"
 
@@ -81,6 +82,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	u := r.Group("/api/files/upload")
 	{
 		u.POST("/prepare", func(c *gin.Context) { prepareDirectUpload(c, files, tasks, quota) })
+		u.POST("/part/:taskId", func(c *gin.Context) { presignUploadPart(c, files, tasks) })
 		u.POST("/complete-direct/:taskId", func(c *gin.Context) { completeDirectUpload(c, files, tasks, bus, dispatcher) })
 		u.POST("/create", func(c *gin.Context) { createUploadTask(c, cfg, files, tasks, quota) })
 		u.POST("/direct", func(c *gin.Context) { directUpload(c, cfg, files, tasks, quota, bus, dispatcher) })
@@ -90,7 +92,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		u.GET("/progress/:taskId", func(c *gin.Context) { uploadProgress(c, tasks) })
 		u.GET("/status/:taskId", func(c *gin.Context) { uploadStatus(c, tasks) })
 		u.GET("/resume/:taskId", func(c *gin.Context) { uploadResume(c, tasks) })
-		u.DELETE("/task/:taskId", func(c *gin.Context) { cancelUpload(c, tasks) })
+		u.DELETE("/task/:taskId", func(c *gin.Context) { cancelUpload(c, files, tasks) })
 		u.GET("/stats", func(c *gin.Context) { uploadStats(c, tasks) })
 		u.DELETE("/tasks/cleanup", func(c *gin.Context) { cleanupTasks(c, tasks) })
 		u.GET("/tasks/recent", func(c *gin.Context) { recentTasks(c, tasks) })
@@ -2014,6 +2016,21 @@ type metadataEventDispatcher interface {
 	PublishFileMetadataUpdated(context.Context, eventbus.FileMetadataUpdatedEvent) error
 }
 
+// defaultMultipartPartSize is the server-chosen part size for multipart direct
+// uploads. It mirrors the proxied chunk size so both flows use comparable
+// request granularity.
+const defaultMultipartPartSize int64 = 5 * 1024 * 1024
+
+// multipartPlan derives the part size and part count for a direct upload of
+// fileSize bytes.
+func multipartPlan(fileSize int64) (partSize, partCount int64) {
+	partSize = defaultMultipartPartSize
+	if fileSize <= 0 {
+		return partSize, 0
+	}
+	return partSize, (fileSize + partSize - 1) / partSize
+}
+
 func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -2037,6 +2054,7 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		Usage           *string `json:"usage"`
 		ApplicationType *string `json:"application_type"`
 		ContentType     string  `json:"content_type"`
+		Multipart       bool    `json:"multipart"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2086,6 +2104,11 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "use_proxied_upload": true})
 		return
 	}
+	multipartBackend, multipartSupported := direct.(storage.MultipartDirectUploadBackend)
+	if req.Multipart && !multipartSupported {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "storage pool does not support multipart direct uploads; use proxied upload", "use_proxied_upload": true})
+		return
+	}
 	poolID := files.ResolvedPoolID(req.PoolID)
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), req.FileName, &database.PersistentTask{
 		Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage,
@@ -2101,12 +2124,91 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if req.Multipart {
+		uploadID, mpErr := multipartBackend.CreateMultipartUpload(c.Request.Context(), sourceKey, req.ContentType)
+		if mpErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": mpErr.Error()})
+			return
+		}
+		if mpErr := tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Update("upload_id", uploadID).Error; mpErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": mpErr.Error()})
+			return
+		}
+		partSize, partCount := multipartPlan(req.FileSize)
+		c.JSON(http.StatusOK, gin.H{
+			"task_id": task.TaskID, "status": database.UploadStatusUploading,
+			"object_key": sourceKey, "upload_id": uploadID,
+			"part_size": partSize, "part_count": partCount,
+			"expires_in": 900, "content_type": req.ContentType,
+		})
+		return
+	}
 	url, err := direct.PresignedPutURL(c.Request.Context(), sourceKey, 15*time.Minute, req.ContentType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"task_id": task.TaskID, "status": database.UploadStatusUploading, "object_key": sourceKey, "upload_url": url, "expires_in": 900, "content_type": req.ContentType})
+}
+
+// presignUploadPart issues a presigned PUT URL for a single part of a
+// multipart direct upload. Issuing one URL per request (instead of returning
+// every part URL in prepare) keeps responses small and lets a client resume an
+// interrupted upload by re-requesting the parts it still needs.
+func presignUploadPart(c *gin.Context, files *service.FileService, tasks *service.TaskService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if !requireUploadPermission(c, files, result) {
+		return
+	}
+	var req struct {
+		PartNumber int `json:"part_number"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	task, err := tasks.GetUploadTask(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if task.AccountID.String() != result.Account.GetId() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if task.UploadStatus != database.UploadStatusUploading || task.UploadID == nil || strings.TrimSpace(*task.UploadID) == "" || task.SourceKey == nil || strings.TrimSpace(*task.SourceKey) == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "upload is not awaiting part upload", "status": task.UploadStatus})
+		return
+	}
+	fileSize := int64(0)
+	if task.FileSize != nil {
+		fileSize = *task.FileSize
+	}
+	_, partCount := multipartPlan(fileSize)
+	if req.PartNumber <= 0 || int64(req.PartNumber) > partCount {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("part_number out of range: expected 1..%d", partCount)})
+		return
+	}
+	direct, err := files.DirectUploadBackend(task.PoolID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "use_proxied_upload": true})
+		return
+	}
+	multipartBackend, ok := direct.(storage.MultipartDirectUploadBackend)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "storage pool does not support multipart direct uploads; use proxied upload", "use_proxied_upload": true})
+		return
+	}
+	url, err := multipartBackend.PresignPartUpload(c.Request.Context(), *task.SourceKey, *task.UploadID, req.PartNumber, 15*time.Minute)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"part_number": req.PartNumber, "upload_url": url, "expires_in": 900, "content_type": stringValue(task.ContentType)})
 }
 
 func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *service.TaskService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
@@ -2144,6 +2246,43 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "use_proxied_upload": true})
 		return
+	}
+	if task.UploadID != nil && strings.TrimSpace(*task.UploadID) != "" {
+		multipartBackend, ok := backend.(storage.MultipartDirectUploadBackend)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "storage pool does not support multipart direct uploads; use proxied upload", "use_proxied_upload": true})
+			return
+		}
+		parts, listErr := multipartBackend.ListParts(c.Request.Context(), *task.SourceKey, *task.UploadID)
+		if listErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "uploaded parts are unavailable"})
+			return
+		}
+		fileSize := int64(0)
+		if task.FileSize != nil {
+			fileSize = *task.FileSize
+		}
+		_, partCount := multipartPlan(fileSize)
+		if int64(len(parts)) != partCount {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("uploaded parts are incomplete: got %d, want %d", len(parts), partCount)})
+			return
+		}
+		var totalSize int64
+		for idx, part := range parts {
+			if part.PartNumber != idx+1 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "uploaded parts are out of order or missing"})
+				return
+			}
+			totalSize += part.Size
+		}
+		if totalSize != fileSize {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "uploaded parts size does not match file_size"})
+			return
+		}
+		if err := multipartBackend.CompleteMultipartUpload(c.Request.Context(), *task.SourceKey, *task.UploadID, parts); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	info, err := backend.Stat(c.Request.Context(), *task.SourceKey)
 	if err != nil {
@@ -2898,8 +3037,17 @@ func uploadResume(c *gin.Context, tasks *service.TaskService) {
 	c.JSON(http.StatusOK, task)
 }
 
-func cancelUpload(c *gin.Context, tasks *service.TaskService) {
-	if err := tasks.FailTask(c.Param("taskId"), "cancelled"); err != nil {
+func cancelUpload(c *gin.Context, files *service.FileService, tasks *service.TaskService) {
+	taskID := c.Param("taskId")
+	task, err := tasks.GetUploadTask(taskID)
+	if err == nil && task != nil && task.UploadID != nil && strings.TrimSpace(*task.UploadID) != "" && task.SourceKey != nil {
+		if backend, backendErr := files.BackendForPoolID(task.PoolID); backendErr == nil {
+			if multipartBackend, ok := backend.(storage.MultipartDirectUploadBackend); ok {
+				_ = multipartBackend.AbortMultipartUpload(c.Request.Context(), *task.SourceKey, *task.UploadID)
+			}
+		}
+	}
+	if err := tasks.FailTask(taskID, "cancelled"); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
