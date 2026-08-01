@@ -181,6 +181,11 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		adminStorage.GET("/pool-migrations/:taskId", func(c *gin.Context) { getPoolMigration(c, files, tasks) })
 	}
 
+	adminUploads := r.Group("/api/admin/uploads")
+	{
+		adminUploads.POST("/gc", func(c *gin.Context) { triggerUploadTaskGC(c, files) })
+	}
+
 	dfs := r.Group("/_dfs")
 	{
 		dfs.GET("/version", func(c *gin.Context) { StorageNodeVersion(c, cfg.StorageNode) })
@@ -2110,6 +2115,49 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		return
 	}
 	poolID := files.ResolvedPoolID(req.PoolID)
+
+	// Resume: a prepare for the same file (hash), size, and destination that
+	// already has an in-progress direct upload continues it instead of
+	// starting over. The deterministic source key derived from the hash keeps
+	// both attempts addressing the same object, so already-uploaded multipart
+	// parts are skipped and a repeated single-PUT overwrites in place.
+	resumeHash := ""
+	if req.Hash != nil {
+		resumeHash = strings.TrimSpace(*req.Hash)
+	}
+	if resumeHash != "" {
+		if existing, resumeErr := tasks.FindResumableUploadTask(uuid.MustParse(result.Account.GetId()), poolID, resumeHash, req.FileSize, req.ParentID, req.WorkspaceID, req.OverwriteID); resumeErr == nil && existing != nil {
+			// Keep the session alive so the hourly expiry sweep does not
+			// collect a task the client is actively continuing.
+			_ = tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", existing.TaskID).Updates(map[string]any{"updated_at": time.Now(), "last_activity": time.Now()}).Error
+			resumeKey := "uploads/" + resumeHash + "/source"
+			if req.Multipart && existing.UploadID != nil && strings.TrimSpace(*existing.UploadID) != "" {
+				uploaded := []int{}
+				if parts, listErr := multipartBackend.ListParts(c.Request.Context(), resumeKey, *existing.UploadID); listErr == nil {
+					for _, part := range parts {
+						uploaded = append(uploaded, part.PartNumber)
+					}
+				}
+				partSize, partCount := multipartPlan(req.FileSize)
+				c.JSON(http.StatusOK, gin.H{
+					"task_id": existing.TaskID, "status": database.UploadStatusUploading, "resumed": true,
+					"object_key": resumeKey, "upload_id": *existing.UploadID,
+					"part_size": partSize, "part_count": partCount,
+					"uploaded_parts": uploaded,
+					"expires_in": 900, "content_type": req.ContentType,
+				})
+				return
+			}
+			url, urlErr := direct.PresignedPutURL(c.Request.Context(), resumeKey, 15*time.Minute, req.ContentType)
+			if urlErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": urlErr.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"task_id": existing.TaskID, "status": database.UploadStatusUploading, "resumed": true, "object_key": resumeKey, "upload_url": url, "expires_in": 900, "content_type": req.ContentType})
+			return
+		}
+	}
+
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), req.FileName, &database.PersistentTask{
 		Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage,
 		ParentID: req.ParentID, OverwriteID: req.OverwriteID, ApplicationType: req.ApplicationType,
@@ -2120,6 +2168,9 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		return
 	}
 	sourceKey := "uploads/" + task.TaskID + "/source"
+	if resumeHash != "" {
+		sourceKey = "uploads/" + resumeHash + "/source"
+	}
 	if err := tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Updates(map[string]any{"source_key": sourceKey}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2139,6 +2190,7 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 			"task_id": task.TaskID, "status": database.UploadStatusUploading,
 			"object_key": sourceKey, "upload_id": uploadID,
 			"part_size": partSize, "part_count": partCount,
+			"uploaded_parts": []int{},
 			"expires_in": 900, "content_type": req.ContentType,
 		})
 		return
@@ -2208,6 +2260,9 @@ func presignUploadPart(c *gin.Context, files *service.FileService, tasks *servic
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Refresh task activity so the hourly expiry sweep never expires a
+	// multipart session that is still uploading parts.
+	_ = tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Updates(map[string]any{"updated_at": time.Now(), "last_activity": time.Now()}).Error
 	c.JSON(http.StatusOK, gin.H{"part_number": req.PartNumber, "upload_url": url, "expires_in": 900, "content_type": stringValue(task.ContentType)})
 }
 
@@ -2322,6 +2377,21 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 	if err := tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", task.TaskID).Update("created_file_id", file.ID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	// Direct uploads bypass DysonFS disk, so the object row starts without
+	// analyzed metadata. Fetch the object from the pool, analyze it, and
+	// overwrite the local record, mirroring the proxied flow's synchronous
+	// analysis. Failures are non-fatal: the upload itself already succeeded.
+	analysis, analysisErr := files.RefreshStoredObjectAnalysis(c.Request.Context(), backend, object.ID, *task.SourceKey, contentType)
+	if analysisErr != nil {
+		logging.Log.Warn().Err(analysisErr).Str("fileId", file.ID).Str("storageKey", *task.SourceKey).Msg("failed to analyze direct-uploaded object")
+	} else {
+		refreshed, storeErr := files.StoreSourceAnalysis(file.ID, analysis)
+		if storeErr != nil {
+			logging.Log.Warn().Err(storeErr).Str("fileId", file.ID).Msg("failed to persist direct-uploaded object metadata")
+		} else {
+			file = refreshed
+		}
 	}
 	if err := publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{
 		FileID: file.ID, TaskID: task.TaskID, ContentType: contentType, StorageKey: *object.StorageKey,

@@ -229,12 +229,14 @@ func (a *App) startMaster(ctx context.Context) error {
 	go func() { _ = a.grpcSrv.Serve(lis) }()
 	go func() { _ = a.httpSrv.ListenAndServe() }()
 	a.startMasterS3()
+	a.startUploadExpirySweep(ctx)
 	logging.Log.Info().Str("mode", a.mode).Msg("master started")
 	return nil
 }
 
-func (a *App) startWorker(context.Context) error {
-	go func() { _ = a.worker.Start(context.Background()) }()
+func (a *App) startWorker(ctx context.Context) error {
+	go func() { _ = a.worker.Start(ctx) }()
+	a.startUploadExpirySweep(ctx)
 	logging.Log.Info().Str("mode", a.mode).Msg("worker started")
 	return nil
 }
@@ -264,8 +266,41 @@ func (a *App) startBundled(ctx context.Context) error {
 	go func() { _ = a.grpcSrv.Serve(lis) }()
 	go func() { _ = a.httpSrv.ListenAndServe() }()
 	a.startMasterS3()
+	a.startUploadExpirySweep(ctx)
 	logging.Log.Info().Str("mode", a.mode).Msg("bundled started")
 	return nil
+}
+
+// startUploadExpirySweep runs the stale-upload expiry sweep immediately and
+// then every hour, in every mode that owns the task table (master, worker,
+// bundled). Broken direct uploads otherwise leave their multipart sessions and
+// single-PUT objects in the storage pool forever.
+func (a *App) startUploadExpirySweep(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		a.runUploadExpirySweep(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.runUploadExpirySweep(ctx)
+			}
+		}
+	}()
+}
+
+func (a *App) runUploadExpirySweep(ctx context.Context) {
+	started := time.Now()
+	count, err := a.files.ExpireStaleUploadTasks(ctx)
+	if err != nil {
+		logging.Log.Error().Err(err).Msg("upload expiry sweep failed")
+		return
+	}
+	if count > 0 {
+		logging.Log.Info().Int("expired", count).Dur("duration", time.Since(started)).Msg("upload expiry sweep complete")
+	}
 }
 
 func (a *App) startStorage(context.Context) error {

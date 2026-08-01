@@ -218,6 +218,59 @@ func TestAdminStorageConfigRequiresFilesManagePermission(t *testing.T) {
 	}
 }
 
+func TestAdminUploadGCRunsExpirySweep(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	accountID := uuid.New()
+	files.SetPermissionChecker(permissionCheckerFunc(func(_ context.Context, gotAccountID, key string) (bool, error) {
+		if gotAccountID != accountID.String() || key != service.PermissionFilesManage {
+			t.Fatalf("permission check = (%q, %q), want (%q, %q)", gotAccountID, key, accountID, service.PermissionFilesManage)
+		}
+		return true, nil
+	}))
+
+	sourceKey := "uploads/gc/source"
+	staleAt := time.Now().Add(-7 * time.Hour)
+	if err := db.Exec("INSERT INTO persistent_tasks (id, task_id, name, type, status, upload_status, account_id, source_key, created_at, updated_at, last_activity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		database.NewID(), "gc-stale", "file.bin", "file.upload", "pending", database.UploadStatusUploading, accountID, sourceKey, time.Now(), staleAt, staleAt).Error; err != nil {
+		t.Fatalf("insert stale task: %v", err)
+	}
+	if err := stor.Put(context.Background(), sourceKey, strings.NewReader("orphan"), int64(len("orphan")), "application/octet-stream"); err != nil {
+		t.Fatalf("put orphan object: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/admin/uploads/gc", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Expired int `json:"expired"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode GC response: %v", err)
+	}
+	if resp.Expired != 1 {
+		t.Fatalf("expired = %d, want 1", resp.Expired)
+	}
+	var task database.PersistentTask
+	if err := db.First(&task, "task_id = ?", "gc-stale").Error; err != nil {
+		t.Fatalf("reload task: %v", err)
+	}
+	if task.UploadStatus != database.UploadStatusFailed || task.Status != "expired" {
+		t.Fatalf("task status = %s/%d, want expired/failed", task.Status, task.UploadStatus)
+	}
+	if _, err := stor.Stat(context.Background(), sourceKey); err == nil {
+		t.Fatalf("orphan object still exists after GC")
+	}
+}
+
 func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
@@ -1333,6 +1386,13 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 		t.Fatalf("early complete status = %d, want 400, body = %s", w.Code, w.Body.String())
 	}
 
+	// Each part presign must refresh the task's activity so the hourly expiry
+	// sweep never expires a session that is still uploading.
+	beforePresign, err := tasks.GetUploadTask(prepared.TaskID)
+	if err != nil {
+		t.Fatalf("get task before presign: %v", err)
+	}
+
 	// Upload each part through its presigned URL.
 	partPayloads := [][]byte{
 		bytes.Repeat([]byte{0x01}, 5*1024*1024),
@@ -1359,6 +1419,14 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 		putURL(t, part.UploadURL, partPayloads[i-1])
 	}
 
+	afterPresign, err := tasks.GetUploadTask(prepared.TaskID)
+	if err != nil {
+		t.Fatalf("get task after presign: %v", err)
+	}
+	if !afterPresign.UpdatedAt.After(beforePresign.UpdatedAt) {
+		t.Fatalf("part presign did not refresh task activity: before %v, after %v", beforePresign.UpdatedAt, afterPresign.UpdatedAt)
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/complete", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1381,6 +1449,131 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 	if created.Object == nil || created.Object.Size != fileSize {
 		t.Fatalf("created file size = %+v, want %d", created.Object, fileSize)
 	}
+}
+
+func TestPrepareDirectUploadMultipartResumesByHash(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	endpoint := startNoAuthMockS3(t, "testbucket")
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+
+	poolID := database.NewID()
+	pool := database.FilePool{
+		ID:        poolID,
+		Name:      "test-s3",
+		AccountID: accountID,
+		StorageConfig: datatypes.JSON([]byte(fmt.Sprintf(
+			`{"enable_signed":true,"enable_ssl":false,"endpoint":%q,"bucket":"testbucket","secret_id":"ak","secret_key":"sk"}`,
+			endpoint))),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+
+	const hash = "0123456789abcdef0123456789abcdef"
+	fileSize := int64(12*1024*1024 + 7)
+	prepareBody := fmt.Sprintf(`{"file_name":"big.bin","file_size":%d,"content_type":"application/octet-stream","multipart":true,"pool_id":%q,"hash":%q}`, fileSize, poolID, hash)
+	prepare := func() (map[string]any, int) {
+		req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode prepare response: %v", err)
+		}
+		return body, w.Code
+	}
+
+	first, code := prepare()
+	if code != http.StatusOK {
+		t.Fatalf("first prepare status = %d, body = %s", code, w2s(first))
+	}
+	if first["resumed"] == true {
+		t.Fatalf("first prepare unexpectedly resumed: %v", first)
+	}
+	taskID := first["task_id"].(string)
+	uploadID := first["upload_id"].(string)
+
+	// Upload part 1 of 3, then re-prepare: the same session must come back
+	// with part 1 reported as already uploaded.
+	partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/"+taskID+"/part", strings.NewReader(`{"part_number":1}`))
+	partReq.Header.Set("Content-Type", "application/json")
+	partRes := httptest.NewRecorder()
+	r.ServeHTTP(partRes, partReq)
+	if partRes.Code != http.StatusOK {
+		t.Fatalf("presign part status = %d, body = %s", partRes.Code, partRes.Body.String())
+	}
+	var part struct {
+		UploadURL string `json:"upload_url"`
+	}
+	if err := json.Unmarshal(partRes.Body.Bytes(), &part); err != nil {
+		t.Fatalf("decode presign part: %v", err)
+	}
+	putURL(t, part.UploadURL, bytes.Repeat([]byte{0x01}, 5*1024*1024))
+
+	second, code := prepare()
+	if code != http.StatusOK {
+		t.Fatalf("second prepare status = %d, body = %s", code, w2s(second))
+	}
+	if second["task_id"] != taskID {
+		t.Fatalf("resume task_id = %v, want %s", second["task_id"], taskID)
+	}
+	if second["resumed"] != true {
+		t.Fatalf("resume response missing resumed flag: %v", second)
+	}
+	if second["upload_id"] != uploadID {
+		t.Fatalf("resume upload_id = %v, want %s", second["upload_id"], uploadID)
+	}
+	uploaded, ok := second["uploaded_parts"].([]any)
+	if !ok || len(uploaded) != 1 || int(uploaded[0].(float64)) != 1 {
+		t.Fatalf("resume uploaded_parts = %v, want [1]", second["uploaded_parts"])
+	}
+
+	// Same hash to a different destination must get its own task.
+	otherBody := fmt.Sprintf(`{"file_name":"big.bin","file_size":%d,"content_type":"application/octet-stream","multipart":true,"pool_id":%q,"hash":%q,"parent_id":%q}`, fileSize, poolID, hash, database.NewID())
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(otherBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("different-destination prepare status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var other map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &other); err != nil {
+		t.Fatalf("decode other prepare: %v", err)
+	}
+	if other["task_id"] == taskID {
+		t.Fatalf("different destination resumed the same task: %v", other)
+	}
+	if ups, ok := other["uploaded_parts"].([]any); !ok || len(ups) != 0 {
+		t.Fatalf("new task uploaded_parts = %v, want []", other["uploaded_parts"])
+	}
+
+	// Both tasks address the same hash-derived object key.
+	for _, id := range []string{taskID, other["task_id"].(string)} {
+		task, err := tasks.GetUploadTask(id)
+		if err != nil {
+			t.Fatalf("get task %s: %v", id, err)
+		}
+		if task.SourceKey == nil || *task.SourceKey != "uploads/"+hash+"/source" {
+			t.Fatalf("task %s source_key = %v, want uploads/%s/source", id, task.SourceKey, hash)
+		}
+	}
+}
+
+func w2s(v map[string]any) string {
+	raw, _ := json.Marshal(v)
+	return string(raw)
 }
 
 func TestPresignUploadPartRejectsOutOfRangeAndUnknownTask(t *testing.T) {

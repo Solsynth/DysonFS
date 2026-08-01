@@ -3223,6 +3223,50 @@ func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload
 	return task, nil
 }
 
+// FindResumableUploadTask returns an in-progress direct upload for the same
+// file (hash), size, and destination that a new prepare can continue instead
+// of starting over. Destination pointers are compared nil-safe, so the same
+// file uploaded to a different folder gets its own task.
+func (s *TaskService) FindResumableUploadTask(accountID uuid.UUID, poolID *string, hash string, size int64, parentID, workspaceID, overwriteID *string) (*database.PersistentTask, error) {
+	if strings.TrimSpace(hash) == "" {
+		return nil, nil
+	}
+	var candidates []database.PersistentTask
+	if err := s.db.Where("account_id = ? AND upload_status = ? AND type = ? AND hash = ? AND file_size = ?",
+		accountID, database.UploadStatusUploading, "file.upload", hash, size).Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+	resolvedPool := ""
+	if poolID != nil {
+		resolvedPool = strings.TrimSpace(*poolID)
+	}
+	for i := range candidates {
+		task := &candidates[i]
+		candidatePool := ""
+		if task.PoolID != nil {
+			candidatePool = strings.TrimSpace(*task.PoolID)
+		}
+		if candidatePool != resolvedPool {
+			continue
+		}
+		if !ptrStringEqual(task.ParentID, parentID) || !ptrStringEqual(task.WorkspaceID, workspaceID) || !ptrStringEqual(task.OverwriteID, overwriteID) {
+			continue
+		}
+		return task, nil
+	}
+	return nil, nil
+}
+
+func ptrStringEqual(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.TrimSpace(*a) == strings.TrimSpace(*b)
+}
+
 func (s *TaskService) CreatePoolMigrationTask(accountID uuid.UUID, sourcePoolID, targetPoolID string, fileIDs []string) (*database.PersistentTask, error) {
 	if strings.TrimSpace(sourcePoolID) == "" || strings.TrimSpace(targetPoolID) == "" || sourcePoolID == targetPoolID {
 		return nil, fmt.Errorf("source and target pools must be different")

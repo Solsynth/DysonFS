@@ -107,6 +107,21 @@ func createPoolMigration(c *gin.Context, files *service.FileService, tasks *serv
 	c.JSON(http.StatusAccepted, task)
 }
 
+// triggerUploadTaskGC manually runs the stale-upload expiry sweep: it aborts
+// expired multipart sessions, deletes orphaned single-PUT objects, and marks
+// the tasks failed, exactly like the hourly background sweep.
+func triggerUploadTaskGC(c *gin.Context, files *service.FileService) {
+	if !requireStorageAdminPermission(c, files) {
+		return
+	}
+	expired, err := files.ExpireStaleUploadTasks(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"expired": expired})
+}
+
 func getPoolMigration(c *gin.Context, files *service.FileService, tasks *service.TaskService) {
 	if !requireStorageAdminPermission(c, files) {
 		return

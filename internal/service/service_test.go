@@ -1,7 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1430,6 +1433,215 @@ func TestStoreSourceAnalysisStoresSharedMediaDimensions(t *testing.T) {
 	}
 	if width, height := mediaDimensions(analysis.Media); width != 1920 || height != 1080 {
 		t.Fatalf("mediaDimensions() = (%d, %d), want (1920, 1080)", width, height)
+	}
+}
+
+func TestRefreshStoredObjectAnalysisComputesHashAndPersists(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	backend := storage.NewLocalBackend(t.TempDir())
+	svc := NewFileService(&database.DB{DB: db}, backend)
+
+	payload := []byte("direct-upload payload bytes for hash verification")
+	key := database.NewID()
+	ctx := context.Background()
+	if err := backend.Put(ctx, key, bytes.NewReader(payload), int64(len(payload)), "application/octet-stream"); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: int64(len(payload)), MimeType: "application/octet-stream", Hash: "", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+
+	analysis, err := svc.RefreshStoredObjectAnalysis(ctx, backend, objectID, key, "application/octet-stream")
+	if err != nil {
+		t.Fatalf("RefreshStoredObjectAnalysis() error = %v", err)
+	}
+	if analysis == nil {
+		t.Fatal("expected a (possibly empty) analysis, got nil")
+	}
+	var object database.FileObject
+	if err := db.First(&object, "id = ?", objectID).Error; err != nil {
+		t.Fatalf("reload object: %v", err)
+	}
+	sum := sha256.Sum256(payload)
+	wantHash := hex.EncodeToString(sum[:])
+	if object.Hash != wantHash {
+		t.Fatalf("object hash = %q, want %q", object.Hash, wantHash)
+	}
+	if string(object.Meta) != "{}" {
+		t.Fatalf("object meta = %s, want {} for non-media payload", object.Meta)
+	}
+}
+
+func TestRefreshStoredObjectAnalysisMissingObject(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	backend := storage.NewLocalBackend(t.TempDir())
+	svc := NewFileService(&database.DB{DB: db}, backend)
+	if _, err := svc.RefreshStoredObjectAnalysis(context.Background(), backend, database.NewID(), "missing-key", "application/octet-stream"); err == nil {
+		t.Fatal("expected error for missing object")
+	}
+}
+
+// recordingMultipartBackend wraps a real local backend and records multipart
+// aborts so tests can assert the expiry sweep released the session.
+type recordingMultipartBackend struct {
+	storage.Backend
+	aborted []string
+}
+
+func (r *recordingMultipartBackend) PresignedPutURL(context.Context, string, time.Duration, string) (string, error) {
+	return "", nil
+}
+
+func (r *recordingMultipartBackend) AbortMultipartUpload(_ context.Context, key, uploadID string) error {
+	r.aborted = append(r.aborted, key+"|"+uploadID)
+	return nil
+}
+
+func (r *recordingMultipartBackend) CreateMultipartUpload(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (r *recordingMultipartBackend) PresignPartUpload(context.Context, string, string, int, time.Duration) (string, error) {
+	return "", nil
+}
+
+func (r *recordingMultipartBackend) ListParts(context.Context, string, string) ([]storage.MultipartPart, error) {
+	return nil, nil
+}
+
+func (r *recordingMultipartBackend) CompleteMultipartUpload(context.Context, string, string, []storage.MultipartPart) error {
+	return nil
+}
+
+func seedUploadTask(t *testing.T, db *gorm.DB, taskID string, stale bool) *database.PersistentTask {
+	t.Helper()
+	task := &database.PersistentTask{
+		ID: database.NewID(), TaskID: taskID, Name: "file.bin", Type: "file.upload",
+		Status: "pending", UploadStatus: database.UploadStatusUploading, AccountID: uuid.New(),
+		CreatedAt: time.Now(), UpdatedAt: time.Now(), LastActivity: time.Now(),
+	}
+	if err := db.Create(task).Error; err != nil {
+		t.Fatalf("create upload task %s: %v", taskID, err)
+	}
+	if stale {
+		// Raw SQL bypasses GORM's update-timestamp callback, which would
+		// otherwise reset updated_at to now on any save.
+		staleAt := time.Now().Add(-7 * time.Hour)
+		if err := db.Exec("UPDATE persistent_tasks SET updated_at = ?, last_activity = ? WHERE task_id = ?", staleAt, staleAt, taskID).Error; err != nil {
+			t.Fatalf("age upload task %s: %v", taskID, err)
+		}
+	}
+	return task
+}
+
+func TestExpireStaleUploadTasks(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.PersistentTask{})
+	inner := storage.NewLocalBackend(t.TempDir())
+	backend := &recordingMultipartBackend{Backend: inner}
+	svc := NewFileService(&database.DB{DB: db}, backend)
+	ctx := context.Background()
+
+	// Stale multipart task: session must be aborted and the orphaned object
+	// removed.
+	seedUploadTask(t, db, "multipart-stale", true)
+	multipartKey := "uploads/multipart-stale/source"
+	multipartUploadID := "upload-1"
+	if err := db.Exec("UPDATE persistent_tasks SET source_key = ?, upload_id = ? WHERE task_id = ?", multipartKey, multipartUploadID, "multipart-stale").Error; err != nil {
+		t.Fatalf("set multipart task keys: %v", err)
+	}
+	if err := inner.Put(ctx, multipartKey, bytes.NewReader([]byte("part-data")), 9, "application/octet-stream"); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+
+	// Stale single-PUT task: no session to abort, object must be removed.
+	seedUploadTask(t, db, "single-stale", true)
+	singleKey := "uploads/single-stale/source"
+	if err := db.Exec("UPDATE persistent_tasks SET source_key = ? WHERE task_id = ?", singleKey, "single-stale").Error; err != nil {
+		t.Fatalf("set single task key: %v", err)
+	}
+	if err := inner.Put(ctx, singleKey, bytes.NewReader([]byte("whole-object")), 12, "application/octet-stream"); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+
+	// Fresh task must be left alone.
+	seedUploadTask(t, db, "fresh", false)
+
+	expired, err := svc.ExpireStaleUploadTasks(ctx)
+	if err != nil {
+		t.Fatalf("ExpireStaleUploadTasks() error = %v", err)
+	}
+	if expired != 2 {
+		t.Fatalf("expired = %d, want 2", expired)
+	}
+
+	var multipartReloaded database.PersistentTask
+	if err := db.First(&multipartReloaded, "task_id = ?", "multipart-stale").Error; err != nil {
+		t.Fatalf("reload multipart task: %v", err)
+	}
+	if multipartReloaded.UploadStatus != database.UploadStatusFailed || multipartReloaded.Status != "expired" {
+		t.Fatalf("multipart task status = %s/%d, want expired/failed", multipartReloaded.Status, multipartReloaded.UploadStatus)
+	}
+	if multipartReloaded.ProcessingError == nil || !strings.Contains(*multipartReloaded.ProcessingError, "expired") {
+		t.Fatalf("multipart task processing error = %v", multipartReloaded.ProcessingError)
+	}
+	if len(backend.aborted) != 1 || backend.aborted[0] != multipartKey+"|"+multipartUploadID {
+		t.Fatalf("aborted sessions = %v, want [%s]", backend.aborted, multipartKey+"|"+multipartUploadID)
+	}
+	if _, err := inner.Stat(ctx, multipartKey); err == nil {
+		t.Fatalf("multipart object still exists after expiry")
+	}
+
+	var singleReloaded database.PersistentTask
+	if err := db.First(&singleReloaded, "task_id = ?", "single-stale").Error; err != nil {
+		t.Fatalf("reload single task: %v", err)
+	}
+	if singleReloaded.UploadStatus != database.UploadStatusFailed {
+		t.Fatalf("single task upload_status = %d, want failed", singleReloaded.UploadStatus)
+	}
+	if len(backend.aborted) != 1 {
+		t.Fatalf("aborted sessions = %v, want only the multipart session", backend.aborted)
+	}
+	if _, err := inner.Stat(ctx, singleKey); err == nil {
+		t.Fatalf("single-PUT object still exists after expiry")
+	}
+
+	var freshReloaded database.PersistentTask
+	if err := db.First(&freshReloaded, "task_id = ?", "fresh").Error; err != nil {
+		t.Fatalf("reload fresh task: %v", err)
+	}
+	if freshReloaded.UploadStatus != database.UploadStatusUploading {
+		t.Fatalf("fresh task upload_status = %d, want uploading", freshReloaded.UploadStatus)
+	}
+}
+
+func TestExpireStaleUploadTasksSkipsCompletedAndConcurrentClaim(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.PersistentTask{})
+	backend := &recordingMultipartBackend{Backend: storage.NewLocalBackend(t.TempDir())}
+	svc := NewFileService(&database.DB{DB: db}, backend)
+
+	// Completed tasks are never expired even when old.
+	seedUploadTask(t, db, "completed", true)
+	if err := db.Exec("UPDATE persistent_tasks SET upload_status = ?, status = ? WHERE task_id = ?", database.UploadStatusCompleted, "completed", "completed").Error; err != nil {
+		t.Fatalf("mark completed task: %v", err)
+	}
+
+	// A task whose status changed between the sweep's query and its claim
+	// (simulated by marking it failed first) must not be touched again.
+	seedUploadTask(t, db, "already-failed", true)
+	if err := db.Exec("UPDATE persistent_tasks SET upload_status = ?, status = ? WHERE task_id = ?", database.UploadStatusFailed, "expired", "already-failed").Error; err != nil {
+		t.Fatalf("mark failed task: %v", err)
+	}
+
+	expired, err := svc.ExpireStaleUploadTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ExpireStaleUploadTasks() error = %v", err)
+	}
+	if expired != 0 {
+		t.Fatalf("expired = %d, want 0", expired)
+	}
+	if len(backend.aborted) != 0 {
+		t.Fatalf("aborted sessions = %v, want none", backend.aborted)
 	}
 }
 

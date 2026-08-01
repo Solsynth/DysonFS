@@ -58,6 +58,26 @@ parallel part uploads (see [Multipart Direct Upload](#multipart-direct-upload)).
 
 ### 1. Prepare
 
+Prepare accepts a `hash` (the client's MD5/SHA of the file bytes). When
+present, DysonFS first looks for an in-progress direct upload for the same
+account, pool, hash, size, and destination (`parent_id`, `workspace_id`,
+`overwrite_id`). If one exists, the request resumes it instead of creating a
+new task:
+
+- The response returns the existing `task_id`/`upload_id` with `resumed: true`.
+- Multipart responses additionally return `uploaded_parts` — the part numbers
+  already uploaded for the session — so the client only uploads the missing
+  parts.
+- The object key is derived from the hash (`uploads/<hash>/source`) rather
+  than the task id, so both attempts address the same S3 object. A resumed
+  single-PUT simply overwrites the object in place.
+- Resuming refreshes the task's activity, so the hourly expiry sweep keeps
+  collecting only genuinely idle sessions.
+
+A different destination (for example the same file uploaded to another folder)
+never resumes — it gets its own task, which is safe because the shared object
+key always holds identical content for the same hash.
+
 The client sends metadata to:
 
 ```http
@@ -139,8 +159,15 @@ The endpoint performs these checks:
 7. Changes the task to `Processing`.
 8. Creates the source `FileObject` and visible `CloudFile`.
 9. Stores the task's created file ID for idempotent retries.
-10. Publishes the upload processing event and file metadata update event.
-11. Returns the visible file with `status: 2`.
+10. Downloads the committed object from the pool and recomputes its source
+    metadata: SHA-256 hash plus the same EXIF / dimensions / blurhash / media
+    probe analysis the proxied flow runs on the staged file. The local
+    `FileObject` record is overwritten with the results so direct uploads
+    carry identical first-persisted metadata. This step is best-effort: if
+    the download or analysis fails, the upload still succeeds and the file is
+    returned with whatever metadata it has.
+11. Publishes the upload processing event and file metadata update event.
+12. Returns the visible file with `status: 2`.
 
 Example response shape:
 
@@ -351,7 +378,8 @@ check, the server lists the uploaded parts, verifies the count matches
 `part_count`, the part numbers are contiguous `1..N`, and the part sizes sum
 exactly to the declared `file_size`, then calls S3's complete-multipart
 operation. After completion the object exists under the same `object_key` and
-the normal verification and file-creation steps run unchanged.
+the normal verification and file-creation steps run unchanged, including the
+post-commit download and source-metadata analysis described above.
 
 If parts are missing or sizes do not match, the endpoint returns a 400 error
 and leaves the task `Uploading` so the client can upload the missing parts and
@@ -364,6 +392,36 @@ Authorization: Bearer <session-token>
 
 Cancel aborts the multipart session (discarding uploaded parts) and marks the
 task failed.
+
+### 4. Expiry
+
+Uploads that never complete (a client that crashed or abandoned the session)
+would otherwise leave multipart sessions and single-PUT objects in the storage
+pool forever. Every hour the server sweeps upload tasks still in `Uploading`
+whose last activity is older than six hours and:
+
+1. Claims the task atomically — a completion that raced the sweep wins and the
+   task is left untouched.
+2. Aborts the multipart session if one exists, so S3 discards the uploaded
+   parts.
+3. Deletes the object under `object_key` (single-PUT objects; a no-op for
+   incomplete multipart sessions).
+4. Marks the task `expired`/failed with `processing_error` explaining the
+   expiry; the 30-day stale-task purge later removes the row.
+
+Part presign requests refresh the task's activity, so a session that is still
+uploading parts is never expired — only genuinely idle sessions are.
+
+Admins can run the same sweep on demand instead of waiting for the hourly
+pass:
+
+```http
+POST /api/admin/uploads/gc
+Authorization: Bearer <session-token>
+```
+
+Access requires the same permission as the other admin storage endpoints
+(superuser or `files.manage`); the response reports how many tasks expired.
 
 ## Proxied Fallback
 
