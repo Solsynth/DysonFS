@@ -2179,6 +2179,22 @@ func sourceAnalysisUpdates(analysis *SourceAnalysis) map[string]any {
 	return updates
 }
 
+// derivedCompatibilityFlags reports the compatibility flags a source file of
+// the given type will carry once processed: images gain a compression
+// derivative and videos gain a thumbnail. The worker recomputes both flags
+// from the actual derivative children when processing finishes, so these
+// values describe the expected real outcome instead of a placeholder.
+func derivedCompatibilityFlags(mimeType string) (hasThumbnail, hasCompression bool) {
+	switch {
+	case strings.HasPrefix(mimeType, "video/"):
+		return true, false
+	case strings.HasPrefix(mimeType, "image/"):
+		return false, true
+	default:
+		return false, false
+	}
+}
+
 func (s *FileService) StoreImageAnalysis(fileID string, analysis *ImageAnalysis) (*database.CloudFile, error) {
 	return s.StoreSourceAnalysis(fileID, &SourceAnalysis{Image: analysis})
 }
@@ -2202,7 +2218,12 @@ func (s *FileService) StoreSourceAnalysis(fileID string, analysis *SourceAnalysi
 			if err != nil {
 				return err
 			}
-			if err := tx.Model(&database.FileObject{}).Where("id = ?", object.ID).Update("meta", mergedObjectMeta).Error; err != nil {
+			hasThumbnail, hasCompression := derivedCompatibilityFlags(object.MimeType)
+			if err := tx.Model(&database.FileObject{}).Where("id = ?", object.ID).Updates(map[string]any{
+				"meta":            mergedObjectMeta,
+				"has_thumbnail":   hasThumbnail,
+				"has_compression": hasCompression,
+			}).Error; err != nil {
 				return err
 			}
 		}

@@ -166,9 +166,12 @@ The endpoint performs these checks:
     metadata: SHA-256 hash plus the same EXIF / dimensions / blurhash / media
     probe analysis the proxied flow runs on the staged file. The local
     `FileObject` record is overwritten with the results so direct uploads
-    carry identical first-persisted metadata. This step is best-effort: if
-    the download or analysis fails, the upload still succeeds and the file is
-    returned with whatever metadata it has.
+    carry identical first-persisted metadata. The analysis also derives the
+    compatibility flags from the resolved media type — images are flagged for
+    a compression derivative, videos for a thumbnail — so the file reports
+    its expected real state instead of placeholders. This step is
+    best-effort: if the download or analysis fails, the upload still succeeds
+    and the file is returned with whatever metadata it has.
 11. Publishes the upload processing event and file metadata update event.
 12. Returns the visible file with `status: 2`.
 
@@ -181,7 +184,7 @@ Example response shape:
   "mime_type": "image/jpeg",
   "size": 5242880,
   "status": 2,
-  "has_compression": false,
+  "has_compression": true,
   "has_thumbnail": false
 }
 ```
@@ -205,9 +208,11 @@ For image and video files, the worker can create derived files such as:
 - `system.compression.low` for compressed image output
 - `system.thumbnail` for video thumbnails
 
-After successful processing, the worker changes the file and task to
-`Completed`. On an error, it changes them to `Failed` and stores the processing
-error on the upload task.
+After successful processing, the worker recomputes the compatibility flags
+from the actual derivative children and changes the file and task to
+`Completed`, then publishes the final metadata snapshot with the real flags.
+On an error, it recomputes the flags (no derivatives exist), changes the file
+and task to `Failed`, and stores the processing error on the upload task.
 
 Clients can query the task state with:
 
@@ -272,7 +277,7 @@ envelope plus a file metadata snapshot:
     "name": "photo.jpg",
     "mime_type": "image/jpeg",
     "size": 5242880,
-    "has_compression": false,
+    "has_compression": true,
     "has_thumbnail": false,
     "status": 2,
     "updated_at": "2026-07-31T23:00:00Z"

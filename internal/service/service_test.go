@@ -1434,6 +1434,9 @@ func TestStoreSourceAnalysisStoresSharedMediaDimensions(t *testing.T) {
 	if width, height := mediaDimensions(analysis.Media); width != 1920 || height != 1080 {
 		t.Fatalf("mediaDimensions() = (%d, %d), want (1920, 1080)", width, height)
 	}
+	if !updated.Object.HasThumbnail || updated.Object.HasCompression {
+		t.Fatalf("object flags = thumbnail %v compression %v, want true/false for a video", updated.Object.HasThumbnail, updated.Object.HasCompression)
+	}
 }
 
 func TestRefreshStoredObjectAnalysisComputesHashAndPersists(t *testing.T) {
@@ -1983,6 +1986,32 @@ func TestCreateUploadedObjectIncludesSourceAnalysis(t *testing.T) {
 	}
 	if meta["width"] != float64(80) || meta["height"] != float64(60) || meta["blurhash"] != "hash" {
 		t.Fatalf("object metadata = %#v, want source analysis", meta)
+	}
+	if !object.HasCompression || object.HasThumbnail {
+		t.Fatalf("object flags = compression %v thumbnail %v, want true/false for an image", object.HasCompression, object.HasThumbnail)
+	}
+}
+
+func TestCreateUploadedObjectFlagsFollowMediaType(t *testing.T) {
+	db := openTestDB(t, &database.FileObject{})
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	cases := []struct {
+		mime                    string
+		thumbnail, compression  bool
+	}{
+		{"image/jpeg", false, true},
+		{"video/mp4", true, false},
+		{"application/pdf", false, false},
+	}
+	for _, tc := range cases {
+		info := &StagedFileInfo{Size: 42, ContentType: tc.mime, Hash: "abc"}
+		object, err := svc.CreateUploadedObject("object-"+tc.mime, info, nil)
+		if err != nil {
+			t.Fatalf("CreateUploadedObject(%s) error = %v", tc.mime, err)
+		}
+		if object.HasThumbnail != tc.thumbnail || object.HasCompression != tc.compression {
+			t.Fatalf("CreateUploadedObject(%s) flags = thumbnail %v compression %v, want %v/%v", tc.mime, object.HasThumbnail, object.HasCompression, tc.thumbnail, tc.compression)
+		}
 	}
 }
 

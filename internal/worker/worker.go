@@ -401,6 +401,10 @@ func (w *Worker) markUploadFailed(evt eventbus.FileUploadedEvent, processingErr 
 		_ = w.db.Model(&database.PersistentTask{}).Where("task_id = ?", evt.TaskID).Updates(map[string]any{"status": "failed", "upload_status": database.UploadStatusFailed, "processing_error": message, "updated_at": now, "last_activity": now}).Error
 	}
 	_ = w.db.Model(&database.CloudFile{}).Where("id = ?", evt.FileID).Update("upload_status", database.UploadStatusFailed).Error
+	// Processing failed, so no derivatives were created; recompute the
+	// compatibility flags from the actual children before publishing the
+	// failed snapshot, otherwise a predicted flag would outlive the failure.
+	_ = w.files.TouchCompatibilityFlags(evt.FileID)
 	if file, err := w.files.GetFile(evt.FileID); err == nil {
 		w.publishMetadata(file, evt.TaskID)
 	}
@@ -420,7 +424,14 @@ func (w *Worker) markUploadCompleted(evt eventbus.FileUploadedEvent, parent *dat
 		}
 	}
 	parent.UploadStatus = database.UploadStatusCompleted
-	w.publishMetadata(parent, evt.TaskID)
+	// The parent was loaded before derivative generation, so its in-memory
+	// compatibility flags are stale. Reload so the metadata snapshot carries
+	// the flags the worker just computed from the real derivative children.
+	file, err := w.files.GetFile(evt.FileID)
+	if err != nil {
+		file = parent
+	}
+	w.publishMetadata(file, evt.TaskID)
 	return nil
 }
 

@@ -121,6 +121,7 @@ func (s *FileService) CreateUploadedObject(storageKey string, info *StagedFileIn
 			return nil, fmt.Errorf("merge source analysis: %w", err)
 		}
 	}
+	hasThumbnail, hasCompression := derivedCompatibilityFlags(info.ContentType)
 	object := &database.FileObject{
 		ID:             storageKey,
 		Size:           info.Size,
@@ -128,8 +129,8 @@ func (s *FileService) CreateUploadedObject(storageKey string, info *StagedFileIn
 		Hash:           info.Hash,
 		StorageKey:     &storageKey,
 		Meta:           meta,
-		HasCompression: false,
-		HasThumbnail:   false,
+		HasCompression: hasCompression,
+		HasThumbnail:   hasThumbnail,
 	}
 	if err := s.db.Create(object).Error; err != nil {
 		return nil, fmt.Errorf("create file object: %w", err)
