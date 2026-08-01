@@ -1326,7 +1326,7 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 
 	// Completing with no uploaded parts must be rejected and leave the task
 	// awaiting upload.
-	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/complete-direct/"+prepared.TaskID, nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/complete", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1340,7 +1340,7 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 		bytes.Repeat([]byte{0x03}, int(fileSize-10*1024*1024)),
 	}
 	for i := 1; i <= 3; i++ {
-		partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/part/"+prepared.TaskID, strings.NewReader(fmt.Sprintf(`{"part_number":%d}`, i)))
+		partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/part", strings.NewReader(fmt.Sprintf(`{"part_number":%d}`, i)))
 		partReq.Header.Set("Content-Type", "application/json")
 		partRes := httptest.NewRecorder()
 		r.ServeHTTP(partRes, partReq)
@@ -1359,7 +1359,7 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 		putURL(t, part.UploadURL, partPayloads[i-1])
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/complete-direct/"+prepared.TaskID, nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/complete", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -1429,7 +1429,7 @@ func TestPresignUploadPartRejectsOutOfRangeAndUnknownTask(t *testing.T) {
 
 	// 1024 bytes at 5 MiB parts is exactly one part.
 	for _, invalid := range []int{0, 2} {
-		partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/part/"+prepared.TaskID, strings.NewReader(fmt.Sprintf(`{"part_number":%d}`, invalid)))
+		partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/part", strings.NewReader(fmt.Sprintf(`{"part_number":%d}`, invalid)))
 		partReq.Header.Set("Content-Type", "application/json")
 		partRes := httptest.NewRecorder()
 		r.ServeHTTP(partRes, partReq)
@@ -1439,7 +1439,7 @@ func TestPresignUploadPartRejectsOutOfRangeAndUnknownTask(t *testing.T) {
 	}
 
 	// Unknown task id.
-	partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/part/nope", strings.NewReader(`{"part_number":1}`))
+	partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/nope/part", strings.NewReader(`{"part_number":1}`))
 	partReq.Header.Set("Content-Type", "application/json")
 	partRes := httptest.NewRecorder()
 	r.ServeHTTP(partRes, partReq)

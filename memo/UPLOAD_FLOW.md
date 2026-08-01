@@ -124,7 +124,7 @@ After the S3 `PUT` succeeds, the client asks DysonFS to verify and commit the
 upload:
 
 ```http
-POST /api/files/upload/complete-direct/<task-id>
+POST /api/files/upload/<task-id>/complete
 Authorization: Bearer <session-token>
 ```
 
@@ -308,7 +308,7 @@ uploads; the client should fall back to the proxied chunked flow.
 Issue one presigned URL per part, on demand:
 
 ```http
-POST /api/files/upload/part/<task-id>
+POST /api/files/upload/<task-id>/part
 Authorization: Bearer <session-token>
 Content-Type: application/json
 ```
@@ -345,7 +345,7 @@ ownership, the `Uploading` status, and that `part_number` falls within
 
 ### 3. Complete
 
-`POST /api/files/upload/complete-direct/<task-id>` behaves as described in the
+`POST /api/files/upload/<task-id>/complete` behaves as described in the
 single-PUT flow, with one extra step for multipart sessions: before the `Stat`
 check, the server lists the uploaded parts, verifies the count matches
 `part_count`, the part numbers are contiguous `1..N`, and the part sizes sum
@@ -358,7 +358,7 @@ and leaves the task `Uploading` so the client can upload the missing parts and
 retry. The session is only discarded explicitly, via cancel:
 
 ```http
-DELETE /api/files/upload/task/<task-id>
+DELETE /api/files/upload/<task-id>
 Authorization: Bearer <session-token>
 ```
 
