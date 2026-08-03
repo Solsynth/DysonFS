@@ -388,7 +388,7 @@ func (s *fileServiceServer) prepareUpload(ctx context.Context, input *gen.DyFile
 	}
 	fileName := strings.TrimSpace(input.GetFileName())
 	if fileName == "" {
-		return nil, status.Error(codes.InvalidArgument, "file_name is required")
+		fileName = service.DefaultUploadFileName(input.GetContentType())
 	}
 	if input.GetFileSize() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "file_size must be greater than zero")

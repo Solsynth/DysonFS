@@ -1451,6 +1451,95 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPrepareDirectUploadDefaultsMissingFileName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	endpoint := startNoAuthMockS3(t, "testbucket")
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+
+	poolID := database.NewID()
+	pool := database.FilePool{
+		ID:        poolID,
+		Name:      "test-s3",
+		AccountID: accountID,
+		StorageConfig: datatypes.JSON([]byte(fmt.Sprintf(
+			`{"enable_signed":true,"enable_ssl":false,"endpoint":%q,"bucket":"testbucket","secret_id":"ak","secret_key":"sk"}`,
+			endpoint))),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+
+	// file_name omitted: the server must default it instead of rejecting
+	// with "file_name and positive file_size are required".
+	body := `{"file_size":1024,"content_type":"image/jpeg","multipart":true,"pool_id":"` + poolID + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("prepare status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	var prepared struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare response: %v", err)
+	}
+	task, err := tasks.GetUploadTask(prepared.TaskID)
+	if err != nil {
+		t.Fatalf("GetUploadTask() error = %v", err)
+	}
+	if task.FileName == nil || *task.FileName != "upload.jpg" {
+		t.Fatalf("task file name = %v, want upload.jpg", task.FileName)
+	}
+}
+
+func TestCreateUploadTaskDefaultsMissingFileName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+
+	// file_name omitted on the chunked flow defaults from the content type.
+	body := `{"file_size":1024,"content_type":"application/octet-stream"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/create", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	task, err := tasks.GetUploadTask(resp.TaskID)
+	if err != nil {
+		t.Fatalf("GetUploadTask() error = %v", err)
+	}
+	if task.FileName == nil || *task.FileName != "upload.bin" {
+		t.Fatalf("task file name = %v, want upload.bin", task.FileName)
+	}
+}
+
 func TestPrepareDirectUploadMultipartResumesByHash(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")

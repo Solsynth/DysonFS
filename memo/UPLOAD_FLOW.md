@@ -112,6 +112,11 @@ creation endpoint. `overwrite_id` can be supplied to replace an existing file;
 the overwrite target controls its name, parent, workspace, description, and
 other immutable file metadata.
 
+`file_name` is optional: when omitted (or blank), the server derives a
+default name — `upload.<ext>` — from `content_type` (`image/jpeg` →
+`upload.jpg`, `application/octet-stream` → `upload.bin`, unknown types →
+`upload.bin`), so uploads are never rejected or stored unnamed.
+
 On success, DysonFS creates a persistent task in `Uploading` and returns:
 
 ```json

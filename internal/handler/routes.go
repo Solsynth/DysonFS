@@ -1927,8 +1927,7 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 		req.WorkspaceID = target.WorkspaceID
 	}
 	if strings.TrimSpace(req.FileName) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file_name is required"})
-		return
+		req.FileName = service.DefaultUploadFileName(req.ContentType)
 	}
 	name := strings.TrimSpace(req.FileName)
 	if req.ChunkSize <= 0 {
@@ -2065,8 +2064,11 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if strings.TrimSpace(req.FileName) == "" || req.FileSize <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file_name and positive file_size are required"})
+	if strings.TrimSpace(req.FileName) == "" {
+		req.FileName = service.DefaultUploadFileName(req.ContentType)
+	}
+	if req.FileSize <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_size must be greater than zero"})
 		return
 	}
 	if strings.TrimSpace(req.ContentType) == "" {
@@ -2455,6 +2457,9 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
 		return
+	}
+	if strings.TrimSpace(fileHeader.Filename) == "" {
+		fileHeader.Filename = service.DefaultUploadFileName(fileHeader.Header.Get("Content-Type"))
 	}
 	description := optionalStringPtr(c.PostForm("description"))
 	hash := optionalStringPtr(c.PostForm("hash"))
