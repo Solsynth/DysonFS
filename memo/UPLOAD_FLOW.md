@@ -163,20 +163,28 @@ The endpoint performs these checks:
 3. Resolves the task's original storage pool.
 4. Calls the backend `Stat` operation against the server-generated object key.
 5. Verifies that the remote object size exactly matches the declared file size.
-6. Uses the object content type when available, otherwise the declared type.
+6. Resolves the content type: a real (non-generic) content type stored on the
+   object wins, otherwise the type declared in prepare. Pools report
+   `application/octet-stream` when the presigned `PUT` carried no
+   `Content-Type`, so the generic default never overrides the declared type.
 7. Changes the task to `Processing`.
 8. Creates the source `FileObject` and visible `CloudFile`.
 9. Stores the task's created file ID for idempotent retries.
 10. Downloads the committed object from the pool and recomputes its source
     metadata: SHA-256 hash plus the same EXIF / dimensions / blurhash / media
-    probe analysis the proxied flow runs on the staged file. The local
-    `FileObject` record is overwritten with the results so direct uploads
-    carry identical first-persisted metadata. The analysis also derives the
-    compatibility flags from the resolved media type — images are flagged for
-    a compression derivative, videos for a thumbnail — so the file reports
-    its expected real state instead of placeholders. This step is
-    best-effort: if the download or analysis fails, the upload still succeeds
-    and the file is returned with whatever metadata it has.
+    probe analysis the proxied flow runs on the staged file. The media type
+    is resolved authoritatively from the downloaded bytes (the declared type
+    is trusted unless it is the generic `application/octet-stream`, in which
+    case the bytes are sniffed) and persisted on the `FileObject`, so direct
+    uploads whose presigned `PUT` omitted `Content-Type` still land with the
+    correct type and derivative flags. The local `FileObject` record is
+    overwritten with the results so direct uploads carry identical
+    first-persisted metadata. The analysis also derives the compatibility
+    flags from the resolved media type — images are flagged for a compression
+    derivative, videos for a thumbnail — so the file reports its expected
+    real state instead of placeholders. This step is best-effort: if the
+    download or analysis fails, the upload still succeeds and the file is
+    returned with whatever metadata it has.
 11. Publishes the upload processing event and file metadata update event.
 12. Returns the visible file with `status: 2`.
 

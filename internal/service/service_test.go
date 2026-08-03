@@ -1455,12 +1455,15 @@ func TestRefreshStoredObjectAnalysisComputesHashAndPersists(t *testing.T) {
 		t.Fatalf("create object: %v", err)
 	}
 
-	analysis, err := svc.RefreshStoredObjectAnalysis(ctx, backend, objectID, key, "application/octet-stream")
+	analysis, resolvedMime, err := svc.RefreshStoredObjectAnalysis(ctx, backend, objectID, key, "application/octet-stream")
 	if err != nil {
 		t.Fatalf("RefreshStoredObjectAnalysis() error = %v", err)
 	}
 	if analysis == nil {
 		t.Fatal("expected a (possibly empty) analysis, got nil")
+	}
+	if !strings.HasPrefix(resolvedMime, "text/plain") {
+		t.Fatalf("resolved mime = %q, want text/plain sniffed from payload bytes", resolvedMime)
 	}
 	var object database.FileObject
 	if err := db.First(&object, "id = ?", objectID).Error; err != nil {
@@ -1471,6 +1474,9 @@ func TestRefreshStoredObjectAnalysisComputesHashAndPersists(t *testing.T) {
 	if object.Hash != wantHash {
 		t.Fatalf("object hash = %q, want %q", object.Hash, wantHash)
 	}
+	if !strings.HasPrefix(object.MimeType, "text/plain") {
+		t.Fatalf("object mime_type = %q, want text/plain persisted from byte sniffing", object.MimeType)
+	}
 	if string(object.Meta) != "{}" {
 		t.Fatalf("object meta = %s, want {} for non-media payload", object.Meta)
 	}
@@ -1480,7 +1486,7 @@ func TestRefreshStoredObjectAnalysisMissingObject(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	backend := storage.NewLocalBackend(t.TempDir())
 	svc := NewFileService(&database.DB{DB: db}, backend)
-	if _, err := svc.RefreshStoredObjectAnalysis(context.Background(), backend, database.NewID(), "missing-key", "application/octet-stream"); err == nil {
+	if _, _, err := svc.RefreshStoredObjectAnalysis(context.Background(), backend, database.NewID(), "missing-key", "application/octet-stream"); err == nil {
 		t.Fatal("expected error for missing object")
 	}
 }

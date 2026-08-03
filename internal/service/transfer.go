@@ -159,40 +159,50 @@ func (s *FileService) CreateStoredObject(storageKey string, info *StagedFileInfo
 //
 // The hash is persisted whenever the download succeeds; if analysis itself
 // fails, the caller still receives the error with the hash already stored.
-func (s *FileService) RefreshStoredObjectAnalysis(ctx context.Context, backend storage.Backend, objectID, storageKey, contentType string) (*SourceAnalysis, error) {
+//
+// The returned mime type is the authoritative one resolved from the actual
+// bytes (declared type, unless it is the generic application/octet-stream, in
+// which case the bytes are sniffed) and is persisted on the object row, so
+// direct uploads whose presigned PUT omitted Content-Type still land with the
+// correct media type and derivative flags.
+func (s *FileService) RefreshStoredObjectAnalysis(ctx context.Context, backend storage.Backend, objectID, storageKey, contentType string) (*SourceAnalysis, string, error) {
 	if backend == nil || strings.TrimSpace(storageKey) == "" {
-		return nil, fmt.Errorf("backend and storage key are required")
+		return nil, "", fmt.Errorf("backend and storage key are required")
 	}
 	rc, _, err := backend.Get(ctx, storageKey)
 	if err != nil {
-		return nil, fmt.Errorf("read object from storage: %w", err)
+		return nil, "", fmt.Errorf("read object from storage: %w", err)
 	}
 	defer rc.Close()
 
 	tempFile, err := os.CreateTemp("", "dysonfs-analyze-*")
 	if err != nil {
-		return nil, fmt.Errorf("create analysis temp file: %w", err)
+		return nil, "", fmt.Errorf("create analysis temp file: %w", err)
 	}
 	defer os.Remove(tempFile.Name())
 
 	hasher := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(tempFile, hasher), rc); err != nil {
 		_ = tempFile.Close()
-		return nil, fmt.Errorf("download object for analysis: %w", err)
+		return nil, "", fmt.Errorf("download object for analysis: %w", err)
 	}
 	if err := tempFile.Close(); err != nil {
-		return nil, fmt.Errorf("close analysis temp file: %w", err)
+		return nil, "", fmt.Errorf("close analysis temp file: %w", err)
 	}
 
-	if err := s.db.Model(&database.FileObject{}).Where("id = ?", objectID).Update("hash", hex.EncodeToString(hasher.Sum(nil))).Error; err != nil {
-		return nil, fmt.Errorf("store object hash: %w", err)
+	resolvedMime := detectSourceMime(tempFile.Name(), contentType)
+	if err := s.db.Model(&database.FileObject{}).Where("id = ?", objectID).Updates(map[string]any{
+		"hash":      hex.EncodeToString(hasher.Sum(nil)),
+		"mime_type": resolvedMime,
+	}).Error; err != nil {
+		return nil, "", fmt.Errorf("store object hash and mime type: %w", err)
 	}
 
-	analysis, err := s.AnalyzeSourceFile(ctx, tempFile.Name(), contentType)
+	analysis, err := s.AnalyzeSourceFile(ctx, tempFile.Name(), resolvedMime)
 	if err != nil {
-		return nil, err
+		return nil, resolvedMime, err
 	}
-	return analysis, nil
+	return analysis, resolvedMime, nil
 }
 
 // uploadTaskExpiryAge is how long an upload may sit without any activity

@@ -186,6 +186,13 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		adminUploads.POST("/gc", func(c *gin.Context) { triggerUploadTaskGC(c, files) })
 	}
 
+	adminReanalysis := r.Group("/api/admin/reanalysis")
+	{
+		adminReanalysis.GET("/candidates", func(c *gin.Context) { listReanalysisCandidates(c, files) })
+		adminReanalysis.POST("/run", func(c *gin.Context) { runReanalysis(c, files) })
+		adminReanalysis.POST("/files", func(c *gin.Context) { reanalyzeFiles(c, files) })
+	}
+
 	dfs := r.Group("/_dfs")
 	{
 		dfs.GET("/version", func(c *gin.Context) { StorageNodeVersion(c, cfg.StorageNode) })
@@ -2357,8 +2364,12 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 		return
 	}
 	contentType := stringValue(task.ContentType)
-	if strings.TrimSpace(info.MimeType) != "" {
-		contentType = info.MimeType
+	// S3 reports application/octet-stream when the presigned PUT carried no
+	// Content-Type, so only a real (non-generic) stored type may override the
+	// type the client declared in prepare. The authoritative type is resolved
+	// from the actual bytes after the post-commit download below.
+	if m := strings.TrimSpace(info.MimeType); m != "" && !strings.EqualFold(m, "application/octet-stream") {
+		contentType = m
 	}
 	object, err := files.CreateStoredObject(*task.SourceKey, &service.StagedFileInfo{Size: info.Size, ContentType: contentType})
 	if err != nil {
@@ -2386,7 +2397,13 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 	// analyzed metadata. Fetch the object from the pool, analyze it, and
 	// overwrite the local record, mirroring the proxied flow's synchronous
 	// analysis. Failures are non-fatal: the upload itself already succeeded.
-	analysis, analysisErr := files.RefreshStoredObjectAnalysis(c.Request.Context(), backend, object.ID, *task.SourceKey, contentType)
+	analysis, resolvedMime, analysisErr := files.RefreshStoredObjectAnalysis(c.Request.Context(), backend, object.ID, *task.SourceKey, contentType)
+	if resolvedMime != "" {
+		// The download succeeded, so the media type was resolved from the
+		// actual bytes; the worker must see it to pick the right derivative
+		// branch (image compression / video thumbnail).
+		contentType = resolvedMime
+	}
 	if analysisErr != nil {
 		logging.Log.Warn().Err(analysisErr).Str("fileId", file.ID).Str("storageKey", *task.SourceKey).Msg("failed to analyze direct-uploaded object")
 	} else {
