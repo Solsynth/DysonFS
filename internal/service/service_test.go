@@ -2126,8 +2126,9 @@ func TestListPoolsReturnsAvailablePools(t *testing.T) {
 	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, publicOtherID, sharedOtherID, plainOtherID, systemID)
 	// Anonymous callers only see public pools and the global config pool.
 	wantPools(t, AccessContext{}, publicOtherID, systemID)
-	// Superusers see everything.
-	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: ownerID.String(), IsSuperuser: true}}, hiddenOwnedID, publicOtherID, sharedOtherID, plainOtherID, systemID)
+	// Superusers see the same set as their account — never other users'
+	// private pools; ListAllPools is the full view.
+	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: ownerID.String(), IsSuperuser: true}}, hiddenOwnedID, publicOtherID, sharedOtherID, systemID)
 
 	// The global config pool must also pass the write check used by uploads
 	// and getPool, despite being marked hidden in config.

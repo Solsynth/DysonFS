@@ -443,13 +443,14 @@ func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
 	// Narrow candidates in SQL. Config-seeded pools (account_id IS NULL or the
 	// zero UUID) are global, the caller's own pools always qualify, and any
 	// other pool must at least not be hidden to be visible. The final
-	// visibility pass (public, explicit grants) runs in Go below.
+	// visibility pass (public, explicit grants) runs in Go below. Note: the
+	// listing intentionally does not expand for superusers — private pools
+	// only ever surface to their owner; ListAllPools (admin API) is the
+	// superuser's full view.
 	query := s.db.DB
 	switch {
 	case ctx.Account == nil:
 		query = query.Where("account_id IS NULL OR account_id = ? OR is_hidden = ?", uuid.Nil, false)
-	case ctx.Account.GetIsSuperuser():
-		// everything is visible to a superuser
 	default:
 		query = query.Where("account_id = ? OR account_id IS NULL OR account_id = ? OR is_hidden = ?", ctx.Account.GetId(), uuid.Nil, false)
 	}
@@ -490,11 +491,10 @@ func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
 }
 
 // poolVisibleTo mirrors CanUsePool's visibility rules without per-row DB
-// queries; grants must be preloaded by ListPools.
+// queries; grants must be preloaded by ListPools. The superuser shortcut is
+// intentionally absent: private pools only surface to their owner, and a
+// superuser's full view is ListAllPools.
 func poolVisibleTo(pool database.FilePool, ctx AccessContext, grants []database.PoolPermission) bool {
-	if ctx.Account != nil && ctx.Account.GetIsSuperuser() {
-		return true
-	}
 	if ctx.Account != nil && pool.AccountID.String() == ctx.Account.GetId() {
 		return true
 	}
