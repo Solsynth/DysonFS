@@ -440,14 +440,93 @@ func (s *FileService) GetPool(id string) (*Pool, error) {
 }
 
 func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
-	if ctx.Account == nil {
-		return []Pool{}, nil
+	// Narrow candidates in SQL. Config-seeded pools (account_id IS NULL or the
+	// zero UUID) are global, the caller's own pools always qualify, and any
+	// other pool must at least not be hidden to be visible. The final
+	// visibility pass (public, explicit grants) runs in Go below.
+	query := s.db.DB
+	switch {
+	case ctx.Account == nil:
+		query = query.Where("account_id IS NULL OR account_id = ? OR is_hidden = ?", uuid.Nil, false)
+	case ctx.Account.GetIsSuperuser():
+		// everything is visible to a superuser
+	default:
+		query = query.Where("account_id = ? OR account_id IS NULL OR account_id = ? OR is_hidden = ?", ctx.Account.GetId(), uuid.Nil, false)
 	}
+
 	var pools []database.FilePool
-	if err := s.db.Where("account_id = ?", ctx.Account.GetId()).Find(&pools).Error; err != nil {
+	if err := query.Find(&pools).Error; err != nil {
 		return nil, err
 	}
-	return poolsToServicePools(pools), nil
+	if len(pools) == 0 {
+		return []Pool{}, nil
+	}
+
+	// Load every read grant for the candidate pools in one query so the
+	// filter below stays O(pools) instead of one query per pool.
+	grantsByPool := map[string][]database.PoolPermission{}
+	if ctx.Account != nil {
+		poolIDs := make([]string, len(pools))
+		for i := range pools {
+			poolIDs[i] = pools[i].ID
+		}
+		var grants []database.PoolPermission
+		if err := s.db.Where("pool_id IN ? AND permission = ?", poolIDs, "read").Find(&grants).Error; err != nil {
+			return nil, err
+		}
+		for _, grant := range grants {
+			grantsByPool[grant.PoolID] = append(grantsByPool[grant.PoolID], grant)
+		}
+	}
+
+	available := make([]Pool, 0, len(pools))
+	for i := range pools {
+		if !poolVisibleTo(pools[i], ctx, grantsByPool[pools[i].ID]) {
+			continue
+		}
+		available = append(available, poolsToServicePool(pools[i]))
+	}
+	return available, nil
+}
+
+// poolVisibleTo mirrors CanUsePool's visibility rules without per-row DB
+// queries; grants must be preloaded by ListPools.
+func poolVisibleTo(pool database.FilePool, ctx AccessContext, grants []database.PoolPermission) bool {
+	if ctx.Account != nil && ctx.Account.GetIsSuperuser() {
+		return true
+	}
+	if ctx.Account != nil && pool.AccountID.String() == ctx.Account.GetId() {
+		return true
+	}
+	// Config-seeded pools have no owner and are global.
+	if pool.AccountID == uuid.Nil {
+		return true
+	}
+	if pool.IsHidden {
+		return false
+	}
+	var policy PoolConfig
+	_ = json.Unmarshal(pool.PolicyConfig, &policy)
+	if policy.PublicUsable {
+		return true
+	}
+	for _, grant := range grants {
+		switch grant.SubjectType {
+		case "account":
+			if ctx.Account != nil && grant.SubjectID == ctx.Account.GetId() {
+				return true
+			}
+		case "scope":
+			if ctx.Session != nil {
+				for _, scope := range ctx.Session.GetScopes() {
+					if scope == grant.SubjectID {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (s *FileService) ListAllPools() ([]Pool, error) {
@@ -461,16 +540,23 @@ func (s *FileService) ListAllPools() ([]Pool, error) {
 func poolsToServicePools(pools []database.FilePool) []Pool {
 	out := make([]Pool, 0, len(pools))
 	for _, p := range pools {
-		var policy PoolConfig
-		var billing PoolBillingConfig
-		var storage PoolStorageConfig
-		_ = json.Unmarshal(p.PolicyConfig, &policy)
-		_ = json.Unmarshal(p.BillingConfig, &billing)
-		_ = json.Unmarshal(p.StorageConfig, &storage)
-		pool := &Pool{ID: p.ID, Name: p.Name, Description: p.Description, AccountID: p.AccountID, PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage, IsHidden: p.IsHidden, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
-		out = append(out, *pool)
+		out = append(out, poolsToServicePool(p))
 	}
 	return out
+}
+
+func poolsToServicePool(p database.FilePool) Pool {
+	var policy PoolConfig
+	var billing PoolBillingConfig
+	var storage PoolStorageConfig
+	_ = json.Unmarshal(p.PolicyConfig, &policy)
+	_ = json.Unmarshal(p.BillingConfig, &billing)
+	_ = json.Unmarshal(p.StorageConfig, &storage)
+	return Pool{
+		ID: p.ID, Name: p.Name, Description: p.Description, AccountID: p.AccountID,
+		PolicyConfig: policy, BillingConfig: billing, StorageConfig: storage,
+		IsHidden: p.IsHidden, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+	}
 }
 
 func (s *FileService) ListOwnedPools(accountID uuid.UUID) ([]Pool, error) {
@@ -478,28 +564,7 @@ func (s *FileService) ListOwnedPools(accountID uuid.UUID) ([]Pool, error) {
 	if err := s.db.Where("account_id = ?", accountID).Find(&pools).Error; err != nil {
 		return nil, err
 	}
-	out := make([]Pool, 0, len(pools))
-	for _, p := range pools {
-		var policy PoolConfig
-		var billing PoolBillingConfig
-		var storage PoolStorageConfig
-		_ = json.Unmarshal(p.PolicyConfig, &policy)
-		_ = json.Unmarshal(p.BillingConfig, &billing)
-		_ = json.Unmarshal(p.StorageConfig, &storage)
-		out = append(out, Pool{
-			ID:            p.ID,
-			Name:          p.Name,
-			Description:   p.Description,
-			AccountID:     p.AccountID,
-			StorageConfig: storage,
-			BillingConfig: billing,
-			PolicyConfig:  policy,
-			IsHidden:      p.IsHidden,
-			CreatedAt:     p.CreatedAt,
-			UpdatedAt:     p.UpdatedAt,
-		})
-	}
-	return out, nil
+	return poolsToServicePools(pools), nil
 }
 
 func (s *FileService) ListPoolPermissions(poolID string) ([]database.PoolPermission, error) {
@@ -590,7 +655,9 @@ func (s *FileService) CanUsePool(ctx AccessContext, pool *Pool, permission strin
 	if ctx.Account != nil && pool.AccountID.String() == ctx.Account.GetId() {
 		return true
 	}
-	if pool.IsHidden {
+	// Config-seeded pools (zero account ID) are global; hidden only hides
+	// user-owned pools from other accounts.
+	if pool.AccountID != uuid.Nil && pool.IsHidden {
 		return false
 	}
 	if pool.PolicyConfig.PublicUsable {

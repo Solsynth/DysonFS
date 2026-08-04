@@ -2035,60 +2035,116 @@ func TestCheckUploadQuotaEnrichesAccountOnce(t *testing.T) {
 	}
 }
 
-func TestListPoolsReturnsOnlyPoolsOwnedByCurrentAccount(t *testing.T) {
-	db := openTestDB(t, &database.FilePool{})
+// TestListPoolsIncludesNullAccountPool covers config-seeded pools whose
+// account_id column is literally NULL (not the zero UUID), as produced by
+// SeedPools against older schemas.
+func TestListPoolsIncludesNullAccountPool(t *testing.T) {
+	db := openTestDB(t, &database.FilePool{}, &database.PoolPermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	poolID := database.NewID()
+	now := time.Now()
+	if err := db.Exec(
+		"INSERT INTO file_pools (id, name, account_id, storage_config, billing_config, policy_config, is_hidden, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)",
+		poolID, "Solar Network Shared",
+		datatypes.JSON([]byte(`{"bucket":"solar-network"}`)),
+		datatypes.JSON([]byte(`{}`)),
+		datatypes.JSON([]byte(`{"public_usable":true}`)),
+		false, now, now,
+	).Error; err != nil {
+		t.Fatalf("insert null-account pool: %v", err)
+	}
+
+	for _, ctx := range []AccessContext{
+		{},
+		{Account: &gen.DyAccount{Id: uuid.New().String()}},
+		{Account: &gen.DyAccount{Id: uuid.New().String(), IsSuperuser: true}},
+	} {
+		pools, err := svc.ListPools(ctx)
+		if err != nil {
+			t.Fatalf("ListPools(%#v) error = %v", ctx, err)
+		}
+		if len(pools) != 1 || pools[0].ID != poolID {
+			t.Fatalf("ListPools(%#v) = %#v, want the null-account pool %q", ctx, pools, poolID)
+		}
+	}
+}
+
+func TestListPoolsReturnsAvailablePools(t *testing.T) {
+	db := openTestDB(t, &database.FilePool{}, &database.PoolPermission{})
 	svc := NewFileService(&database.DB{DB: db}, nil)
 	ownerID := uuid.New()
 	otherID := uuid.New()
-	privatePoolID := database.NewID()
-	otherPoolID := database.NewID()
+
+	hiddenOwnedID := database.NewID() // owner-owned, hidden, public
+	publicOtherID := database.NewID() // other-owned, public
+	sharedOtherID := database.NewID() // other-owned, granted to owner
+	plainOtherID := database.NewID()  // other-owned, private, not hidden
+	systemID := database.NewID()      // config pool: zero account, hidden (like config.example.toml)
 
 	for _, pool := range []database.FilePool{
-		{ID: privatePoolID, Name: "private", AccountID: ownerID, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`)), IsHidden: true},
-		{ID: otherPoolID, Name: "other-user-public", AccountID: otherID, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`))},
+		{ID: hiddenOwnedID, Name: "hidden-owned", AccountID: ownerID, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`)), IsHidden: true},
+		{ID: publicOtherID, Name: "public", AccountID: otherID, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`))},
+		{ID: sharedOtherID, Name: "shared", AccountID: otherID, PolicyConfig: datatypes.JSON([]byte(`{}`))},
+		{ID: plainOtherID, Name: "private", AccountID: otherID, PolicyConfig: datatypes.JSON([]byte(`{}`))},
+		{ID: systemID, Name: "system", AccountID: uuid.Nil, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`)), IsHidden: true},
 	} {
 		if err := db.Create(&pool).Error; err != nil {
-			t.Fatalf("create pool: %v", err)
+			t.Fatalf("create pool %q: %v", pool.Name, err)
+		}
+	}
+	if err := db.Create(&database.PoolPermission{
+		ID: database.NewID(), PoolID: sharedOtherID, SubjectType: "account", SubjectID: ownerID.String(), Permission: "read",
+	}).Error; err != nil {
+		t.Fatalf("create pool permission: %v", err)
+	}
+
+	wantPools := func(t *testing.T, ctx AccessContext, want ...string) {
+		t.Helper()
+		pools, err := svc.ListPools(ctx)
+		if err != nil {
+			t.Fatalf("ListPools(%#v) error = %v", ctx, err)
+		}
+		got := make(map[string]bool, len(pools))
+		for _, p := range pools {
+			got[p.ID] = true
+		}
+		for _, id := range want {
+			if !got[id] {
+				t.Fatalf("ListPools(%#v) missing %q; got %#v", ctx, id, pools)
+			}
+			delete(got, id)
+		}
+		if len(got) != 0 {
+			t.Fatalf("ListPools(%#v) returned unexpected pools: %#v", ctx, pools)
 		}
 	}
 
-	pools, err := svc.ListPools(AccessContext{Account: &gen.DyAccount{Id: otherID.String()}})
-	if err != nil {
-		t.Fatalf("ListPools() error = %v", err)
-	}
-	if len(pools) != 1 || pools[0].ID != otherPoolID {
-		t.Fatalf("pools = %#v, want only pool owned by %q", pools, otherID)
-	}
-	privatePool, err := svc.GetPool(privatePoolID)
+	// Owner sees own pools (even hidden), public pools, granted pools, and
+	// the global config pool — but not other users' private pools.
+	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: ownerID.String()}}, hiddenOwnedID, publicOtherID, sharedOtherID, systemID)
+	// Another user sees what they own plus the global pool.
+	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, publicOtherID, sharedOtherID, plainOtherID, systemID)
+	// Anonymous callers only see public pools and the global config pool.
+	wantPools(t, AccessContext{}, publicOtherID, systemID)
+	// Superusers see everything.
+	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: ownerID.String(), IsSuperuser: true}}, hiddenOwnedID, publicOtherID, sharedOtherID, plainOtherID, systemID)
+
+	// The global config pool must also pass the write check used by uploads
+	// and getPool, despite being marked hidden in config.
+	systemPool, err := svc.GetPool(systemID)
 	if err != nil {
 		t.Fatalf("GetPool() error = %v", err)
 	}
-	if svc.CanUsePool(AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, privatePool, "write") {
-		t.Fatal("non-owner can use hidden pool")
+	if !svc.CanUsePool(AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, systemPool, "write") {
+		t.Fatal("non-owner cannot use global config pool")
 	}
 
-	pools, err = svc.ListPools(AccessContext{Account: &gen.DyAccount{Id: ownerID.String()}})
-	if err != nil {
-		t.Fatalf("ListPools() as owner error = %v", err)
-	}
-	if len(pools) != 1 || pools[0].ID != privatePoolID {
-		t.Fatalf("owner pools = %#v, want only private pool %q", pools, privatePoolID)
-	}
-
-	pools, err = svc.ListPools(AccessContext{Account: &gen.DyAccount{Id: ownerID.String(), IsSuperuser: true}})
-	if err != nil {
-		t.Fatalf("ListPools() as superuser error = %v", err)
-	}
-	if len(pools) != 1 || pools[0].ID != privatePoolID {
-		t.Fatalf("superuser pools = %#v, want only pools owned by %q", pools, ownerID)
-	}
-
-	pools, err = svc.ListAllPools()
+	all, err := svc.ListAllPools()
 	if err != nil {
 		t.Fatalf("ListAllPools() error = %v", err)
 	}
-	if len(pools) != 2 {
-		t.Fatalf("all pools = %#v, want both pools", pools)
+	if len(all) != 5 {
+		t.Fatalf("all pools = %#v, want all five pools", all)
 	}
 }
 
