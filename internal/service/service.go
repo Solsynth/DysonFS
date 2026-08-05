@@ -3542,12 +3542,12 @@ func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {
 type QuotaService struct {
 	db              *database.DB
 	cache           sharedcache.CacheService
-	profileClient   profileAccountClient
+	accountClient   accountGetter
 	workspaceClient gen.DyWorkspaceServiceClient
 	levelingCfg     config.LevelingQuotaConfig
 }
 
-type profileAccountClient interface {
+type accountGetter interface {
 	GetAccount(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error)
 }
 
@@ -3557,8 +3557,8 @@ func (s *QuotaService) SetCache(cache sharedcache.CacheService) {
 	s.cache = cache
 }
 
-func (s *QuotaService) SetProfileClient(client profileAccountClient) {
-	s.profileClient = client
+func (s *QuotaService) SetAccountClient(client accountGetter) {
+	s.accountClient = client
 }
 
 func (s *QuotaService) SetWorkspaceClient(client gen.DyWorkspaceServiceClient) {
@@ -3573,10 +3573,12 @@ func (s *QuotaService) EnrichedAccount(ctx context.Context, account *gen.DyAccou
 	return s.enrichedAccount(ctx, account)
 }
 
-func NewProfileClient(cfg config.PassportConfig) (gen.DyProfileServiceClient, *grpc.ClientConn, error) {
+// NewAccountClient dials the account service (DyAccountService, hosted by
+// Stargate alongside the auth surface) using the [auth] config.
+func NewAccountClient(cfg config.AuthConfig) (gen.DyAccountServiceClient, *grpc.ClientConn, error) {
 	target, useTLS := dyauth.NormalizeAuthGRPCTarget(cfg.Target, cfg.UseTLS)
 	if strings.TrimSpace(target) == "" {
-		return nil, nil, errors.New("profile gRPC target is empty")
+		return nil, nil, errors.New("account gRPC target is empty")
 	}
 	var transportCredentials credentials.TransportCredentials
 	if useTLS {
@@ -3586,9 +3588,9 @@ func NewProfileClient(cfg config.PassportConfig) (gen.DyProfileServiceClient, *g
 	}
 	conn, err := grpc.Dial(target, grpc.WithTransportCredentials(transportCredentials))
 	if err != nil {
-		return nil, nil, fmt.Errorf("dial profile service: %w", err)
+		return nil, nil, fmt.Errorf("dial account service: %w", err)
 	}
-	return gen.NewDyProfileServiceClient(conn), conn, nil
+	return gen.NewDyAccountServiceClient(conn), conn, nil
 }
 
 func NewWorkspaceClient(cfg config.WorkspaceConfig) (gen.DyWorkspaceServiceClient, *grpc.ClientConn, error) {
@@ -3879,7 +3881,7 @@ func (s *QuotaService) enrichedAccount(ctx context.Context, account *gen.DyAccou
 	if account == nil {
 		return nil, fmt.Errorf("account is required")
 	}
-	if s.profileClient == nil {
+	if s.accountClient == nil {
 		return account, nil
 	}
 	key := fmt.Sprintf("quota:account:%s", account.GetId())
@@ -3889,7 +3891,7 @@ func (s *QuotaService) enrichedAccount(ctx context.Context, account *gen.DyAccou
 			return &cached, nil
 		}
 	}
-	resolved, err := s.profileClient.GetAccount(ctx, &gen.DyGetAccountRequest{Id: account.GetId()})
+	resolved, err := s.accountClient.GetAccount(ctx, &gen.DyGetAccountRequest{Id: account.GetId()})
 	if err != nil {
 		return nil, err
 	}

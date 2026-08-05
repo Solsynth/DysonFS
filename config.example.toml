@@ -34,11 +34,6 @@ target = "stargate:9090"
 useTLS = true
 tlsSkipVerify = true
 
-[passport]
-target = ""
-useTLS = false
-tlsSkipVerify = false
-
 [workspace]
 # WattEngine DyWorkspaceService endpoint. Required for workspace uploads.
 target = ""

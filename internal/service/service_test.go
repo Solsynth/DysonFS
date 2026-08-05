@@ -31,85 +31,85 @@ import (
 	gen "src.solsynth.dev/sosys/go/proto"
 )
 
-type stubProfileClient struct {
+type stubAccountClient struct {
 	account *gen.DyAccount
 	calls   int
 }
 
-func (s *stubProfileClient) GetAccount(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error) {
+func (s *stubAccountClient) GetAccount(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error) {
 	s.calls++
 	return s.account, nil
 }
 
-func (s *stubProfileClient) GetAccountBatch(context.Context, *gen.DyGetAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
+func (s *stubAccountClient) GetAccountBatch(context.Context, *gen.DyGetAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) GetBotAccountBatch(context.Context, *gen.DyGetBotAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
+func (s *stubAccountClient) GetBotAccountBatch(context.Context, *gen.DyGetBotAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) GetBotAccount(context.Context, *gen.DyGetBotAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error) {
+func (s *stubAccountClient) GetBotAccount(context.Context, *gen.DyGetBotAccountRequest, ...grpc.CallOption) (*gen.DyAccount, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) LookupAccountBatch(context.Context, *gen.DyLookupAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
+func (s *stubAccountClient) LookupAccountBatch(context.Context, *gen.DyLookupAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) SearchAccount(context.Context, *gen.DySearchAccountRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
+func (s *stubAccountClient) SearchAccount(context.Context, *gen.DySearchAccountRequest, ...grpc.CallOption) (*gen.DyGetAccountBatchResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) ListAccounts(context.Context, *gen.DyListAccountsRequest, ...grpc.CallOption) (*gen.DyListAccountsResponse, error) {
+func (s *stubAccountClient) ListAccounts(context.Context, *gen.DyListAccountsRequest, ...grpc.CallOption) (*gen.DyListAccountsResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) GetProfile(context.Context, *gen.DyGetProfileRequest, ...grpc.CallOption) (*gen.DyAccountProfile, error) {
+func (s *stubAccountClient) GetProfile(context.Context, *gen.DyGetProfileRequest, ...grpc.CallOption) (*gen.DyAccountProfile, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) UpdateProfile(context.Context, *gen.DyUpdateProfileRequest, ...grpc.CallOption) (*gen.DyAccountProfile, error) {
+func (s *stubAccountClient) UpdateProfile(context.Context, *gen.DyUpdateProfileRequest, ...grpc.CallOption) (*gen.DyAccountProfile, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) ListBadges(context.Context, *gen.DyListBadgesRequest, ...grpc.CallOption) (*gen.DyListBadgesResponse, error) {
+func (s *stubAccountClient) ListBadges(context.Context, *gen.DyListBadgesRequest, ...grpc.CallOption) (*gen.DyListBadgesResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) GrantBadge(context.Context, *gen.DyGrantBadgeRequest, ...grpc.CallOption) (*gen.DyGrantBadgeResponse, error) {
+func (s *stubAccountClient) GrantBadge(context.Context, *gen.DyGrantBadgeRequest, ...grpc.CallOption) (*gen.DyGrantBadgeResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) GetBadge(context.Context, *gen.DyGetBadgeRequest, ...grpc.CallOption) (*gen.DyGetBadgeResponse, error) {
+func (s *stubAccountClient) GetBadge(context.Context, *gen.DyGetBadgeRequest, ...grpc.CallOption) (*gen.DyGetBadgeResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) UpdateBadge(context.Context, *gen.DyUpdateBadgeRequest, ...grpc.CallOption) (*gen.DyUpdateBadgeResponse, error) {
+func (s *stubAccountClient) UpdateBadge(context.Context, *gen.DyUpdateBadgeRequest, ...grpc.CallOption) (*gen.DyUpdateBadgeResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) GetRelationship(context.Context, *gen.DyGetRelationshipRequest, ...grpc.CallOption) (*gen.DyGetRelationshipResponse, error) {
+func (s *stubAccountClient) GetRelationship(context.Context, *gen.DyGetRelationshipRequest, ...grpc.CallOption) (*gen.DyGetRelationshipResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) HasRelationship(context.Context, *gen.DyGetRelationshipRequest, ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
+func (s *stubAccountClient) HasRelationship(context.Context, *gen.DyGetRelationshipRequest, ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) ListFriends(context.Context, *gen.DyListRelationshipSimpleRequest, ...grpc.CallOption) (*gen.DyListRelationshipSimpleResponse, error) {
+func (s *stubAccountClient) ListFriends(context.Context, *gen.DyListRelationshipSimpleRequest, ...grpc.CallOption) (*gen.DyListRelationshipSimpleResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) ListBlocked(context.Context, *gen.DyListRelationshipSimpleRequest, ...grpc.CallOption) (*gen.DyListRelationshipSimpleResponse, error) {
+func (s *stubAccountClient) ListBlocked(context.Context, *gen.DyListRelationshipSimpleRequest, ...grpc.CallOption) (*gen.DyListRelationshipSimpleResponse, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) GetAccountStatus(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccountStatus, error) {
+func (s *stubAccountClient) GetAccountStatus(context.Context, *gen.DyGetAccountRequest, ...grpc.CallOption) (*gen.DyAccountStatus, error) {
 	panic("unexpected call")
 }
 
-func (s *stubProfileClient) GetAccountStatusBatch(context.Context, *gen.DyGetAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountStatusBatchResponse, error) {
+func (s *stubAccountClient) GetAccountStatusBatch(context.Context, *gen.DyGetAccountBatchRequest, ...grpc.CallOption) (*gen.DyGetAccountStatusBatchResponse, error) {
 	panic("unexpected call")
 }
 
@@ -941,8 +941,8 @@ func TestBaseQuotaFromAccount(t *testing.T) {
 func TestEnrichedAccountUsesCache(t *testing.T) {
 	svc := NewQuotaService(nil)
 	svc.SetCache(sharedcache.NewMemoryCacheService(8))
-	client := &stubProfileClient{account: &gen.DyAccount{Id: "acct-1", Profile: &gen.DyAccountProfile{Level: 42, Experience: 12345}}}
-	svc.SetProfileClient(client)
+	client := &stubAccountClient{account: &gen.DyAccount{Id: "acct-1", Profile: &gen.DyAccountProfile{Level: 42, Experience: 12345}}}
+	svc.SetAccountClient(client)
 
 	account := &gen.DyAccount{Id: "acct-1"}
 	resolved1, err := svc.EnrichedAccount(context.Background(), account)
@@ -2025,8 +2025,8 @@ func TestCheckUploadQuotaEnrichesAccountOnce(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.QuotaRecord{})
 	svc := NewQuotaService(&database.DB{DB: db})
 	accountID := uuid.New()
-	client := &stubProfileClient{account: &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 1}}}
-	svc.SetProfileClient(client)
+	client := &stubAccountClient{account: &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 1}}}
+	svc.SetAccountClient(client)
 	if err := svc.CheckUploadQuota(&gen.DyAccount{Id: accountID.String()}, 1, 1); err != nil {
 		t.Fatalf("CheckUploadQuota() error = %v", err)
 	}

@@ -47,7 +47,7 @@ type App struct {
 	httpSrv        *http.Server
 	masterS3Srv    *http.Server
 	grpcSrv        *grpc.Server
-	profileConn    *grpc.ClientConn
+	accountConn    *grpc.ClientConn
 	permissionConn *grpc.ClientConn
 	workspaceConn  *grpc.ClientConn
 	natsConn       *nats.Conn
@@ -104,15 +104,16 @@ func New(cfg *config.Config, mode string) (*App, error) {
 		quota.SetCache(sharedcache.NewRedisCacheService(redisClient))
 	}
 	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: files, wopi: wopi, tasks: service.NewTaskService(db), quota: quota, natsConn: natsConn, logger: logging.Log}
-	if cfg.Passport.Target != "" {
-		profileClient, profileConn, err := service.NewProfileClient(cfg.Passport)
+	if cfg.Auth.Target != "" {
+		// Stargate hosts the account, auth and permission surfaces; a single
+		// [auth] target drives all three clients.
+		accountClient, accountConn, err := service.NewAccountClient(cfg.Auth)
 		if err != nil {
 			return nil, err
 		}
-		app.profileConn = profileConn
-		app.quota.SetProfileClient(profileClient)
-	}
-	if cfg.Auth.Target != "" {
+		app.accountConn = accountConn
+		app.quota.SetAccountClient(accountClient)
+
 		permissionClient, permissionConn, err := service.NewPermissionClient(cfg.Auth)
 		if err != nil {
 			return nil, err
@@ -184,8 +185,8 @@ func (a *App) Stop(ctx context.Context) error {
 	if a.natsConn != nil {
 		a.natsConn.Close()
 	}
-	if a.profileConn != nil {
-		_ = a.profileConn.Close()
+	if a.accountConn != nil {
+		_ = a.accountConn.Close()
 	}
 	if a.permissionConn != nil {
 		_ = a.permissionConn.Close()

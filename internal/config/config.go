@@ -18,7 +18,6 @@ type Config struct {
 	Storage     StorageConfig     `mapstructure:"storage"`
 	Bundled     BundledConfig     `mapstructure:"bundled"`
 	Auth        AuthConfig        `mapstructure:"auth"`
-	Passport    PassportConfig    `mapstructure:"passport"`
 	Workspace   WorkspaceConfig   `mapstructure:"workspace"`
 	Quota       QuotaConfig       `mapstructure:"quota"`
 	Mode        ModeConfig        `mapstructure:"mode"`
@@ -77,12 +76,6 @@ type BundledConfig struct {
 }
 
 type AuthConfig struct {
-	Target        string `mapstructure:"target"`
-	UseTLS        bool   `mapstructure:"useTLS"`
-	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
-}
-
-type PassportConfig struct {
 	Target        string `mapstructure:"target"`
 	UseTLS        bool   `mapstructure:"useTLS"`
 	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
@@ -212,9 +205,6 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("auth.target", "stargate:9090")
 	viper.SetDefault("auth.useTLS", true)
 	viper.SetDefault("auth.tlsSkipVerify", true)
-	viper.SetDefault("passport.target", "")
-	viper.SetDefault("passport.useTLS", false)
-	viper.SetDefault("passport.tlsSkipVerify", false)
 	viper.SetDefault("workspace.target", "")
 	viper.SetDefault("workspace.useTLS", false)
 	viper.SetDefault("workspace.tlsSkipVerify", false)
