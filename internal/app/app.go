@@ -75,7 +75,7 @@ func New(cfg *config.Config, mode string) (*App, error) {
 
 	var redisClient *redis.Client
 	if cfg.Redis.Addr != "" {
-		redisClient = redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
+		redisClient = redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr, DB: cfg.Redis.DB})
 	}
 
 	stor := storage.NewLocalBackend(cfg.Storage.LocalDir)

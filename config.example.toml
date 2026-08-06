@@ -14,6 +14,7 @@ dsn = "host=postgres port=5432 user=dyson password=dyson dbname=dyson_drive sslm
 
 [redis]
 addr = "redis:6379"
+db = 0
 
 [nats]
 url = "nats://nats:4222"

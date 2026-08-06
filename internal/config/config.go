@@ -59,6 +59,7 @@ type DatabaseConfig struct {
 
 type RedisConfig struct {
 	Addr string `mapstructure:"addr"`
+	DB   int    `mapstructure:"db"`
 }
 
 type NATSConfig struct {
@@ -197,6 +198,7 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("grpc.keyFile", "")
 	viper.SetDefault("database.dsn", "")
 	viper.SetDefault("redis.addr", "")
+	viper.SetDefault("redis.db", 0)
 	viper.SetDefault("nats.url", "")
 	viper.SetDefault("storage.tempDir", "/tmp/dyson-drive")
 	viper.SetDefault("storage.localDir", "/tmp/dyson-drive/data")
