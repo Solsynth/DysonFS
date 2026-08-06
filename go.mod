@@ -12,7 +12,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/kr/binarydist v0.1.0
 	github.com/minio/minio-go/v7 v7.2.1
-	github.com/nats-io/nats.go v1.34.0
+	github.com/nats-io/nats.go v1.49.0
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/rs/zerolog v1.33.0
@@ -30,7 +30,7 @@ require (
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/driver/sqlite v1.4.3
 	gorm.io/gorm v1.30.5
-	src.solsynth.dev/sosys/go v0.2.1-0.20260728110849-bc24e73f9cd2
+	src.solsynth.dev/sosys/go v0.2.1-0.20260806093737-26adce6c502f
 )
 
 require (
@@ -79,7 +79,7 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
-	github.com/nats-io/nkeys v0.4.7 // indirect
+	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect

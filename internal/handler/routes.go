@@ -24,6 +24,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	"src.solsynth.dev/sosys/go/pkg/auth"
+	eb "src.solsynth.dev/sosys/go/pkg/eventbus"
 	gen "src.solsynth.dev/sosys/go/proto"
 
 	"github.com/gin-gonic/gin"
@@ -2443,7 +2444,7 @@ func publishFileMetadataUpdated(ctx context.Context, bus *eventbus.Bus, dispatch
 		snapshot.MimeType, snapshot.Size, snapshot.HasCompression, snapshot.HasThumbnail = file.Object.MimeType, file.Object.Size, file.Object.HasCompression, file.Object.HasThumbnail
 		snapshot.Hash = file.Object.Hash
 	}
-	evt := eventbus.FileMetadataUpdatedEvent{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events", FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot}
+	evt := eventbus.FileMetadataUpdatedEvent{Event: eb.Event{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events"}, FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot}
 	if dispatcher != nil {
 		if d, ok := dispatcher.(metadataEventDispatcher); ok {
 			return d.PublishFileMetadataUpdated(ctx, evt)

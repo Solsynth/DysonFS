@@ -23,6 +23,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
+	eb "src.solsynth.dev/sosys/go/pkg/eventbus"
 )
 
 type Worker struct {
@@ -444,7 +445,7 @@ func (w *Worker) publishMetadata(file *database.CloudFile, taskID string) {
 		snapshot.MimeType, snapshot.Size, snapshot.Hash = file.Object.MimeType, file.Object.Size, file.Object.Hash
 		snapshot.HasCompression, snapshot.HasThumbnail = file.Object.HasCompression, file.Object.HasThumbnail
 	}
-	_ = w.bus.PublishFileMetadataUpdated(context.Background(), eventbus.FileMetadataUpdatedEvent{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events", FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot})
+	_ = w.bus.PublishFileMetadataUpdated(context.Background(), eventbus.FileMetadataUpdatedEvent{Event: eb.Event{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events"}, FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot})
 }
 
 func (w *Worker) openSourceObject(ctx context.Context, file *database.CloudFile) (io.ReadCloser, error) {
