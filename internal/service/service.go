@@ -3887,13 +3887,19 @@ func (s *QuotaService) enrichedAccount(ctx context.Context, account *gen.DyAccou
 	key := fmt.Sprintf("quota:account:%s", account.GetId())
 	if s.cache != nil {
 		var cached gen.DyAccount
-		if ok, err := s.cache.GetData(ctx, key, &cached, "DyAccount"); err == nil && ok {
+		// Auth sessions only carry the account identity. Do not accept a
+		// stale/incomplete quota cache entry without the profile required to
+		// derive the leveling quota.
+		if ok, err := s.cache.GetData(ctx, key, &cached, "DyAccount"); err == nil && ok && cached.GetProfile() != nil {
 			return &cached, nil
 		}
 	}
 	resolved, err := s.accountClient.GetAccount(ctx, &gen.DyGetAccountRequest{Id: account.GetId()})
 	if err != nil {
 		return nil, err
+	}
+	if resolved == nil || resolved.GetProfile() == nil {
+		return nil, errors.New("account profile is unavailable for quota calculation")
 	}
 	if s.cache != nil {
 		_ = s.cache.SetData(ctx, key, resolved, "DyAccount", 5*time.Minute)

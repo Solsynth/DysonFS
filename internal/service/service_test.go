@@ -938,18 +938,23 @@ func TestBaseQuotaFromAccount(t *testing.T) {
 	}
 }
 
-func TestEnrichedAccountUsesCache(t *testing.T) {
+func TestEnrichedAccountRefreshesIncompleteCache(t *testing.T) {
 	svc := NewQuotaService(nil)
-	svc.SetCache(sharedcache.NewMemoryCacheService(8))
+	cache := sharedcache.NewMemoryCacheService(8)
+	svc.SetCache(cache)
 	client := &stubAccountClient{account: &gen.DyAccount{Id: "acct-1", Profile: &gen.DyAccountProfile{Level: 42, Experience: 12345}}}
 	svc.SetAccountClient(client)
 
+	ctx := context.Background()
+	if err := cache.SetData(ctx, "quota:account:acct-1", &gen.DyAccount{Id: "acct-1"}, "DyAccount", time.Minute); err != nil {
+		t.Fatalf("seed incomplete account cache: %v", err)
+	}
 	account := &gen.DyAccount{Id: "acct-1"}
-	resolved1, err := svc.EnrichedAccount(context.Background(), account)
+	resolved1, err := svc.EnrichedAccount(ctx, account)
 	if err != nil {
 		t.Fatalf("EnrichedAccount() first call error = %v", err)
 	}
-	resolved2, err := svc.EnrichedAccount(context.Background(), account)
+	resolved2, err := svc.EnrichedAccount(ctx, account)
 	if err != nil {
 		t.Fatalf("EnrichedAccount() second call error = %v", err)
 	}
@@ -957,7 +962,7 @@ func TestEnrichedAccountUsesCache(t *testing.T) {
 		t.Fatalf("resolved accounts = %+v %+v, want fetched profile data", resolved1, resolved2)
 	}
 	if client.calls != 1 {
-		t.Fatalf("profile client calls = %d, want 1", client.calls)
+		t.Fatalf("profile client calls = %d, want 1 after refreshing incomplete cache", client.calls)
 	}
 }
 
@@ -2002,8 +2007,8 @@ func TestCreateUploadedObjectFlagsFollowMediaType(t *testing.T) {
 	db := openTestDB(t, &database.FileObject{})
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	cases := []struct {
-		mime                    string
-		thumbnail, compression  bool
+		mime                   string
+		thumbnail, compression bool
 	}{
 		{"image/jpeg", false, true},
 		{"video/mp4", true, false},
