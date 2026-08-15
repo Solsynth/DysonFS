@@ -19,6 +19,7 @@ type Config struct {
 	Bundled     BundledConfig     `mapstructure:"bundled"`
 	Auth        AuthConfig        `mapstructure:"auth"`
 	Workspace   WorkspaceConfig   `mapstructure:"workspace"`
+	Wallet      WalletConfig      `mapstructure:"wallet"`
 	Quota       QuotaConfig       `mapstructure:"quota"`
 	Mode        ModeConfig        `mapstructure:"mode"`
 	Files       FileConfig        `mapstructure:"files"`
@@ -90,8 +91,35 @@ type WorkspaceConfig struct {
 	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
 }
 
+// WalletConfig configures the DysonNetwork Wallet DyPaymentService gRPC
+// endpoint. A non-empty Target enables the golden-points quota purchase flow;
+// there is no separate enable flag.
+type WalletConfig struct {
+	Target        string `mapstructure:"target"`
+	UseTLS        bool   `mapstructure:"useTLS"`
+	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
+}
+
 type QuotaConfig struct {
 	Leveling LevelingQuotaConfig `mapstructure:"leveling"`
+	Purchase QuotaPurchaseConfig `mapstructure:"purchase"`
+}
+
+// QuotaPurchaseConfig configures the golden-points quota purchase packs, which
+// are sold through the DysonNetwork Wallet order flow (see
+// docs/SPONSORED_POSTS.md). The Wallet gRPC endpoint lives in [wallet]; its
+// presence (target set) enables the flow.
+type QuotaPurchaseConfig struct {
+	Products []QuotaProductConfig `mapstructure:"products"`
+}
+
+type QuotaProductConfig struct {
+	Identifier  string        `mapstructure:"identifier"` // e.g. "dysonfs.quota.10gb"; must be unique
+	DisplayName string        `mapstructure:"displayName"`
+	Description string        `mapstructure:"description"`
+	QuotaMB     int64         `mapstructure:"quotaMb"`   // quota granted, in MB (same unit as QuotaRecord.Quota)
+	Price       string        `mapstructure:"price"`     // decimal string in golds, e.g. "120" (DyOrder.Amount wire type)
+	ExpiresIn   time.Duration `mapstructure:"expiresIn"` // 0 or unset = permanent
 }
 
 type LevelingQuotaConfig struct {
@@ -210,6 +238,9 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("workspace.target", "")
 	viper.SetDefault("workspace.useTLS", false)
 	viper.SetDefault("workspace.tlsSkipVerify", false)
+	viper.SetDefault("wallet.target", "")
+	viper.SetDefault("wallet.useTLS", false)
+	viper.SetDefault("wallet.tlsSkipVerify", false)
 	viper.SetDefault("quota.leveling.level1", 512)
 	viper.SetDefault("quota.leveling.level10", 1024)
 	viper.SetDefault("quota.leveling.level60", 5*1024)

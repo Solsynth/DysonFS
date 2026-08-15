@@ -379,6 +379,7 @@ type QuotaRecord struct {
 	Name        string         `json:"name"`
 	Quota       int64          `json:"quota"`
 	ExpiredAt   *time.Time     `json:"expired_at"`
+	OrderID     *string        `gorm:"size:36;uniqueIndex" json:"order_id,omitempty"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`

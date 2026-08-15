@@ -121,6 +121,12 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		b.GET("usage/:poolId", func(c *gin.Context) { getPoolUsage(c, quota) })
 		b.GET("workspaces/:workspaceId/quota", func(c *gin.Context) { getWorkspaceQuota(c, quota) })
 	}
+	// Golden-points quota purchase routes; absent when the [wallet] target is
+	// unset (404), matching the WebDAV/WOPI convention.
+	if cfg.Wallet.Target != "" {
+		b.GET("quota/products", func(c *gin.Context) { listQuotaPurchaseProducts(c, quota) })
+		b.POST("quota/purchase", func(c *gin.Context) { createQuotaPurchase(c, quota) })
+	}
 
 	if cfg.WebDAV.Enabled {
 		prefix := cfg.WebDAV.Prefix
@@ -786,6 +792,61 @@ func listQuotaRecords(c *gin.Context, quota *service.QuotaService) {
 	}
 	c.Header("X-Total", strconv.Itoa(len(records)))
 	c.JSON(http.StatusOK, records)
+}
+
+// @Summary List quota purchase products
+// @Tags billing
+// @Produce json
+// @Success 200 {array} service.QuotaProduct
+// @Router /api/billing/quota/products [get]
+func listQuotaPurchaseProducts(c *gin.Context, quota *service.QuotaService) {
+	_, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	c.JSON(http.StatusOK, quota.ListPurchaseProducts())
+}
+
+// @Summary Create quota purchase order
+// @Description Create a Wallet order (currency golds) for an extra-quota pack; the user pays it via the Wallet API, and the granted quota lands in quota records once the payment event arrives.
+// @Tags billing
+// @Accept json
+// @Produce json
+// @Param body body object true "product identifier" SchemaExample({"product_identifier":"dysonfs.quota.10gb"})
+// @Success 200 {object} map[string]any
+// @Failure 400 {object} map[string]any
+// @Failure 401 {object} map[string]any
+// @Failure 502 {object} map[string]any
+// @Failure 503 {object} map[string]any
+// @Router /api/billing/quota/purchase [post]
+func createQuotaPurchase(c *gin.Context, quota *service.QuotaService) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		ProductIdentifier string `json:"product_identifier"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.ProductIdentifier == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "product_identifier is required"})
+		return
+	}
+	order, err := quota.CreatePurchaseOrder(c.Request.Context(), result.Account.GetId(), req.ProductIdentifier)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrPurchaseNotConfigured):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quota purchase is not configured"})
+		case errors.Is(err, service.ErrPurchaseProductNotFound):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "product not found"})
+		default:
+			logging.Log.Error().Err(err).Msg("create quota purchase order failed")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create order"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"order_id": order.GetId(), "amount": order.GetAmount(), "currency": order.GetCurrency().GetValue()})
 }
 
 // @Summary Get quota usage

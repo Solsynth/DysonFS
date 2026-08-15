@@ -3545,6 +3545,9 @@ type QuotaService struct {
 	accountClient   accountGetter
 	workspaceClient gen.DyWorkspaceServiceClient
 	levelingCfg     config.LevelingQuotaConfig
+	paymentClient   gen.DyPaymentServiceClient
+	purchaseCfg     config.QuotaPurchaseConfig
+	walletCfg       config.WalletConfig
 }
 
 type accountGetter interface {

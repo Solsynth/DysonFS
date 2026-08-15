@@ -41,11 +41,29 @@ target = ""
 useTLS = false
 tlsSkipVerify = false
 
+[wallet]
+# DysonNetwork Wallet DyPaymentService endpoint. Setting a target enables the
+# golden-points quota purchase flow (see SPONSORED_POSTS.md precedent).
+target = ""
+useTLS = false
+tlsSkipVerify = false
+
 [quota.leveling]
 level1 = 512
 level10 = 1024
 level60 = 5120
 level120 = 10240
+
+# Golden-points quota purchase packs, sold via the [wallet] order flow.
+[quota.purchase]
+
+# [[quota.purchase.products]]
+# identifier = "dysonfs.quota.10gb"
+# displayName = "10 GB Extra Quota"
+# description = "One-time extra storage, +10 GB for 30 days"
+# quotaMb = 10240
+# price = "120"
+# expiresIn = "720h"
 
 [mode]
 master = true
