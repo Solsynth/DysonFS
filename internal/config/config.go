@@ -105,21 +105,15 @@ type QuotaConfig struct {
 	Purchase QuotaPurchaseConfig `mapstructure:"purchase"`
 }
 
-// QuotaPurchaseConfig configures the golden-points quota purchase packs, which
-// are sold through the DysonNetwork Wallet order flow (see
+// QuotaPurchaseConfig configures the quantity-based golden-points quota
+// purchase, sold through the DysonNetwork Wallet order flow (see
 // docs/SPONSORED_POSTS.md). The Wallet gRPC endpoint lives in [wallet]; its
 // presence (target set) enables the flow.
 type QuotaPurchaseConfig struct {
-	Products []QuotaProductConfig `mapstructure:"products"`
-}
-
-type QuotaProductConfig struct {
-	Identifier  string        `mapstructure:"identifier"` // e.g. "dysonfs.quota.10gb"; must be unique
-	DisplayName string        `mapstructure:"displayName"`
-	Description string        `mapstructure:"description"`
-	QuotaMB     int64         `mapstructure:"quotaMb"`   // quota granted, in MB (same unit as QuotaRecord.Quota)
-	Price       string        `mapstructure:"price"`     // decimal string in golds, e.g. "120" (DyOrder.Amount wire type)
-	ExpiresIn   time.Duration `mapstructure:"expiresIn"` // 0 or unset = permanent
+	PricePerGB string `mapstructure:"pricePerGB"` // decimal price per GB in Currency, e.g. "0.05"
+	Currency   string `mapstructure:"currency"`   // Wallet currency; default "golds"
+	MinGB      int64  `mapstructure:"minGB"`      // minimum GB per purchase (default 1)
+	MaxGB      int64  `mapstructure:"maxGB"`      // cap on total extra quota (purchases + admin grants); 0 = unlimited
 }
 
 type LevelingQuotaConfig struct {
@@ -245,6 +239,9 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("quota.leveling.level10", 1024)
 	viper.SetDefault("quota.leveling.level60", 5*1024)
 	viper.SetDefault("quota.leveling.level120", 10*1024)
+	viper.SetDefault("quota.purchase.currency", "golds")
+	viper.SetDefault("quota.purchase.minGB", 1)
+	viper.SetDefault("quota.purchase.maxGB", 0)
 	viper.SetDefault("mode.master", true)
 	viper.SetDefault("mode.worker", false)
 	viper.SetDefault("mode.storage", false)

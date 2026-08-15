@@ -54,16 +54,13 @@ level10 = 1024
 level60 = 5120
 level120 = 10240
 
-# Golden-points quota purchase packs, sold via the [wallet] order flow.
+# Quantity-based golden-points quota purchase terms, sold via the [wallet]
+# order flow.
 [quota.purchase]
-
-# [[quota.purchase.products]]
-# identifier = "dysonfs.quota.10gb"
-# displayName = "10 GB Extra Quota"
-# description = "One-time extra storage, +10 GB for 30 days"
-# quotaMb = 10240
-# price = "120"
-# expiresIn = "720h"
+pricePerGB = "0.05" # decimal price per GB in the currency below
+currency = "golds"  # Wallet currency; default "golds"
+minGB = 1           # minimum GB per purchase
+maxGB = 1024        # cap on total extra quota (purchases + admin grants); 0 = unlimited
 
 [mode]
 master = true

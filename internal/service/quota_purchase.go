@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -23,12 +23,21 @@ import (
 )
 
 // ErrPurchaseNotConfigured is returned when quota purchase is disabled or the
-// payment client was never dialed (missing or empty [quota.purchase] target).
+// payment client was never dialed (missing [wallet] target).
 var ErrPurchaseNotConfigured = errors.New("quota purchase is not configured")
 
-// ErrPurchaseProductNotFound is returned when the requested product identifier
-// does not match any configured [quota.purchase.products] entry.
-var ErrPurchaseProductNotFound = errors.New("quota purchase product not found")
+// ErrPurchaseQuantityTooLow is returned when the requested GB is below the
+// configured minimum (or not positive).
+var ErrPurchaseQuantityTooLow = errors.New("quota purchase quantity is too low")
+
+// ErrPurchaseQuantityTooHigh is returned when the purchase would push the
+// account's total extra quota (purchases + admin grants) above the configured
+// maximum.
+var ErrPurchaseQuantityTooHigh = errors.New("quota purchase would exceed the maximum extra quota")
+
+// quotaOrderProductIdentifier is the Wallet order label for DysonFS quota
+// purchases (product_identifier field).
+const quotaOrderProductIdentifier = "dysonfs.quota"
 
 // paymentOrderEvent mirrors the Wallet PaymentOrderEvent payload published on
 // the shared payment_orders subject (snake_case JSON, as serialized by
@@ -47,15 +56,12 @@ type paymentOrderEvent struct {
 	Meta              map[string]any `json:"meta"`
 }
 
-// QuotaProduct is the read model served by GET /api/billing/quota/products.
-type QuotaProduct struct {
-	ProductIdentifier string `json:"product_identifier"`
-	DisplayName       string `json:"display_name"`
-	Description       string `json:"description"`
-	QuotaMB           int64  `json:"quota_mb"`
-	Price             string `json:"price"`
-	Currency          string `json:"currency"`             // always "golds"
-	ExpiresIn         string `json:"expires_in,omitempty"` // Go duration string, omitted when permanent
+// QuotaPurchaseInfo is the read model served by GET /api/billing/quota/purchase.
+type QuotaPurchaseInfo struct {
+	PricePerGB string `json:"price_per_gb"`
+	Currency   string `json:"currency"`
+	MinGB      int64  `json:"min_gb"`
+	MaxGB      int64  `json:"max_gb"` // 0 = unlimited; cap on total extra quota (purchases + admin grants)
 }
 
 // NewPaymentClient dials the Wallet DyPaymentService gRPC endpoint using the
@@ -84,7 +90,7 @@ func (s *QuotaService) SetPaymentClient(client gen.DyPaymentServiceClient) {
 	s.paymentClient = client
 }
 
-// SetPurchaseConfig stores the [quota.purchase] product packs. Called
+// SetPurchaseConfig stores the [quota.purchase] purchase terms. Called
 // unconditionally from app wiring.
 func (s *QuotaService) SetPurchaseConfig(cfg config.QuotaPurchaseConfig) {
 	s.purchaseCfg = cfg
@@ -103,51 +109,72 @@ func (s *QuotaService) PurchaseEnabled() bool {
 	return strings.TrimSpace(s.walletCfg.Target) != ""
 }
 
-// ListPurchaseProducts returns the configured products in config order.
-func (s *QuotaService) ListPurchaseProducts() []QuotaProduct {
-	products := make([]QuotaProduct, 0, len(s.purchaseCfg.Products))
-	for _, p := range s.purchaseCfg.Products {
-		item := QuotaProduct{
-			ProductIdentifier: p.Identifier,
-			DisplayName:       p.DisplayName,
-			Description:       p.Description,
-			QuotaMB:           p.QuotaMB,
-			Price:             p.Price,
-			Currency:          "golds",
-		}
-		if p.ExpiresIn > 0 {
-			item.ExpiresIn = p.ExpiresIn.String()
-		}
-		products = append(products, item)
+// PurchaseInfo returns the configured purchase terms.
+func (s *QuotaService) PurchaseInfo() QuotaPurchaseInfo {
+	return QuotaPurchaseInfo{
+		PricePerGB: s.purchaseCfg.PricePerGB,
+		Currency:   s.purchaseCurrency(),
+		MinGB:      s.purchaseCfg.MinGB,
+		MaxGB:      s.purchaseCfg.MaxGB,
 	}
-	return products
 }
 
-// CreatePurchaseOrder creates a Wallet order (currency golds, system payee)
-// for the configured product, mirroring the DysonNetwork.Sphere sponsor flow.
-// The grant target account and quota amount are frozen into the order meta at
-// creation time so later config edits cannot change what a paid order grants.
-func (s *QuotaService) CreatePurchaseOrder(ctx context.Context, accountID, productIdentifier string) (*gen.DyOrder, error) {
+// purchaseCurrency returns the configured currency, defaulting to golds.
+func (s *QuotaService) purchaseCurrency() string {
+	if c := strings.TrimSpace(s.purchaseCfg.Currency); c != "" {
+		return c
+	}
+	return "golds"
+}
+
+// CreatePurchaseOrder creates a Wallet order (system payee) for quantityGB GB
+// of extra quota at the configured per-GB price, mirroring the
+// DysonNetwork.Sphere sponsor flow. Quantity must be within [MinGB, ∞) and the
+// account's total extra quota (purchases + admin grants) must stay within
+// MaxGB. The grant target account, quantity and quota amount are frozen into
+// the order meta at creation time so later config edits cannot change what a
+// paid order grants.
+func (s *QuotaService) CreatePurchaseOrder(ctx context.Context, accountID string, quantityGB int64) (*gen.DyOrder, error) {
 	if !s.PurchaseEnabled() || s.paymentClient == nil {
 		return nil, ErrPurchaseNotConfigured
 	}
-	product := s.product(productIdentifier)
-	if product == nil {
-		return nil, ErrPurchaseProductNotFound
+	if quantityGB <= 0 {
+		return nil, ErrPurchaseQuantityTooLow
+	}
+	if minGB := s.purchaseCfg.MinGB; minGB > 0 && quantityGB < minGB {
+		return nil, ErrPurchaseQuantityTooLow
+	}
+	// maxGB caps the account's total extra quota (purchased + admin-assigned),
+	// not a single order. Compare in MB against the same non-expired sum that
+	// QuotaSummary.ExtraQuota surfaces.
+	if maxGB := s.purchaseCfg.MaxGB; maxGB > 0 {
+		currentMB, err := s.extraQuotaMB(accountID)
+		if err != nil {
+			return nil, fmt.Errorf("check extra quota cap: %w", err)
+		}
+		if currentMB+quantityGB*1024 > maxGB*1024 {
+			return nil, ErrPurchaseQuantityTooHigh
+		}
+	}
+	amount, err := computeOrderAmount(s.purchaseCfg.PricePerGB, quantityGB)
+	if err != nil {
+		return nil, err
 	}
 	meta, err := json.Marshal(map[string]any{
-		"account_id":         accountID,
-		"quota_mb":           product.QuotaMB,
-		"product_identifier": product.Identifier,
+		"account_id":  accountID,
+		"quantity_gb": quantityGB,
+		"quota_mb":    quantityGB * 1024,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode order meta: %w", err)
 	}
-	remarks := "DysonFS quota purchase: " + product.DisplayName
+	currency := s.purchaseCurrency()
+	remarks := fmt.Sprintf("DysonFS quota purchase: %d GB extra storage", quantityGB)
+	productIdentifier := quotaOrderProductIdentifier
 	order, err := s.paymentClient.CreateOrder(ctx, &gen.DyCreateOrderRequest{
-		Currency:          "golds",
-		Amount:            product.Price,
-		ProductIdentifier: &product.Identifier,
+		Currency:          currency,
+		Amount:            amount,
+		ProductIdentifier: &productIdentifier,
 		Meta:              meta,
 		Remarks:           &remarks,
 	})
@@ -155,6 +182,31 @@ func (s *QuotaService) CreatePurchaseOrder(ctx context.Context, accountID, produ
 		return nil, fmt.Errorf("create wallet order: %w", err)
 	}
 	return order, nil
+}
+
+// computeOrderAmount multiplies the per-GB decimal price by the quantity,
+// returning a decimal string with the same scale as the price (trailing zeros
+// trimmed). big.Rat keeps the arithmetic exact.
+func computeOrderAmount(pricePerGB string, quantityGB int64) (string, error) {
+	price, ok := new(big.Rat).SetString(strings.TrimSpace(pricePerGB))
+	if !ok || price.Sign() < 0 {
+		return "", fmt.Errorf("compute order amount: invalid price per GB %q", pricePerGB)
+	}
+	amount := new(big.Rat).Mul(price, new(big.Rat).SetInt64(quantityGB))
+	scale := decimalScale(pricePerGB)
+	s := amount.FloatString(scale)
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimSuffix(s, ".")
+	}
+	return s, nil
+}
+
+func decimalScale(s string) int {
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		return len(s) - i - 1
+	}
+	return 0
 }
 
 // ConsumePaymentOrders runs the durable JetStream consumer for Wallet payment
@@ -173,11 +225,9 @@ func (s *QuotaService) handlePaymentOrderEvent(data []byte) error {
 		return fmt.Errorf("decode payment order event: %w", err)
 	}
 	// Other services' orders share this subject (Sphere sponsors, awards, …).
-	// Recognize our own orders by config membership or, when the product was
-	// removed from config before fulfillment, by the meta snapshot frozen at
-	// order creation — a paid grant must never be dropped because of config
-	// drift.
-	if evt.ProductIdentifier == "" || (!s.productConfigured(evt.ProductIdentifier) && !isOwnQuotaOrder(evt)) {
+	// Only events whose meta carries the snapshot frozen at order creation
+	// (account_id, quantity_gb, quota_mb) are ours.
+	if !isOwnQuotaOrder(evt) {
 		return nil
 	}
 	// Wallet publishes on pay; be explicit anyway (1 = paid).
@@ -188,13 +238,13 @@ func (s *QuotaService) handlePaymentOrderEvent(data []byte) error {
 	if err != nil {
 		return err
 	}
-	quotaMB, ok := metaQuotaMB(evt.Meta)
+	quotaMB, ok := metaInt64(evt.Meta, "quota_mb")
 	if !ok || quotaMB <= 0 {
-		if product := s.product(evt.ProductIdentifier); product != nil {
-			quotaMB = product.QuotaMB
-		} else {
-			return fmt.Errorf("payment order event %s: no quota_mb in meta and product %q not configured", evt.OrderID, evt.ProductIdentifier)
-		}
+		return fmt.Errorf("payment order event %s: no valid quota_mb in meta", evt.OrderID)
+	}
+	quantityGB, ok := metaInt64(evt.Meta, "quantity_gb")
+	if !ok || quantityGB <= 0 {
+		return fmt.Errorf("payment order event %s: no valid quantity_gb in meta", evt.OrderID)
 	}
 	// Idempotency: NATS delivers at-least-once; a redelivered event must not
 	// double-grant. The unique index on order_id is the backstop for the race
@@ -207,23 +257,12 @@ func (s *QuotaService) handlePaymentOrderEvent(data []byte) error {
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("lookup quota record by order id %s: %w", evt.OrderID, err)
 	}
-	product := s.product(evt.ProductIdentifier)
-	name, description := evt.ProductIdentifier, evt.ProductIdentifier
-	var expiredAt *time.Time
-	if product != nil {
-		name, description = product.DisplayName, product.Description
-		if product.ExpiresIn > 0 {
-			t := time.Now().Add(product.ExpiresIn)
-			expiredAt = &t
-		}
-	}
 	record := database.QuotaRecord{
 		ID:          database.NewID(),
 		AccountID:   accountID,
-		Name:        name,
-		Description: description,
+		Name:        fmt.Sprintf("%d GB Extra Quota", quantityGB),
+		Description: "Extra storage purchased via Wallet order",
 		Quota:       quotaMB,
-		ExpiredAt:   expiredAt,
 		OrderID:     &evt.OrderID,
 	}
 	if err := s.db.Create(&record).Error; err != nil {
@@ -235,31 +274,21 @@ func (s *QuotaService) handlePaymentOrderEvent(data []byte) error {
 	return nil
 }
 
-func (s *QuotaService) product(identifier string) *config.QuotaProductConfig {
-	for i := range s.purchaseCfg.Products {
-		if s.purchaseCfg.Products[i].Identifier == identifier {
-			return &s.purchaseCfg.Products[i]
-		}
-	}
-	return nil
-}
-
-func (s *QuotaService) productConfigured(identifier string) bool {
-	return s.product(identifier) != nil
-}
-
 // isOwnQuotaOrder reports whether the event's meta carries the snapshot this
-// service froze at order creation (account_id, quota_mb, product_identifier
-// matching the event). Used to keep granting a paid order whose product was
-// removed from config before fulfillment.
+// service froze at order creation (account_id, quantity_gb, quota_mb). The
+// snapshot also survives config drift: a paid grant is never dropped because
+// purchase terms changed before fulfillment.
 func isOwnQuotaOrder(evt paymentOrderEvent) bool {
 	accountID, _ := evt.Meta["account_id"].(string)
-	productID, _ := evt.Meta["product_identifier"].(string)
-	if accountID == "" || productID != evt.ProductIdentifier {
+	if accountID == "" {
 		return false
 	}
-	quotaMB, ok := metaQuotaMB(evt.Meta)
-	return ok && quotaMB > 0
+	quotaMB, ok := metaInt64(evt.Meta, "quota_mb")
+	if !ok || quotaMB <= 0 {
+		return false
+	}
+	quantityGB, ok := metaInt64(evt.Meta, "quantity_gb")
+	return ok && quantityGB > 0
 }
 
 // resolveGrantAccount prefers the creator frozen in the order meta, falling
@@ -276,11 +305,11 @@ func resolveGrantAccount(evt paymentOrderEvent) (uuid.UUID, error) {
 	return uuid.Nil, fmt.Errorf("payment order event %s: no valid account_id in meta or event", evt.OrderID)
 }
 
-// metaQuotaMB extracts the int64 quota value from the meta map, accepting the
-// float64 produced by json.Unmarshal and the json.Number produced by a decoder
-// with UseNumber.
-func metaQuotaMB(meta map[string]any) (int64, bool) {
-	v, ok := meta["quota_mb"]
+// metaInt64 extracts an int64 value from the meta map, accepting the float64
+// produced by json.Unmarshal and the json.Number produced by a decoder with
+// UseNumber.
+func metaInt64(meta map[string]any, key string) (int64, bool) {
+	v, ok := meta[key]
 	if !ok {
 		return 0, false
 	}

@@ -25,7 +25,7 @@ type handlerStubPaymentClient struct {
 
 func (s *handlerStubPaymentClient) CreateOrder(ctx context.Context, in *gen.DyCreateOrderRequest, opts ...grpc.CallOption) (*gen.DyOrder, error) {
 	s.lastReq = in
-	return &gen.DyOrder{Id: "order-1", Amount: "120", Currency: &wrapperspb.StringValue{Value: "golds"}}, nil
+	return &gen.DyOrder{Id: "order-1", Amount: in.Amount, Currency: &wrapperspb.StringValue{Value: in.Currency}}, nil
 }
 
 func (s *handlerStubPaymentClient) CreateTransactionWithAccount(context.Context, *gen.DyCreateTransactionWithAccountRequest, ...grpc.CallOption) (*gen.DyTransaction, error) {
@@ -59,11 +59,7 @@ func (s *handlerStubPaymentClient) RegisterAppSubscriptionDefinition(context.Con
 func purchaseEnabledConfig() *config.Config {
 	return &config.Config{
 		Wallet: config.WalletConfig{Target: "wallet:9090"},
-		Quota: config.QuotaConfig{Purchase: config.QuotaPurchaseConfig{
-			Products: []config.QuotaProductConfig{
-				{Identifier: "dysonfs.quota.10gb", DisplayName: "10 GB Extra Quota", Description: "One-time extra storage", QuotaMB: 10240, Price: "120"},
-			},
-		}},
+		Quota:  config.QuotaConfig{Purchase: config.QuotaPurchaseConfig{PricePerGB: "0.05", MinGB: 1, MaxGB: 100}},
 	}
 }
 
@@ -85,31 +81,28 @@ func newPurchaseHandlerRouter(t *testing.T, cfg *config.Config) *gin.Engine {
 	return r
 }
 
-func TestListQuotaPurchaseProducts(t *testing.T) {
+func TestGetQuotaPurchaseInfo(t *testing.T) {
 	r := newPurchaseHandlerRouter(t, purchaseEnabledConfig())
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/billing/quota/products", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/billing/quota/purchase", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
 	}
-	var products []service.QuotaProduct
-	if err := json.Unmarshal(w.Body.Bytes(), &products); err != nil {
+	var info service.QuotaPurchaseInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(products) != 1 {
-		t.Fatalf("products = %d, want 1", len(products))
-	}
-	if products[0].ProductIdentifier != "dysonfs.quota.10gb" || products[0].Currency != "golds" {
-		t.Errorf("product = %+v, want dysonfs.quota.10gb / golds", products[0])
+	if info.PricePerGB != "0.05" || info.Currency != "golds" || info.MinGB != 1 || info.MaxGB != 100 {
+		t.Errorf("info = %+v, want price 0.05 / golds / min 1 / max 100", info)
 	}
 }
 
 func TestCreateQuotaPurchaseOrder(t *testing.T) {
 	r := newPurchaseHandlerRouter(t, purchaseEnabledConfig())
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/billing/quota/purchase", strings.NewReader(`{"product_identifier":"dysonfs.quota.10gb"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/billing/quota/purchase", strings.NewReader(`{"quantity_gb":10}`))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -120,15 +113,30 @@ func TestCreateQuotaPurchaseOrder(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["order_id"] != "order-1" || resp["amount"] != "120" || resp["currency"] != "golds" {
-		t.Errorf("response = %+v, want order_id/amount/currency", resp)
+	if resp["order_id"] != "order-1" || resp["amount"] != "0.5" || resp["currency"] != "golds" {
+		t.Errorf("response = %+v, want order_id/amount 0.5/currency golds", resp)
+	}
+	if resp["quantity_gb"] != float64(10) || resp["quota_mb"] != float64(10*1024) {
+		t.Errorf("response = %+v, want quantity_gb 10 / quota_mb %d", resp, 10*1024)
 	}
 }
 
-func TestCreateQuotaPurchaseUnknownProduct(t *testing.T) {
+func TestCreateQuotaPurchaseQuantityTooLow(t *testing.T) {
 	r := newPurchaseHandlerRouter(t, purchaseEnabledConfig())
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/billing/quota/purchase", strings.NewReader(`{"product_identifier":"dysonfs.quota.nope"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/billing/quota/purchase", strings.NewReader(`{"quantity_gb":0}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateQuotaPurchaseQuantityTooHigh(t *testing.T) {
+	r := newPurchaseHandlerRouter(t, purchaseEnabledConfig())
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/billing/quota/purchase", strings.NewReader(`{"quantity_gb":101}`))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -141,14 +149,14 @@ func TestQuotaPurchaseRoutesMissingWhenDisabled(t *testing.T) {
 	r := newPurchaseHandlerRouter(t, &config.Config{})
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/billing/quota/products", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/billing/quota/purchase", nil)
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
-		t.Fatalf("GET products status = %d, want 404", w.Code)
+		t.Fatalf("GET purchase status = %d, want 404", w.Code)
 	}
 
 	w = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/billing/quota/purchase", strings.NewReader(`{"product_identifier":"dysonfs.quota.10gb"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/billing/quota/purchase", strings.NewReader(`{"quantity_gb":10}`))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {

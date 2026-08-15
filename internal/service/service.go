@@ -3774,22 +3774,33 @@ func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) 
 }
 
 func (s *QuotaService) getSummaryForAccount(account *gen.DyAccount) (QuotaSummary, error) {
-	var records []database.QuotaRecord
-	if err := s.db.Where("account_id = ?", account.GetId()).Order("created_at asc").Find(&records).Error; err != nil {
+	extraQuota, err := s.extraQuotaMB(account.GetId())
+	if err != nil {
 		return QuotaSummary{}, err
-	}
-	var extraQuota int64
-	now := time.Now()
-	for _, record := range records {
-		if record.ExpiredAt != nil && record.ExpiredAt.Before(now) {
-			continue
-		}
-		extraQuota += record.Quota
 	}
 	levelingQuota := levelingQuotaFromAccount(account, s.levelingCfg)
 	perkQuota := perkQuotaFromAccount(account)
 	basedQuota := levelingQuota + perkQuota
 	return QuotaSummary{BasedQuota: basedQuota, LevelingQuota: levelingQuota, PerkQuota: perkQuota, ExtraQuota: extraQuota, TotalQuota: basedQuota + extraQuota}, nil
+}
+
+// extraQuotaMB returns the account's current extra quota in MB: the sum of all
+// quota records (purchased or manually assigned by an admin) that have not
+// expired. This is the same figure surfaced as QuotaSummary.ExtraQuota.
+func (s *QuotaService) extraQuotaMB(accountID string) (int64, error) {
+	var records []database.QuotaRecord
+	if err := s.db.Where("account_id = ?", accountID).Find(&records).Error; err != nil {
+		return 0, err
+	}
+	var total int64
+	now := time.Now()
+	for _, record := range records {
+		if record.ExpiredAt != nil && record.ExpiredAt.Before(now) {
+			continue
+		}
+		total += record.Quota
+	}
+	return total, nil
 }
 
 func baseQuotaFromAccount(account *gen.DyAccount) int64 {

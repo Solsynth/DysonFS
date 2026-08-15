@@ -124,7 +124,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	// Golden-points quota purchase routes; absent when the [wallet] target is
 	// unset (404), matching the WebDAV/WOPI convention.
 	if cfg.Wallet.Target != "" {
-		b.GET("quota/products", func(c *gin.Context) { listQuotaPurchaseProducts(c, quota) })
+		b.GET("quota/purchase", func(c *gin.Context) { getQuotaPurchaseInfo(c, quota) })
 		b.POST("quota/purchase", func(c *gin.Context) { createQuotaPurchase(c, quota) })
 	}
 
@@ -794,26 +794,26 @@ func listQuotaRecords(c *gin.Context, quota *service.QuotaService) {
 	c.JSON(http.StatusOK, records)
 }
 
-// @Summary List quota purchase products
+// @Summary Get quota purchase terms
 // @Tags billing
 // @Produce json
-// @Success 200 {array} service.QuotaProduct
-// @Router /api/billing/quota/products [get]
-func listQuotaPurchaseProducts(c *gin.Context, quota *service.QuotaService) {
+// @Success 200 {object} service.QuotaPurchaseInfo
+// @Router /api/billing/quota/purchase [get]
+func getQuotaPurchaseInfo(c *gin.Context, quota *service.QuotaService) {
 	_, _, ok := auth.GetAuth(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	c.JSON(http.StatusOK, quota.ListPurchaseProducts())
+	c.JSON(http.StatusOK, quota.PurchaseInfo())
 }
 
 // @Summary Create quota purchase order
-// @Description Create a Wallet order (currency golds) for an extra-quota pack; the user pays it via the Wallet API, and the granted quota lands in quota records once the payment event arrives.
+// @Description Create a Wallet order for quantityGB GB of extra quota at the configured per-GB price; the user pays it via the Wallet API, and the granted quota lands in quota records once the payment event arrives.
 // @Tags billing
 // @Accept json
 // @Produce json
-// @Param body body object true "product identifier" SchemaExample({"product_identifier":"dysonfs.quota.10gb"})
+// @Param body body object true "purchase request" SchemaExample({"quantity_gb":10})
 // @Success 200 {object} map[string]any
 // @Failure 400 {object} map[string]any
 // @Failure 401 {object} map[string]any
@@ -827,26 +827,34 @@ func createQuotaPurchase(c *gin.Context, quota *service.QuotaService) {
 		return
 	}
 	var req struct {
-		ProductIdentifier string `json:"product_identifier"`
+		QuantityGB int64 `json:"quantity_gb"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.ProductIdentifier == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "product_identifier is required"})
+	if err := c.ShouldBindJSON(&req); err != nil || req.QuantityGB <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity_gb is required"})
 		return
 	}
-	order, err := quota.CreatePurchaseOrder(c.Request.Context(), result.Account.GetId(), req.ProductIdentifier)
+	order, err := quota.CreatePurchaseOrder(c.Request.Context(), result.Account.GetId(), req.QuantityGB)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrPurchaseNotConfigured):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quota purchase is not configured"})
-		case errors.Is(err, service.ErrPurchaseProductNotFound):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "product not found"})
+		case errors.Is(err, service.ErrPurchaseQuantityTooLow):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "quantity_gb is below the minimum"})
+		case errors.Is(err, service.ErrPurchaseQuantityTooHigh):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "quantity_gb would exceed the maximum extra quota"})
 		default:
 			logging.Log.Error().Err(err).Msg("create quota purchase order failed")
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create order"})
 		}
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"order_id": order.GetId(), "amount": order.GetAmount(), "currency": order.GetCurrency().GetValue()})
+	c.JSON(http.StatusOK, gin.H{
+		"order_id":    order.GetId(),
+		"amount":      order.GetAmount(),
+		"currency":    order.GetCurrency().GetValue(),
+		"quantity_gb": req.QuantityGB,
+		"quota_mb":    req.QuantityGB * 1024,
+	})
 }
 
 // @Summary Get quota usage
