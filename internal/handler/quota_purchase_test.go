@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -59,7 +60,7 @@ func (s *handlerStubPaymentClient) RegisterAppSubscriptionDefinition(context.Con
 func purchaseEnabledConfig() *config.Config {
 	return &config.Config{
 		Wallet: config.WalletConfig{Target: "wallet:9090"},
-		Quota:  config.QuotaConfig{Purchase: config.QuotaPurchaseConfig{PricePerGB: "0.05", MinGB: 1, MaxGB: 100}},
+		Quota:  config.QuotaConfig{Purchase: config.QuotaPurchaseConfig{PricePerGB: "0.05", MinGB: 1, MaxGB: 100, ExpiresIn: 24 * time.Hour}},
 	}
 }
 
@@ -96,6 +97,9 @@ func TestGetQuotaPurchaseInfo(t *testing.T) {
 	}
 	if info.PricePerGB != "0.05" || info.Currency != "golds" || info.MinGB != 1 || info.MaxGB != 100 {
 		t.Errorf("info = %+v, want price 0.05 / golds / min 1 / max 100", info)
+	}
+	if info.ExpiresIn != "24h0m0s" {
+		t.Errorf("ExpiresIn = %q, want 24h0m0s", info.ExpiresIn)
 	}
 }
 

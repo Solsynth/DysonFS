@@ -121,6 +121,26 @@ func TestCreatePurchaseOrder(t *testing.T) {
 	if meta["quota_mb"] != float64(10*1024) {
 		t.Errorf("meta quota_mb = %v, want %d", meta["quota_mb"], 10*1024)
 	}
+	if _, ok := meta["expires_in_seconds"]; ok {
+		t.Errorf("meta expires_in_seconds present, want absent for permanent purchase")
+	}
+}
+
+func TestCreatePurchaseOrderFreezesExpiryInMeta(t *testing.T) {
+	svc, _ := newPurchaseTestService(t, config.QuotaPurchaseConfig{PricePerGB: "0.05", MinGB: 1, MaxGB: 100, ExpiresIn: 24 * time.Hour})
+	stub := &stubPaymentClient{}
+	svc.SetPaymentClient(stub)
+
+	if _, err := svc.CreatePurchaseOrder(context.Background(), uuid.New().String(), 10); err != nil {
+		t.Fatalf("CreatePurchaseOrder() error = %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(stub.lastReq.Meta, &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if meta["expires_in_seconds"] != float64(24*60*60) {
+		t.Errorf("meta expires_in_seconds = %v, want %d", meta["expires_in_seconds"], 24*60*60)
+	}
 }
 
 func TestCreatePurchaseOrderWholeGoldAmount(t *testing.T) {
@@ -230,6 +250,14 @@ func TestPurchaseInfo(t *testing.T) {
 	if info.PricePerGB != "0.05" || info.Currency != "golds" || info.MinGB != 1 || info.MaxGB != 100 {
 		t.Errorf("info = %+v, want price 0.05 / golds / min 1 / max 100", info)
 	}
+	if info.ExpiresIn != "" {
+		t.Errorf("ExpiresIn = %q, want empty for permanent purchase", info.ExpiresIn)
+	}
+
+	expiring, _ := newPurchaseTestService(t, config.QuotaPurchaseConfig{PricePerGB: "0.05", MinGB: 1, MaxGB: 100, ExpiresIn: 24 * time.Hour})
+	if got := expiring.PurchaseInfo().ExpiresIn; got != "24h0m0s" {
+		t.Errorf("ExpiresIn = %q, want 24h0m0s", got)
+	}
 }
 
 func purchaseEventJSON(orderID string, status int, accountID uuid.UUID, meta map[string]any) string {
@@ -283,6 +311,50 @@ func TestHandlePaymentOrderEventGrants(t *testing.T) {
 	}
 	if rec.ExpiredAt != nil {
 		t.Errorf("ExpiredAt = %v, want nil (permanent)", rec.ExpiredAt)
+	}
+}
+
+func TestHandlePaymentOrderEventExpiring(t *testing.T) {
+	svc, db := newPurchaseTestService(t, config.QuotaPurchaseConfig{PricePerGB: "0.05", MinGB: 1, MaxGB: 100, ExpiresIn: 24 * time.Hour})
+	accountID := uuid.New()
+
+	// Order created before expiry was snapshotted in meta → config fallback.
+	payload := purchaseEventJSON("order-1", 1, accountID, ownOrderMeta(accountID, 5))
+	if err := svc.handlePaymentOrderEvent([]byte(payload)); err != nil {
+		t.Fatalf("handlePaymentOrderEvent() error = %v", err)
+	}
+	// Meta snapshot wins over config.
+	meta := ownOrderMeta(accountID, 5)
+	meta["expires_in_seconds"] = float64(3600)
+	payload2 := purchaseEventJSON("order-2", 1, accountID, meta)
+	if err := svc.handlePaymentOrderEvent([]byte(payload2)); err != nil {
+		t.Fatalf("handlePaymentOrderEvent() error = %v", err)
+	}
+
+	var records []database.QuotaRecord
+	if err := db.Find(&records).Error; err != nil {
+		t.Fatalf("find records: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2", len(records))
+	}
+	byOrder := map[string]database.QuotaRecord{}
+	for _, rec := range records {
+		byOrder[*rec.OrderID] = rec
+	}
+	expiredAt := byOrder["order-1"].ExpiredAt
+	if expiredAt == nil {
+		t.Fatal("order-1 ExpiredAt = nil, want ≈now+24h (config)")
+	}
+	if diff := expiredAt.Sub(time.Now()); diff < 23*time.Hour || diff > 25*time.Hour {
+		t.Errorf("order-1 ExpiredAt diff = %v, want ≈24h (config)", diff)
+	}
+	expiredAt2 := byOrder["order-2"].ExpiredAt
+	if expiredAt2 == nil {
+		t.Fatal("order-2 ExpiredAt = nil, want ≈now+1h (meta)")
+	}
+	if diff := expiredAt2.Sub(time.Now()); diff < 50*time.Minute || diff > 70*time.Minute {
+		t.Errorf("order-2 ExpiredAt diff = %v, want ≈1h (meta)", diff)
 	}
 }
 

@@ -61,6 +61,7 @@ pricePerGB = "0.05" # decimal price per GB in the currency below
 currency = "golds"  # Wallet currency; default "golds"
 minGB = 1           # minimum GB per purchase
 maxGB = 1024        # cap on total extra quota (purchases + admin grants); 0 = unlimited
+expiresIn = "720h"  # granted quota lifetime; 0 or unset = permanent
 
 [mode]
 master = true

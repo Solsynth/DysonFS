@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -61,7 +62,8 @@ type QuotaPurchaseInfo struct {
 	PricePerGB string `json:"price_per_gb"`
 	Currency   string `json:"currency"`
 	MinGB      int64  `json:"min_gb"`
-	MaxGB      int64  `json:"max_gb"` // 0 = unlimited; cap on total extra quota (purchases + admin grants)
+	MaxGB      int64  `json:"max_gb"`               // 0 = unlimited; cap on total extra quota (purchases + admin grants)
+	ExpiresIn  string `json:"expires_in,omitempty"` // Go duration string, omitted when permanent
 }
 
 // NewPaymentClient dials the Wallet DyPaymentService gRPC endpoint using the
@@ -111,12 +113,16 @@ func (s *QuotaService) PurchaseEnabled() bool {
 
 // PurchaseInfo returns the configured purchase terms.
 func (s *QuotaService) PurchaseInfo() QuotaPurchaseInfo {
-	return QuotaPurchaseInfo{
+	info := QuotaPurchaseInfo{
 		PricePerGB: s.purchaseCfg.PricePerGB,
 		Currency:   s.purchaseCurrency(),
 		MinGB:      s.purchaseCfg.MinGB,
 		MaxGB:      s.purchaseCfg.MaxGB,
 	}
+	if s.purchaseCfg.ExpiresIn > 0 {
+		info.ExpiresIn = s.purchaseCfg.ExpiresIn.String()
+	}
+	return info
 }
 
 // purchaseCurrency returns the configured currency, defaulting to golds.
@@ -160,11 +166,17 @@ func (s *QuotaService) CreatePurchaseOrder(ctx context.Context, accountID string
 	if err != nil {
 		return nil, err
 	}
-	meta, err := json.Marshal(map[string]any{
+	metaMap := map[string]any{
 		"account_id":  accountID,
 		"quantity_gb": quantityGB,
 		"quota_mb":    quantityGB * 1024,
-	})
+	}
+	if expiresIn := s.purchaseCfg.ExpiresIn; expiresIn > 0 {
+		// Freeze the granted lifetime at order time like the amount and
+		// quantity, so later config edits cannot change a paid order.
+		metaMap["expires_in_seconds"] = int64(expiresIn.Seconds())
+	}
+	meta, err := json.Marshal(metaMap)
 	if err != nil {
 		return nil, fmt.Errorf("encode order meta: %w", err)
 	}
@@ -246,6 +258,17 @@ func (s *QuotaService) handlePaymentOrderEvent(data []byte) error {
 	if !ok || quantityGB <= 0 {
 		return fmt.Errorf("payment order event %s: no valid quantity_gb in meta", evt.OrderID)
 	}
+	// Lifetime frozen in the meta at order creation wins; fall back to the
+	// current config (covers orders created before expiry was snapshotted);
+	// none = permanent.
+	var expiredAt *time.Time
+	if seconds, ok := metaInt64(evt.Meta, "expires_in_seconds"); ok && seconds > 0 {
+		t := time.Now().Add(time.Duration(seconds) * time.Second)
+		expiredAt = &t
+	} else if expiresIn := s.purchaseCfg.ExpiresIn; expiresIn > 0 {
+		t := time.Now().Add(expiresIn)
+		expiredAt = &t
+	}
 	// Idempotency: NATS delivers at-least-once; a redelivered event must not
 	// double-grant. The unique index on order_id is the backstop for the race
 	// between this check and the insert.
@@ -263,6 +286,7 @@ func (s *QuotaService) handlePaymentOrderEvent(data []byte) error {
 		Name:        fmt.Sprintf("%d GB Extra Quota", quantityGB),
 		Description: "Extra storage purchased via Wallet order",
 		Quota:       quotaMB,
+		ExpiredAt:   expiredAt,
 		OrderID:     &evt.OrderID,
 	}
 	if err := s.db.Create(&record).Error; err != nil {

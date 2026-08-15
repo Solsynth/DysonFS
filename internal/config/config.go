@@ -110,10 +110,11 @@ type QuotaConfig struct {
 // docs/SPONSORED_POSTS.md). The Wallet gRPC endpoint lives in [wallet]; its
 // presence (target set) enables the flow.
 type QuotaPurchaseConfig struct {
-	PricePerGB string `mapstructure:"pricePerGB"` // decimal price per GB in Currency, e.g. "0.05"
-	Currency   string `mapstructure:"currency"`   // Wallet currency; default "golds"
-	MinGB      int64  `mapstructure:"minGB"`      // minimum GB per purchase (default 1)
-	MaxGB      int64  `mapstructure:"maxGB"`      // cap on total extra quota (purchases + admin grants); 0 = unlimited
+	PricePerGB string        `mapstructure:"pricePerGB"` // decimal price per GB in Currency, e.g. "0.05"
+	Currency   string        `mapstructure:"currency"`   // Wallet currency; default "golds"
+	MinGB      int64         `mapstructure:"minGB"`      // minimum GB per purchase (default 1)
+	MaxGB      int64         `mapstructure:"maxGB"`      // cap on total extra quota (purchases + admin grants); 0 = unlimited
+	ExpiresIn  time.Duration `mapstructure:"expiresIn"`  // granted quota lifetime; 0 or unset = permanent
 }
 
 type LevelingQuotaConfig struct {
