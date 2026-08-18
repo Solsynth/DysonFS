@@ -357,7 +357,9 @@ type PersistentTask struct {
 	ApplicationType *string        `json:"application_type"`
 	UploadStatus    UploadStatus   `gorm:"index" json:"upload_status"`
 	SourceKey       *string        `gorm:"size:255" json:"source_key"`
-	UploadID        *string        `gorm:"size:255" json:"upload_id,omitempty"`
+	// Upload IDs are opaque values returned by storage providers and may exceed
+	// the usual varchar(255) limit.
+	UploadID        *string        `gorm:"type:text" json:"upload_id,omitempty"`
 	CreatedFileID   *string        `gorm:"size:36" json:"created_file_id"`
 	ProcessingError *string        `json:"processing_error"`
 	StorageKey      *string        `gorm:"size:36" json:"storage_key"`
