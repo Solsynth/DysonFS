@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
+	gen "src.solsynth.dev/sosys/go/proto"
 )
 
 type App struct {
@@ -130,6 +131,7 @@ func New(cfg *config.Config, mode string) (*App, error) {
 		}
 		app.workspaceConn = workspaceConn
 		app.quota.SetWorkspaceClient(workspaceClient)
+		app.quota.SetSharedQuotaClient(gen.NewDyQuotaServiceClient(workspaceConn))
 	}
 	app.quota.SetPurchaseConfig(cfg.Quota.Purchase)
 	app.quota.SetWalletConfig(cfg.Wallet)

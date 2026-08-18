@@ -54,6 +54,7 @@ type uploadEventPublisher interface {
 
 func Register(s *grpc.Server, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, publisher uploadEventPublisher) {
 	gen.RegisterDyFileServiceServer(s, &fileServiceServer{cfg: cfg, files: files, tasks: tasks, quota: quota, publisher: publisher})
+	registerQuotaService(s, files)
 }
 
 func (s *fileServiceServer) GetFile(_ context.Context, req *gen.DyGetFileRequest) (*gen.DyCloudFile, error) {

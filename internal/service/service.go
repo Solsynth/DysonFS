@@ -3634,14 +3634,15 @@ func (s *TaskService) CleanupOld(accountID uuid.UUID) (int64, error) {
 }
 
 type QuotaService struct {
-	db              *database.DB
-	cache           sharedcache.CacheService
-	accountClient   accountGetter
-	workspaceClient gen.DyWorkspaceServiceClient
-	levelingCfg     config.LevelingQuotaConfig
-	paymentClient   gen.DyPaymentServiceClient
-	purchaseCfg     config.QuotaPurchaseConfig
-	walletCfg       config.WalletConfig
+	db                *database.DB
+	cache             sharedcache.CacheService
+	accountClient     accountGetter
+	workspaceClient   gen.DyWorkspaceServiceClient
+	sharedQuotaClient gen.DyQuotaServiceClient
+	levelingCfg       config.LevelingQuotaConfig
+	paymentClient     gen.DyPaymentServiceClient
+	purchaseCfg       config.QuotaPurchaseConfig
+	walletCfg         config.WalletConfig
 }
 
 type accountGetter interface {
@@ -3660,6 +3661,10 @@ func (s *QuotaService) SetAccountClient(client accountGetter) {
 
 func (s *QuotaService) SetWorkspaceClient(client gen.DyWorkspaceServiceClient) {
 	s.workspaceClient = client
+}
+
+func (s *QuotaService) SetSharedQuotaClient(client gen.DyQuotaServiceClient) {
+	s.sharedQuotaClient = client
 }
 
 func (s *QuotaService) SetLevelingConfig(cfg config.LevelingQuotaConfig) {
@@ -3825,17 +3830,28 @@ func (s *QuotaService) workspaceUsage(ctx context.Context, workspaceID, accountI
 	if !member.GetValue() {
 		return WorkspaceUsageSummary{}, errors.New("workspace membership with member role is required")
 	}
-	planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{Plan: workspace.GetPlan()})
+	planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{
+		Plan:        workspace.GetPlan(),
+		WorkspaceId: workspaceID,
+	})
 	if err != nil {
 		return WorkspaceUsageSummary{}, fmt.Errorf("get workspace plan quota: %w", err)
 	}
 	var usedBytes int64
-	if err := s.db.DB.Model(&database.CloudFile{}).
-		Select("COALESCE(SUM(file_objects.size), 0)").
-		Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
-		Where("cloud_files.workspace_id = ? AND cloud_files.deleted_at IS NULL", workspaceID).
-		Scan(&usedBytes).Error; err != nil {
-		return WorkspaceUsageSummary{}, fmt.Errorf("calculate workspace storage usage: %w", err)
+	if s.sharedQuotaClient != nil {
+		usage, err := s.sharedQuotaClient.GetUsedQuota(ctx, &gen.DyGetUsedQuotaRequest{WorkspaceId: workspaceID})
+		if err != nil {
+			return WorkspaceUsageSummary{}, fmt.Errorf("get shared workspace storage usage: %w", err)
+		}
+		usedBytes = usage.GetUsedBytes()
+	} else {
+		if err := s.db.DB.Model(&database.CloudFile{}).
+			Select("COALESCE(SUM(file_objects.size), 0)").
+			Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
+			Where("cloud_files.workspace_id = ? AND cloud_files.deleted_at IS NULL", workspaceID).
+			Scan(&usedBytes).Error; err != nil {
+			return WorkspaceUsageSummary{}, fmt.Errorf("calculate workspace storage usage: %w", err)
+		}
 	}
 	var totalFiles int64
 	if err := s.db.DB.Model(&database.CloudFile{}).Where("workspace_id = ? AND deleted_at IS NULL", workspaceID).Count(&totalFiles).Error; err != nil {
