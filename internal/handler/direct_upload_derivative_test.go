@@ -365,6 +365,222 @@ func TestDirectUploadMultipartImageGeneratesCompressionDerivative(t *testing.T) 
 	}
 }
 
+// TestDirectUploadClientMediaSkipsSourceAnalysis verifies that client metadata
+// and a client-produced thumbnail complete the upload without dispatching the
+// source object through the worker.
+func TestDirectUploadClientMediaSkipsSourceAnalysis(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	endpoint := startNoAuthMockS3(t, "testbucket")
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	defaultStor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, defaultStor)
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+	poolID := database.NewID()
+	pool := database.FilePool{
+		ID:        poolID,
+		Name:      "test-s3",
+		AccountID: accountID,
+		StorageConfig: datatypes.JSON([]byte(fmt.Sprintf(
+			`{"enable_signed":true,"enable_ssl":false,"endpoint":%q,"bucket":"testbucket","secret_id":"ak","secret_key":"sk"}`,
+			endpoint))),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	source := generateTestJPEG(t)
+	thumbnail := generateTestJPEG(t)
+	w := worker.New(nil, files, defaultStor, &database.DB{DB: db}, t.TempDir())
+	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, dispatcher)
+
+	prepareBody := fmt.Sprintf(`{"file_name":"movie.mp4","file_size":%d,"content_type":"video/mp4","pool_id":%q,"multipart":true,"client_analysis":{"width":1920,"height":1080,"duration_ms":83420,"aspect_ratio":"16:9"},"want_thumbnail":true}`, len(source), poolID)
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
+	req.Header.Set("Content-Type", "application/json")
+	wRec := httptest.NewRecorder()
+	r.ServeHTTP(wRec, req)
+	if wRec.Code != http.StatusOK {
+		t.Fatalf("prepare status = %d, body = %s", wRec.Code, wRec.Body.String())
+	}
+	var prepared struct {
+		TaskID       string `json:"task_id"`
+		UploadID     string `json:"upload_id"`
+		PartCount    int    `json:"part_count"`
+		ThumbnailURL string `json:"thumbnail_upload_url"`
+		ThumbnailKey string `json:"thumbnail_key"`
+	}
+	if err := json.Unmarshal(wRec.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare response: %v", err)
+	}
+	if prepared.TaskID == "" || prepared.UploadID == "" || prepared.PartCount != 1 || prepared.ThumbnailURL == "" || prepared.ThumbnailKey == "" {
+		t.Fatalf("prepare response = %s, want multipart source and thumbnail URLs", wRec.Body.String())
+	}
+	partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/part", strings.NewReader(`{"part_number":1}`))
+	partReq.Header.Set("Content-Type", "application/json")
+	partRec := httptest.NewRecorder()
+	r.ServeHTTP(partRec, partReq)
+	if partRec.Code != http.StatusOK {
+		t.Fatalf("presign part status = %d, body = %s", partRec.Code, partRec.Body.String())
+	}
+	var part struct {
+		UploadURL string `json:"upload_url"`
+	}
+	if err := json.Unmarshal(partRec.Body.Bytes(), &part); err != nil {
+		t.Fatalf("decode part response: %v", err)
+	}
+	putURL(t, part.UploadURL, source)
+	putURL(t, prepared.ThumbnailURL, thumbnail)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/complete", nil)
+	wRec = httptest.NewRecorder()
+	r.ServeHTTP(wRec, req)
+	if wRec.Code != http.StatusOK {
+		t.Fatalf("complete status = %d, body = %s", wRec.Code, wRec.Body.String())
+	}
+	var completed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(wRec.Body.Bytes(), &completed); err != nil {
+		t.Fatalf("decode complete response: %v", err)
+	}
+
+	var parent database.CloudFile
+	if err := db.Preload("Object").First(&parent, "id = ?", completed.ID).Error; err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+	if parent.UploadStatus != database.UploadStatusCompleted {
+		t.Fatalf("parent status = %v, want completed", parent.UploadStatus)
+	}
+	if parent.Object == nil || parent.Object.Meta == nil {
+		t.Fatal("client metadata was not persisted")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(parent.Object.Meta, &meta); err != nil {
+		t.Fatalf("decode object metadata: %v", err)
+	}
+	if meta["analysis_source"] != "client" || meta["width"] != float64(1920) || meta["duration_ms"] != float64(83420) {
+		t.Fatalf("object metadata = %#v, want client analysis", meta)
+	}
+	var children []database.CloudFile
+	if err := db.Preload("Object").Where("parent_id = ? AND application_type = ?", completed.ID, "system.thumbnail").Find(&children).Error; err != nil {
+		t.Fatalf("query thumbnail children: %v", err)
+	}
+	if len(children) != 1 || children[0].Object == nil {
+		t.Fatalf("thumbnail children = %#v, want one stored child", children)
+	}
+	if !parent.Object.HasThumbnail {
+		t.Fatal("parent has_thumbnail = false, want true")
+	}
+	var task database.PersistentTask
+	if err := db.First(&task, "task_id = ?", prepared.TaskID).Error; err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	if task.UploadStatus != database.UploadStatusCompleted {
+		t.Fatalf("task status = %v, want completed", task.UploadStatus)
+	}
+	var compressions []database.CloudFile
+	if err := db.Where("parent_id = ? AND application_type = ?", completed.ID, "system.compression.low").Find(&compressions).Error; err != nil {
+		t.Fatalf("query unexpected compression children: %v", err)
+	}
+	if len(compressions) != 0 {
+		t.Fatalf("client-assisted upload dispatched source processing: %#v", compressions)
+	}
+}
+
+func TestDirectUploadClientImageCompressionSkipsSourceAnalysis(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	endpoint := startNoAuthMockS3(t, "testbucket")
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID, poolID := uuid.New(), database.NewID()
+	pool := database.FilePool{
+		ID: poolID, Name: "test-s3", AccountID: accountID,
+		StorageConfig: datatypes.JSON([]byte(fmt.Sprintf(
+			`{"enable_signed":true,"enable_ssl":false,"endpoint":%q,"bucket":"testbucket","secret_id":"ak","secret_key":"sk"}`,
+			endpoint))),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	source, compression := generateTestJPEG(t), generateTestWebP(t)
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+
+	body := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","pool_id":%q,"multipart":true,"client_analysis":{"width":64,"height":64},"want_compression":true}`, len(source), poolID)
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("prepare status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var prepared struct {
+		TaskID         string `json:"task_id"`
+		CompressionURL string `json:"compression_upload_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare response: %v", err)
+	}
+	if prepared.TaskID == "" || prepared.CompressionURL == "" {
+		t.Fatalf("prepare response = %s, want compression URL", rec.Body.String())
+	}
+
+	partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/part", strings.NewReader(`{"part_number":1}`))
+	partReq.Header.Set("Content-Type", "application/json")
+	partRec := httptest.NewRecorder()
+	r.ServeHTTP(partRec, partReq)
+	if partRec.Code != http.StatusOK {
+		t.Fatalf("presign part status = %d, body = %s", partRec.Code, partRec.Body.String())
+	}
+	var part struct {
+		UploadURL string `json:"upload_url"`
+	}
+	if err := json.Unmarshal(partRec.Body.Bytes(), &part); err != nil {
+		t.Fatalf("decode part response: %v", err)
+	}
+	putURL(t, part.UploadURL, source)
+	putURL(t, prepared.CompressionURL, compression)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/complete", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var completed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &completed); err != nil {
+		t.Fatalf("decode complete response: %v", err)
+	}
+	var parent database.CloudFile
+	if err := db.Preload("Object").First(&parent, "id = ?", completed.ID).Error; err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+	if parent.UploadStatus != database.UploadStatusCompleted || parent.Object == nil || !parent.Object.HasCompression {
+		t.Fatalf("parent status/object = %v/%#v, want completed with compression", parent.UploadStatus, parent.Object)
+	}
+	var children []database.CloudFile
+	if err := db.Where("parent_id = ? AND application_type = ?", completed.ID, "system.compression.low").Find(&children).Error; err != nil {
+		t.Fatalf("query compression child: %v", err)
+	}
+	if len(children) != 1 {
+		t.Fatalf("compression children = %d, want 1", len(children))
+	}
+}
+
 // generateTestJPEG renders a small but real JPEG with libvips, usable as
 // upload payload or as a stored source object in handler tests.
 func generateTestJPEG(t *testing.T) []byte {
@@ -379,6 +595,19 @@ func generateTestJPEG(t *testing.T) []byte {
 		t.Fatalf("export jpeg: %v", err)
 	}
 	return jpeg
+}
+func generateTestWebP(t *testing.T) []byte {
+	t.Helper()
+	img, err := vips.Black(64, 64)
+	if err != nil {
+		t.Fatalf("vips.Black: %v", err)
+	}
+	webp, _, err := img.ExportWebp(&vips.WebpExportParams{Quality: 80})
+	img.Close()
+	if err != nil {
+		t.Fatalf("export webp: %v", err)
+	}
+	return webp
 }
 
 func processingError(task database.PersistentTask) string {

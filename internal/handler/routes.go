@@ -2112,6 +2112,72 @@ func multipartPlan(fileSize int64) (partSize, partCount int64) {
 	return partSize, (fileSize + partSize - 1) / partSize
 }
 
+const maxClientUploadAnalysisBytes = 16 * 1024
+
+type clientUploadParameters struct {
+	ClientAnalysis map[string]any `json:"client_analysis,omitempty"`
+	Thumbnail      bool           `json:"thumbnail,omitempty"`
+	Compression    bool           `json:"compression,omitempty"`
+}
+
+func encodeClientUploadParameters(analysis map[string]any, thumbnail, compression bool) (datatypes.JSON, error) {
+	if len(analysis) == 0 && !thumbnail && !compression {
+		return datatypes.JSON([]byte(`{}`)), nil
+	}
+	params := clientUploadParameters{ClientAnalysis: analysis, Thumbnail: thumbnail, Compression: compression}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxClientUploadAnalysisBytes {
+		return nil, fmt.Errorf("client upload analysis is too large")
+	}
+	return datatypes.JSON(raw), nil
+}
+
+func decodeClientUploadParameters(raw datatypes.JSON) clientUploadParameters {
+	var params clientUploadParameters
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &params)
+	}
+	return params
+}
+
+func clientThumbnailKey(sourceKey string) string {
+	return strings.TrimSpace(sourceKey) + ".thumbnail"
+}
+
+func clientCompressionKey(sourceKey string) string {
+	return strings.TrimSpace(sourceKey) + ".compressed"
+}
+
+func presignClientDerivative(ctx context.Context, direct storage.DirectUploadBackend, key, contentType string, enabled bool) (string, error) {
+	if !enabled {
+		return "", nil
+	}
+	return direct.PresignedPutURL(ctx, key, 15*time.Minute, contentType)
+}
+
+func addClientDerivativeURLs(ctx context.Context, direct storage.DirectUploadBackend, sourceKey string, params clientUploadParameters, response gin.H) error {
+	thumbnailURL, err := presignClientDerivative(ctx, direct, clientThumbnailKey(sourceKey), "image/jpeg", params.Thumbnail)
+	if err != nil {
+		return err
+	}
+	if thumbnailURL != "" {
+		response["thumbnail_upload_url"] = thumbnailURL
+		response["thumbnail_key"] = clientThumbnailKey(sourceKey)
+	}
+	compressionURL, err := presignClientDerivative(ctx, direct, clientCompressionKey(sourceKey), "image/webp", params.Compression)
+	if err != nil {
+		return err
+	}
+	if compressionURL != "" {
+		response["compression_upload_url"] = compressionURL
+		response["compression_key"] = clientCompressionKey(sourceKey)
+	}
+	return nil
+}
+
 func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -2122,25 +2188,29 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		return
 	}
 	var req struct {
-		Hash            *string `json:"hash"`
-		FileName        string  `json:"file_name"`
-		Description     *string `json:"description"`
-		Index           bool    `json:"index"`
-		FileSize        int64   `json:"file_size"`
-		PoolID          *string `json:"pool_id"`
-		WorkspaceID     *string `json:"workspace_id"`
-		ExpiredAt       *string `json:"expired_at"`
-		ParentID        *string `json:"parent_id"`
-		OverwriteID     *string `json:"overwrite_id"`
-		Usage           *string `json:"usage"`
-		ApplicationType *string `json:"application_type"`
-		ContentType     string  `json:"content_type"`
-		Multipart       bool    `json:"multipart"`
+		Hash            *string        `json:"hash"`
+		FileName        string         `json:"file_name"`
+		Description     *string        `json:"description"`
+		Index           bool           `json:"index"`
+		FileSize        int64          `json:"file_size"`
+		PoolID          *string        `json:"pool_id"`
+		WorkspaceID     *string        `json:"workspace_id"`
+		ExpiredAt       *string        `json:"expired_at"`
+		ParentID        *string        `json:"parent_id"`
+		OverwriteID     *string        `json:"overwrite_id"`
+		Usage           *string        `json:"usage"`
+		ApplicationType *string        `json:"application_type"`
+		ContentType     string         `json:"content_type"`
+		Multipart       bool           `json:"multipart"`
+		ClientAnalysis  map[string]any `json:"client_analysis"`
+		WantThumbnail   bool           `json:"want_thumbnail"`
+		WantCompression bool           `json:"want_compression"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	clientParamsJSON, err := encodeClientUploadParameters(req.ClientAnalysis, req.WantThumbnail, req.WantCompression)
 	if strings.TrimSpace(req.FileName) == "" {
 		req.FileName = service.DefaultUploadFileName(req.ContentType)
 	}
@@ -2211,6 +2281,16 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 			// Keep the session alive so the hourly expiry sweep does not
 			// collect a task the client is actively continuing.
 			_ = tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", existing.TaskID).Updates(map[string]any{"updated_at": time.Now(), "last_activity": time.Now()}).Error
+			existingParams := decodeClientUploadParameters(existing.Parameters)
+			if len(req.ClientAnalysis) > 0 {
+				existingParams.ClientAnalysis = req.ClientAnalysis
+			}
+			existingParams.Thumbnail = existingParams.Thumbnail || req.WantThumbnail
+			existingParams.Compression = existingParams.Compression || req.WantCompression
+			if updatedParams, paramsErr := encodeClientUploadParameters(existingParams.ClientAnalysis, existingParams.Thumbnail, existingParams.Compression); paramsErr == nil {
+				_ = tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", existing.TaskID).Update("parameters", updatedParams).Error
+				existing.Parameters = updatedParams
+			}
 			resumeKey := "uploads/" + existing.TaskID + "/source"
 			if existing.SourceKey != nil && strings.TrimSpace(*existing.SourceKey) != "" {
 				resumeKey = strings.TrimSpace(*existing.SourceKey)
@@ -2223,13 +2303,18 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 					}
 				}
 				partSize, partCount := multipartPlan(req.FileSize)
-				c.JSON(http.StatusOK, gin.H{
+				response := gin.H{
 					"task_id": existing.TaskID, "status": database.UploadStatusUploading, "resumed": true,
 					"object_key": resumeKey, "upload_id": *existing.UploadID,
 					"part_size": partSize, "part_count": partCount,
 					"uploaded_parts": uploaded,
-					"expires_in": 900, "content_type": req.ContentType,
-				})
+					"expires_in":     900, "content_type": req.ContentType,
+				}
+				if err := addClientDerivativeURLs(c.Request.Context(), direct, resumeKey, existingParams, response); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				c.JSON(http.StatusOK, response)
 				return
 			}
 			url, urlErr := direct.PresignedPutURL(c.Request.Context(), resumeKey, 15*time.Minute, req.ContentType)
@@ -2237,15 +2322,19 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 				c.JSON(http.StatusInternalServerError, gin.H{"error": urlErr.Error()})
 				return
 			}
-			c.JSON(http.StatusOK, gin.H{"task_id": existing.TaskID, "status": database.UploadStatusUploading, "resumed": true, "object_key": resumeKey, "upload_url": url, "expires_in": 900, "content_type": req.ContentType})
+			response := gin.H{"task_id": existing.TaskID, "status": database.UploadStatusUploading, "resumed": true, "object_key": resumeKey, "upload_url": url, "expires_in": 900, "content_type": req.ContentType}
+			if err := addClientDerivativeURLs(c.Request.Context(), direct, resumeKey, existingParams, response); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, response)
 			return
 		}
 	}
-
 	task, err := tasks.CreateUploadTask(uuid.MustParse(result.Account.GetId()), req.FileName, &database.PersistentTask{
 		Description: req.Description, Hash: req.Hash, ExpiredAt: expiredAt, Usage: req.Usage,
 		ParentID: req.ParentID, OverwriteID: req.OverwriteID, ApplicationType: req.ApplicationType,
-		Indexed: req.Index, WorkspaceID: req.WorkspaceID,
+		Indexed: req.Index, WorkspaceID: req.WorkspaceID, Parameters: clientParamsJSON,
 	}, req.FileSize, poolID, req.FileName, req.ContentType, 0, 0)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2267,13 +2356,18 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 			return
 		}
 		partSize, partCount := multipartPlan(req.FileSize)
-		c.JSON(http.StatusOK, gin.H{
+		response := gin.H{
 			"task_id": task.TaskID, "status": database.UploadStatusUploading,
 			"object_key": sourceKey, "upload_id": uploadID,
 			"part_size": partSize, "part_count": partCount,
 			"uploaded_parts": []int{},
-			"expires_in": 900, "content_type": req.ContentType,
-		})
+			"expires_in":     900, "content_type": req.ContentType,
+		}
+		if err := addClientDerivativeURLs(c.Request.Context(), direct, sourceKey, decodeClientUploadParameters(clientParamsJSON), response); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, response)
 		return
 	}
 	url, err := direct.PresignedPutURL(c.Request.Context(), sourceKey, 15*time.Minute, req.ContentType)
@@ -2281,7 +2375,12 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"task_id": task.TaskID, "status": database.UploadStatusUploading, "object_key": sourceKey, "upload_url": url, "expires_in": 900, "content_type": req.ContentType})
+	response := gin.H{"task_id": task.TaskID, "status": database.UploadStatusUploading, "object_key": sourceKey, "upload_url": url, "expires_in": 900, "content_type": req.ContentType}
+	if err := addClientDerivativeURLs(c.Request.Context(), direct, sourceKey, decodeClientUploadParameters(clientParamsJSON), response); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // presignUploadPart issues a presigned PUT URL for a single part of a
@@ -2374,6 +2473,8 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 			}
 		}
 	}
+	clientParams := decodeClientUploadParameters(task.Parameters)
+	clientProcessed := len(clientParams.ClientAnalysis) > 0 || clientParams.Thumbnail || clientParams.Compression
 	if task.UploadStatus != database.UploadStatusUploading || task.SourceKey == nil || strings.TrimSpace(*task.SourceKey) == "" {
 		c.JSON(http.StatusConflict, gin.H{"error": "upload is not awaiting completion", "status": task.UploadStatus})
 		return
@@ -2441,6 +2542,12 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 	if m := strings.TrimSpace(info.MimeType); m != "" && !strings.EqualFold(m, "application/octet-stream") {
 		contentType = m
 	}
+	if strings.HasPrefix(contentType, "image/") && (len(clientParams.ClientAnalysis) == 0 || !clientParams.Compression) {
+		clientProcessed = false
+	}
+	if strings.HasPrefix(contentType, "video/") && (len(clientParams.ClientAnalysis) == 0 || !clientParams.Thumbnail) {
+		clientProcessed = false
+	}
 	object, err := files.CreateStoredObject(*task.SourceKey, &service.StagedFileInfo{Size: info.Size, ContentType: contentType})
 	if err != nil {
 		_ = tasks.MarkFailed(task.TaskID, err.Error())
@@ -2463,15 +2570,62 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	// Direct uploads bypass DysonFS disk, so the object row starts without
-	// analyzed metadata. Fetch the object from the pool, analyze it, and
-	// overwrite the local record, mirroring the proxied flow's synchronous
-	// analysis. Failures are non-fatal: the upload itself already succeeded.
+	if clientProcessed {
+		if len(clientParams.ClientAnalysis) > 0 {
+			refreshed, metadataErr := files.StoreClientSourceMetadata(file.ID, clientParams.ClientAnalysis)
+			if metadataErr != nil {
+				_ = tasks.MarkFailed(task.TaskID, metadataErr.Error())
+				c.JSON(http.StatusBadRequest, gin.H{"error": metadataErr.Error()})
+				return
+			}
+			file = refreshed
+		}
+		if clientParams.Thumbnail {
+			thumbKey := clientThumbnailKey(*task.SourceKey)
+			if _, thumbnailErr := files.CreateStoredDerivedFile(c.Request.Context(), backend, file.ID, thumbKey, "system.thumbnail", "image/jpeg"); thumbnailErr != nil {
+				_ = tasks.MarkFailed(task.TaskID, thumbnailErr.Error())
+				c.JSON(http.StatusBadRequest, gin.H{"error": thumbnailErr.Error()})
+				return
+			}
+		}
+		if clientParams.Compression {
+			compressionKey := clientCompressionKey(*task.SourceKey)
+			if _, compressionErr := files.CreateStoredDerivedFile(c.Request.Context(), backend, file.ID, compressionKey, "system.compression.low", "image/webp"); compressionErr != nil {
+				_ = tasks.MarkFailed(task.TaskID, compressionErr.Error())
+				c.JSON(http.StatusBadRequest, gin.H{"error": compressionErr.Error()})
+				return
+			}
+		}
+		if clientParams.Thumbnail || clientParams.Compression {
+			if derivativeErr := files.TouchCompatibilityFlags(file.ID); derivativeErr != nil {
+				_ = tasks.MarkFailed(task.TaskID, derivativeErr.Error())
+				c.JSON(http.StatusInternalServerError, gin.H{"error": derivativeErr.Error()})
+				return
+			}
+		}
+		if err := tasks.MarkCompleted(task.TaskID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if err := tasks.DB().Model(&database.CloudFile{}).Where("id = ?", file.ID).Update("upload_status", database.UploadStatusCompleted).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		file, err = files.GetFileInWorkspace(file.ID, task.WorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if err := publishFileMetadataUpdated(c.Request.Context(), bus, dispatcher, file, task.TaskID); err != nil {
+			logging.Log.Error().Err(err).Str("fileId", file.ID).Msg("failed to publish client upload state")
+		}
+		c.JSON(http.StatusOK, file)
+		return
+	}
+	// Legacy direct uploads still use server-side analysis when the client did
+	// not provide metadata or derivatives.
 	analysis, resolvedMime, analysisErr := files.RefreshStoredObjectAnalysis(c.Request.Context(), backend, object.ID, *task.SourceKey, contentType)
 	if resolvedMime != "" {
-		// The download succeeded, so the media type was resolved from the
-		// actual bytes; the worker must see it to pick the right derivative
-		// branch (image compression / video thumbnail).
 		contentType = resolvedMime
 	}
 	if analysisErr != nil {
@@ -3204,11 +3358,15 @@ func uploadResume(c *gin.Context, tasks *service.TaskService) {
 func cancelUpload(c *gin.Context, files *service.FileService, tasks *service.TaskService) {
 	taskID := c.Param("taskId")
 	task, err := tasks.GetUploadTask(taskID)
-	if err == nil && task != nil && task.UploadID != nil && strings.TrimSpace(*task.UploadID) != "" && task.SourceKey != nil {
+	if err == nil && task != nil && task.SourceKey != nil {
 		if backend, backendErr := files.BackendForPoolID(task.PoolID); backendErr == nil {
-			if multipartBackend, ok := backend.(storage.MultipartDirectUploadBackend); ok {
-				_ = multipartBackend.AbortMultipartUpload(c.Request.Context(), *task.SourceKey, *task.UploadID)
+			if task.UploadID != nil && strings.TrimSpace(*task.UploadID) != "" {
+				if multipartBackend, ok := backend.(storage.MultipartDirectUploadBackend); ok {
+					_ = multipartBackend.AbortMultipartUpload(c.Request.Context(), *task.SourceKey, *task.UploadID)
+				}
 			}
+			_ = backend.Delete(c.Request.Context(), *task.SourceKey)
+			_ = backend.Delete(c.Request.Context(), *task.SourceKey+".thumbnail")
 		}
 	}
 	if err := tasks.FailTask(taskID, "cancelled"); err != nil {

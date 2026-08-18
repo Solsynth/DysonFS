@@ -2301,6 +2301,99 @@ func (s *FileService) StoreSourceAnalysis(fileID string, analysis *SourceAnalysi
 	return s.GetFile(fileID)
 }
 
+func (s *FileService) StoreClientSourceMetadata(fileID string, raw map[string]any) (*database.CloudFile, error) {
+	if len(raw) == 0 {
+		return s.GetFile(fileID)
+	}
+	updates, err := normalizeClientSourceMetadata(raw)
+	if err != nil {
+		return nil, err
+	}
+	var file database.CloudFile
+	if err := s.db.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
+			return err
+		}
+		if file.ObjectID == nil {
+			return fmt.Errorf("file object is missing")
+		}
+		var object database.FileObject
+		if err := tx.First(&object, "id = ?", *file.ObjectID).Error; err != nil {
+			return err
+		}
+		merged, err := mergeJSONMeta(object.LegacyMeta(), updates)
+		if err != nil {
+			return err
+		}
+		return tx.Model(&database.FileObject{}).Where("id = ?", object.ID).Update("meta", merged).Error
+	}); err != nil {
+		return nil, err
+	}
+	return s.GetFile(fileID)
+}
+
+func normalizeClientSourceMetadata(raw map[string]any) (map[string]any, error) {
+	updates := map[string]any{"analysis_source": "client"}
+	for key, value := range raw {
+		switch key {
+		case "width", "height":
+			number, err := clientMetadataInt(value)
+			if err != nil || number <= 0 || number > 100000 {
+				return nil, fmt.Errorf("%s must be an integer between 1 and 100000", key)
+			}
+			updates[key] = number
+		case "duration_ms":
+			number, err := clientMetadataInt(value)
+			if err != nil || number < 0 || number > int64((7*24*time.Hour)/time.Millisecond) {
+				return nil, fmt.Errorf("duration_ms is out of range")
+			}
+			updates[key] = number
+		case "sample_rate":
+			number, err := clientMetadataInt(value)
+			if err != nil || number <= 0 || number > 1000000 {
+				return nil, fmt.Errorf("sample_rate is out of range")
+			}
+			updates[key] = number
+		case "channels":
+			number, err := clientMetadataInt(value)
+			if err != nil || number <= 0 || number > 128 {
+				return nil, fmt.Errorf("channels is out of range")
+			}
+			updates[key] = number
+		case "aspect_ratio", "video_codec", "audio_codec", "container":
+			text, ok := value.(string)
+			if !ok || len(text) == 0 || len(text) > 128 {
+				return nil, fmt.Errorf("%s must be a short string", key)
+			}
+			updates[key] = text
+		default:
+			// Ignore unknown client fields so newer clients remain compatible.
+		}
+	}
+	if len(updates) == 1 {
+		return nil, fmt.Errorf("client media metadata is empty")
+	}
+	return updates, nil
+}
+
+func clientMetadataInt(value any) (int64, error) {
+	switch number := value.(type) {
+	case int:
+		return int64(number), nil
+	case int64:
+		return number, nil
+	case float64:
+		if number != math.Trunc(number) {
+			return 0, fmt.Errorf("not an integer")
+		}
+		return int64(number), nil
+	case json.Number:
+		return number.Int64()
+	default:
+		return 0, fmt.Errorf("not an integer")
+	}
+}
+
 type ReanalysisResult struct {
 	Scanned int `json:"scanned"`
 	Updated int `json:"updated"`
@@ -3304,6 +3397,7 @@ func (s *TaskService) CreateUploadTask(accountID uuid.UUID, name string, payload
 		task.FastMode = payload.FastMode
 		task.Indexed = payload.Indexed
 		task.WorkspaceID = firstNonEmptyPtr(payload.WorkspaceID)
+		task.Parameters = payload.Parameters
 	}
 	if err := s.db.Create(task).Error; err != nil {
 		return nil, err

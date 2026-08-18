@@ -152,6 +152,73 @@ func (s *FileService) CreateStoredObject(storageKey string, info *StagedFileInfo
 	return object, nil
 }
 
+const (
+	clientThumbnailMaxBytes   int64 = 4 * 1024 * 1024
+	clientCompressionMaxBytes int64 = 16 * 1024 * 1024
+)
+
+// CreateStoredDerivedFile attaches a bounded client-produced derivative
+// without reading the source object. The derivative is still downloaded and
+// sniffed so the server never persists an arbitrary object as a derivative.
+func (s *FileService) CreateStoredDerivedFile(ctx context.Context, backend storage.Backend, parentID, storageKey, appType, expectedMime string) (*database.CloudFile, error) {
+	if backend == nil || strings.TrimSpace(parentID) == "" || strings.TrimSpace(storageKey) == "" {
+		return nil, fmt.Errorf("backend, parent id, and storage key are required")
+	}
+	var parent database.CloudFile
+	if err := s.db.Select("account_id", "name").First(&parent, "id = ?", parentID).Error; err != nil {
+		return nil, fmt.Errorf("load derivative parent: %w", err)
+	}
+	maxBytes := clientThumbnailMaxBytes
+	if appType == "system.compression.low" {
+		maxBytes = clientCompressionMaxBytes
+	}
+	info, err := backend.Stat(ctx, storageKey)
+	if err != nil {
+		return nil, fmt.Errorf("stat derived object: %w", err)
+	}
+	if info.Size <= 0 || info.Size > maxBytes {
+		return nil, fmt.Errorf("derived object size must be between 1 and %d bytes", maxBytes)
+	}
+	rc, _, err := backend.Get(ctx, storageKey)
+	if err != nil {
+		return nil, fmt.Errorf("read derived object: %w", err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(io.LimitReader(rc, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read derived object bytes: %w", err)
+	}
+	if int64(len(body)) != info.Size || int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("derived object size changed during read")
+	}
+	detected := mimetype.Detect(body)
+	mimeType := strings.TrimSpace(info.MimeType)
+	if detected != nil {
+		mimeType = detected.String()
+	}
+	if !strings.HasPrefix(mimeType, "image/") {
+		return nil, fmt.Errorf("derived object is not an image")
+	}
+	if expectedMime != "" && !strings.EqualFold(mimeType, expectedMime) {
+		return nil, fmt.Errorf("derived object MIME type %q does not match %q", mimeType, expectedMime)
+	}
+	hash := sha256.Sum256(body)
+	key := storageKey
+	object := &database.FileObject{
+		ID: database.NewID(), Size: int64(len(body)), MimeType: mimeType,
+		Hash: hex.EncodeToString(hash[:]), StorageKey: &key, Meta: datatypes.JSON([]byte(`{}`)),
+	}
+	if err := s.db.Create(object).Error; err != nil {
+		return nil, fmt.Errorf("create derived object: %w", err)
+	}
+	file, err := s.CreateDerivedFile(parent.AccountID, parentID, parent.Name, object.ID, appType, &key)
+	if err != nil {
+		_ = s.db.Delete(object).Error
+		return nil, err
+	}
+	return file, nil
+}
+
 // RefreshStoredObjectAnalysis downloads an object that was written directly to
 // storage via a presigned URL (so it never touched DysonFS disk), computes its
 // SHA-256 hash, extracts source metadata, and overwrites the local FileObject
@@ -274,6 +341,12 @@ func (s *FileService) expireStaleUploadTask(ctx context.Context, task *database.
 	// and Delete is a no-op.
 	if deleteErr := backend.Delete(ctx, *task.SourceKey); deleteErr != nil {
 		logging.Log.Warn().Err(deleteErr).Str("taskId", task.TaskID).Str("sourceKey", *task.SourceKey).Msg("failed to delete expired upload object")
+	}
+	if deleteErr := backend.Delete(ctx, *task.SourceKey+".thumbnail"); deleteErr != nil {
+		logging.Log.Warn().Err(deleteErr).Str("taskId", task.TaskID).Str("sourceKey", *task.SourceKey+".thumbnail").Msg("failed to delete expired upload thumbnail")
+	}
+	if deleteErr := backend.Delete(ctx, *task.SourceKey+".compressed"); deleteErr != nil {
+		logging.Log.Warn().Err(deleteErr).Str("taskId", task.TaskID).Str("sourceKey", *task.SourceKey+".compressed").Msg("failed to delete expired upload compression")
 	}
 	logging.Log.Info().Str("taskId", task.TaskID).Msg("expired stale upload task")
 	return nil
