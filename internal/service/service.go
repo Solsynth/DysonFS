@@ -3747,11 +3747,20 @@ func (s *QuotaService) workspaceUsage(ctx context.Context, workspaceID, accountI
 	if err := s.db.DB.Model(&database.CloudFile{}).Where("workspace_id = ? AND deleted_at IS NULL", workspaceID).Count(&totalFiles).Error; err != nil {
 		return WorkspaceUsageSummary{}, fmt.Errorf("count workspace files: %w", err)
 	}
-	remaining := planQuota.GetMaxStorageBytes() - usedBytes
+	totalBytes, ok := storageBytesFromPlanQuota(planQuota)
+	if !ok {
+		return WorkspaceUsageSummary{}, errors.New("workspace plan has no storage quota")
+	}
+	remaining := totalBytes - usedBytes
 	if remaining < 0 {
 		remaining = 0
 	}
-	return WorkspaceUsageSummary{WorkspaceID: workspaceID, UsedBytes: usedBytes, TotalBytes: planQuota.GetMaxStorageBytes(), RemainingBytes: remaining, TotalFileCount: totalFiles}, nil
+	return WorkspaceUsageSummary{WorkspaceID: workspaceID, UsedBytes: usedBytes, TotalBytes: totalBytes, RemainingBytes: remaining, TotalFileCount: totalFiles}, nil
+}
+
+func storageBytesFromPlanQuota(quota *gen.DyWorkspacePlanQuota) (int64, bool) {
+	totalBytes, ok := quota.GetQuotas()["max_storage_bytes"]
+	return totalBytes, ok && totalBytes > 0
 }
 
 func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord, error) {

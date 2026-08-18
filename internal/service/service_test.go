@@ -916,6 +916,36 @@ func TestCheckUploadQuota(t *testing.T) {
 	}
 }
 
+func TestStorageBytesFromPlanQuota(t *testing.T) {
+	tests := []struct {
+		name  string
+		quota *gen.DyWorkspacePlanQuota
+		want  int64
+		ok    bool
+	}{
+		{
+			name:  "configured",
+			quota: &gen.DyWorkspacePlanQuota{Quotas: map[string]int64{"max_storage_bytes": 10 * 1024 * 1024 * 1024}},
+			want:  10 * 1024 * 1024 * 1024,
+			ok:    true,
+		},
+		{name: "missing", quota: &gen.DyWorkspacePlanQuota{}, ok: false},
+		{
+			name:  "zero",
+			quota: &gen.DyWorkspacePlanQuota{Quotas: map[string]int64{"max_storage_bytes": 0}},
+			ok:    false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := storageBytesFromPlanQuota(test.quota)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("storageBytesFromPlanQuota() = (%d, %t), want (%d, %t)", got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
 func TestBaseQuotaFromAccount(t *testing.T) {
 	tests := []struct {
 		name    string
