@@ -1165,7 +1165,7 @@ func TestBackendFromPoolStorageMissingEndpoint(t *testing.T) {
 	}
 }
 
-func TestListOwnedReturnsAllUserFiles(t *testing.T) {
+func TestListOwnedPageReturnsTopLevelFilesOnly(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
@@ -1183,6 +1183,9 @@ func TestListOwnedReturnsAllUserFiles(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root", AccountID: accountID, Indexed: true}).Error; err != nil {
 		t.Fatalf("create root file: %v", err)
 	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root-unindexed", AccountID: accountID, Indexed: false}).Error; err != nil {
+		t.Fatalf("create root unindexed file: %v", err)
+	}
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "nested", AccountID: accountID, ParentID: ptr("parent"), Indexed: false}).Error; err != nil {
 		t.Fatalf("create nested file: %v", err)
 	}
@@ -1190,22 +1193,40 @@ func TestListOwnedReturnsAllUserFiles(t *testing.T) {
 		t.Fatalf("create other file: %v", err)
 	}
 
-	files, err := svc.ListOwned(accountID)
+	files, total, err := svc.ListOwnedPage(accountID, FileListOptions{})
 	if err != nil {
-		t.Fatalf("ListOwned() error = %v", err)
+		t.Fatalf("ListOwnedPage() error = %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
 	}
 	if got := len(files); got != 2 {
-		t.Fatalf("len(ListOwned()) = %d, want 2", got)
+		t.Fatalf("len(ListOwnedPage()) = %d, want 2", got)
+	}
+	for _, f := range files {
+		if f.ParentID != nil {
+			t.Fatalf("expected only top-level files, got child %q", f.Name)
+		}
+	}
+
+	files, total, err = svc.ListOwnedPage(accountID, FileListOptions{Offset: 1, Take: 1})
+	if err != nil {
+		t.Fatalf("ListOwnedPage() error = %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("paged total = %d, want 2", total)
+	}
+	if got := len(files); got != 1 {
+		t.Fatalf("len(paged ListOwnedPage()) = %d, want 1", got)
 	}
 }
 
-func TestListOwnedPopulatesChildrenCountAndInheritedPermissionStatus(t *testing.T) {
+func TestListOwnedPagePopulatesChildrenCountAndInheritedPermissionStatus(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePermission{})
 	svc := NewFileService(&database.DB{DB: db}, nil)
 	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 	rootID := database.NewID()
 	childID := database.NewID()
-	grandchildID := database.NewID()
 
 	if err := db.Create(&database.CloudFile{ID: rootID, Name: "root", AccountID: accountID, Indexed: true}).Error; err != nil {
 		t.Fatalf("create root file: %v", err)
@@ -1213,75 +1234,40 @@ func TestListOwnedPopulatesChildrenCountAndInheritedPermissionStatus(t *testing.
 	if err := db.Create(&database.CloudFile{ID: childID, Name: "child", AccountID: accountID, ParentID: ptr(rootID), Indexed: true}).Error; err != nil {
 		t.Fatalf("create child file: %v", err)
 	}
-	if err := db.Create(&database.CloudFile{ID: grandchildID, Name: "grandchild", AccountID: accountID, ParentID: ptr(childID), Indexed: true}).Error; err != nil {
-		t.Fatalf("create grandchild file: %v", err)
-	}
 	perm := database.FilePermission{ID: database.NewID(), FileID: rootID, SubjectType: "private", Permission: "read"}
 	if err := db.Create(&perm).Error; err != nil {
 		t.Fatalf("create permission: %v", err)
 	}
 
-	files, err := svc.ListOwned(accountID)
+	files, total, err := svc.ListOwnedPage(accountID, FileListOptions{})
 	if err != nil {
-		t.Fatalf("ListOwned() error = %v", err)
+		t.Fatalf("ListOwnedPage() error = %v", err)
+	}
+	if total != 1 || len(files) != 1 || files[0].ID != rootID {
+		t.Fatalf("ListOwnedPage() returned %d files (total %d), want only root", len(files), total)
+	}
+	if files[0].ChildrenCount != 1 {
+		t.Fatalf("root ChildrenCount = %d, want 1", files[0].ChildrenCount)
+	}
+	if files[0].PermissionStatus.Visibility != "private" {
+		t.Fatalf("root visibility = %q, want private", files[0].PermissionStatus.Visibility)
 	}
 
-	byID := make(map[string]database.CloudFile, len(files))
-	for _, file := range files {
-		byID[file.ID] = file
-	}
-	if byID[rootID].ChildrenCount != 1 {
-		t.Fatalf("root ChildrenCount = %d, want 1", byID[rootID].ChildrenCount)
-	}
-	if byID[childID].ChildrenCount != 1 {
-		t.Fatalf("child ChildrenCount = %d, want 1", byID[childID].ChildrenCount)
-	}
-	if byID[grandchildID].ChildrenCount != 0 {
-		t.Fatalf("grandchild ChildrenCount = %d, want 0", byID[grandchildID].ChildrenCount)
-	}
-	if byID[childID].PermissionStatus.Visibility != "private" {
-		t.Fatalf("child visibility = %q, want private", byID[childID].PermissionStatus.Visibility)
-	}
-	if byID[childID].PermissionStatus.InheritedFrom == nil || *byID[childID].PermissionStatus.InheritedFrom != rootID {
-		t.Fatalf("child inherited_from = %v, want %q", byID[childID].PermissionStatus.InheritedFrom, rootID)
-	}
-}
-
-func TestListRootOwnedExcludesChildren(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	loaded, err := svc.GetFiles([]string{childID})
 	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
+		t.Fatalf("GetFiles() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.CloudFile{}, &database.FileObject{}, &database.FilePool{}); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
+	if err := svc.populateFilesMetadata(loaded); err != nil {
+		t.Fatalf("populateFilesMetadata() error = %v", err)
 	}
-	if err := db.AutoMigrate(&database.FilePermission{}); err != nil {
-		t.Fatalf("AutoMigrate() permission table error = %v", err)
+	if loaded[0].ChildrenCount != 0 {
+		t.Fatalf("child ChildrenCount = %d, want 0", loaded[0].ChildrenCount)
 	}
-
-	svc := NewFileService(&database.DB{DB: db}, nil)
-	accountID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root-indexed", AccountID: accountID, Indexed: true}).Error; err != nil {
-		t.Fatalf("create root file: %v", err)
+	if loaded[0].PermissionStatus.Visibility != "private" {
+		t.Fatalf("child visibility = %q, want private", loaded[0].PermissionStatus.Visibility)
 	}
-	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "root-unindexed", AccountID: accountID, Indexed: false}).Error; err != nil {
-		t.Fatalf("create root unindexed file: %v", err)
-	}
-	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "child", AccountID: accountID, ParentID: ptr("parent"), Indexed: true}).Error; err != nil {
-		t.Fatalf("create child file: %v", err)
-	}
-
-	files, err := svc.ListRootOwned(accountID, 20)
-	if err != nil {
-		t.Fatalf("ListRootOwned() error = %v", err)
-	}
-	if got := len(files); got != 2 {
-		t.Fatalf("len(ListRootOwned()) = %d, want 2", got)
-	}
-	for _, f := range files {
-		if f.ParentID != nil {
-			t.Fatalf("expected only root files, got child %q", f.Name)
-		}
+	if loaded[0].PermissionStatus.InheritedFrom == nil || *loaded[0].PermissionStatus.InheritedFrom != rootID {
+		t.Fatalf("child inherited_from = %v, want %q", loaded[0].PermissionStatus.InheritedFrom, rootID)
 	}
 }
 
@@ -1345,12 +1331,15 @@ func TestListRootOwnedDefaultsToRecentFirst(t *testing.T) {
 		}
 	}
 
-	files, err := svc.ListRootOwned(accountID, 20)
+	files, total, err := svc.ListOwnedPage(accountID, FileListOptions{Take: 20, OrderDesc: true})
 	if err != nil {
-		t.Fatalf("ListRootOwned() error = %v", err)
+		t.Fatalf("ListOwnedPage() error = %v", err)
+	}
+	if total != 25 {
+		t.Fatalf("total = %d, want 25", total)
 	}
 	if got := len(files); got != 20 {
-		t.Fatalf("len(ListRootOwned()) = %d, want 20", got)
+		t.Fatalf("len(ListOwnedPage()) = %d, want 20", got)
 	}
 	if files[0].Name != "file-24" {
 		t.Fatalf("first file = %q, want newest first", files[0].Name)

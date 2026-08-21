@@ -1166,30 +1166,13 @@ func (s *FileService) ListRoot(accountID uuid.UUID) ([]database.CloudFile, error
 	return files, nil
 }
 
-func (s *FileService) ListRootOwned(accountID uuid.UUID, take int) ([]database.CloudFile, error) {
-	var files []database.CloudFile
-	query := s.db.Preload("Object").Where("account_id = ? AND workspace_id IS NULL AND parent_id IS NULL", accountID).Order("created_at desc")
-	if take > 0 {
-		query = query.Limit(take)
-	}
-	if err := query.Find(&files).Error; err != nil {
-		return nil, err
-	}
-	if err := s.populateFilesMetadata(files); err != nil {
-		return nil, err
-	}
-	return files, nil
-}
-
-func (s *FileService) ListOwned(accountID uuid.UUID) ([]database.CloudFile, error) {
-	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ? AND workspace_id IS NULL", accountID).Find(&files).Error; err != nil {
-		return nil, err
-	}
-	if err := s.populateFilesMetadata(files); err != nil {
-		return nil, err
-	}
-	return files, nil
+// ListOwnedPage returns one page of the account's top-level files and its
+// total count. It shares the DB-side filter/pagination implementation with
+// the other listing endpoints so only the requested page is loaded.
+func (s *FileService) ListOwnedPage(accountID uuid.UUID, opts FileListOptions) ([]database.CloudFile, int64, error) {
+	query := s.db.Model(&database.CloudFile{}).
+		Where("cloud_files.account_id = ? AND cloud_files.workspace_id IS NULL AND cloud_files.parent_id IS NULL", accountID)
+	return s.listFilesPage(query, opts)
 }
 
 func (s *FileService) ListUnindexed(accountID uuid.UUID) ([]database.CloudFile, error) {
@@ -1254,15 +1237,12 @@ func (s *FileService) ListWorkspaceUnindexedPage(workspaceID string, opts Uninde
 	return s.listFilesPage(query, opts)
 }
 
-func (s *FileService) ListWorkspaceOwned(workspaceID string) ([]database.CloudFile, error) {
-	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("workspace_id = ?", workspaceID).Find(&files).Error; err != nil {
-		return nil, err
-	}
-	if err := s.populateFilesMetadata(files); err != nil {
-		return nil, err
-	}
-	return files, nil
+// ListWorkspaceOwnedPage is deliberately separate from the personal listing
+// methods: a workspace must always be selected before its files are queried.
+func (s *FileService) ListWorkspaceOwnedPage(workspaceID string, opts FileListOptions) ([]database.CloudFile, int64, error) {
+	query := s.db.Model(&database.CloudFile{}).
+		Where("cloud_files.workspace_id = ? AND cloud_files.parent_id IS NULL", workspaceID)
+	return s.listFilesPage(query, opts)
 }
 
 func (s *FileService) listFilesPage(query *gorm.DB, opts FileListOptions) ([]database.CloudFile, int64, error) {

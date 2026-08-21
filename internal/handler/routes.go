@@ -1060,20 +1060,17 @@ func listRootOwned(c *gin.Context, files *service.FileService, quota *service.Qu
 		return
 	}
 	var items []database.CloudFile
+	var total int64
 	if workspaceID == nil {
-		items, err = files.ListOwned(uuid.MustParse(result.Account.GetId()))
+		items, total, err = files.ListOwnedPage(uuid.MustParse(result.Account.GetId()), fileListOptions(filters))
 	} else {
-		items, err = files.ListWorkspaceOwned(*workspaceID)
+		items, total, err = files.ListWorkspaceOwnedPage(*workspaceID, fileListOptions(filters))
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	items = filterAndSortFiles(items, filters)
-	items = rootOnly(items)
-	total := len(items)
-	items = paginateFiles(items, filters.Offset, filters.Take)
-	c.Header("X-Total", strconv.Itoa(total))
+	c.Header("X-Total", strconv.FormatInt(total, 10))
 	c.JSON(http.StatusOK, items)
 }
 
@@ -1229,16 +1226,6 @@ func filterAndSortFiles(items []database.CloudFile, filters fileListFilters) []d
 		filtered = append(filtered, item)
 	}
 	sortFiles(filtered, filters.Order, filters.OrderDesc)
-	return filtered
-}
-
-func rootOnly(items []database.CloudFile) []database.CloudFile {
-	filtered := make([]database.CloudFile, 0, len(items))
-	for _, item := range items {
-		if item.ParentID == nil {
-			filtered = append(filtered, item)
-		}
-	}
 	return filtered
 }
 
@@ -2210,16 +2197,21 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	clientParamsJSON, err := encodeClientUploadParameters(req.ClientAnalysis, req.WantThumbnail, req.WantCompression)
 	if strings.TrimSpace(req.FileName) == "" {
 		req.FileName = service.DefaultUploadFileName(req.ContentType)
 	}
-	if req.FileSize <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file_size must be greater than zero"})
-		return
-	}
 	if strings.TrimSpace(req.ContentType) == "" {
 		req.ContentType = "application/octet-stream"
+	}
+	// Video processing produces a thumbnail only. Never create or accept a
+	// client-side compression derivative for video uploads.
+	if strings.HasPrefix(strings.ToLower(req.ContentType), "video/") {
+		req.WantCompression = false
+	}
+	clientParamsJSON, err := encodeClientUploadParameters(req.ClientAnalysis, req.WantThumbnail, req.WantCompression)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 	expiredAt, err := parseRFC3339Ptr(req.ExpiredAt)
 	if err != nil {
