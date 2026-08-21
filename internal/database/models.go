@@ -45,10 +45,10 @@ type FileObject struct {
 	Meta           datatypes.JSON `gorm:"type:jsonb" json:"meta"`
 	HasCompression bool           `json:"has_compression"`
 	HasThumbnail   bool           `json:"has_thumbnail"`
-	NeedsRehash    bool           `gorm:"index" json:"needs_rehash"`
+	NeedsRehash    bool           `json:"needs_rehash"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	UpdatedAt      time.Time      `gorm:"index:idx_file_objects_rehash_queue,where:needs_rehash AND deleted_at IS NULL" json:"updated_at"`
 }
 
 type CloudFile struct {
@@ -56,9 +56,9 @@ type CloudFile struct {
 	Name             string           `json:"name"`
 	Description      *string          `json:"description"`
 	AccountID        uuid.UUID        `gorm:"index:idx_cloud_files_unindexed_listing,priority:1;index:idx_cloud_files_root_listing,priority:1" json:"account_id"`
-	WorkspaceID      *string          `gorm:"size:36;index" json:"workspace_id,omitempty"`
+	WorkspaceID      *string          `gorm:"size:36;index;index:idx_cloud_files_workspace_usage,priority:1,where:deleted_at IS NULL" json:"workspace_id,omitempty"`
 	PoolID           *string          `gorm:"size:36" json:"pool_id"`
-	ObjectID         *string          `gorm:"size:36" json:"object_id"`
+	ObjectID         *string          `gorm:"size:36;index:idx_cloud_files_workspace_usage,priority:2,where:deleted_at IS NULL" json:"object_id"`
 	ParentID         *string          `gorm:"size:36;index:idx_cloud_files_parent_deleted,priority:1;index:idx_cloud_files_parent_active,where:deleted_at IS NULL;index:idx_cloud_files_unindexed_listing,priority:3;index:idx_cloud_files_root_listing,priority:3" json:"parent_id"`
 	Indexed          bool             `gorm:"index:idx_cloud_files_unindexed_listing,priority:2;index:idx_cloud_files_root_listing,priority:2" json:"indexed"`
 	IsFolder         bool             `json:"is_folder"`
