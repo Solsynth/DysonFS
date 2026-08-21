@@ -3,8 +3,12 @@ package grpcsvc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"os"
 	"strings"
 
+	"github.com/minio/minio-go/v7"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
@@ -63,6 +67,62 @@ func (s *fileServiceServer) GetFile(_ context.Context, req *gen.DyGetFileRequest
 		return nil, status.Error(codes.NotFound, "file not found")
 	}
 	return toProtoCloudFile(file), nil
+}
+func (s *fileServiceServer) DownloadFile(req *gen.DyDownloadFileRequest, stream gen.DyFileService_DownloadFileServer) error {
+	if strings.TrimSpace(req.GetId()) == "" {
+		return status.Error(codes.InvalidArgument, "id is required")
+	}
+	file, err := s.files.GetFile(req.GetId())
+	if err != nil {
+		return status.Error(codes.NotFound, "file not found")
+	}
+	if file.IsFolder {
+		return status.Error(codes.InvalidArgument, "cannot download a folder")
+	}
+	key := s.files.ResolveStorageKey(file)
+	if key == "" {
+		return status.Error(codes.NotFound, "file object not found")
+	}
+	backend, err := s.files.BackendForFile(file)
+	if err != nil {
+		return status.Error(codes.Internal, "resolve file backend")
+	}
+	reader, _, err := backend.Get(stream.Context(), key)
+	if err != nil {
+		if isMissingStorageObject(err) {
+			return status.Error(codes.NotFound, "file object not found")
+		}
+		return status.Error(codes.Internal, "open file object")
+	}
+	defer reader.Close()
+
+	buffer := make([]byte, 64*1024)
+	for {
+		count, readErr := reader.Read(buffer)
+		if count > 0 {
+			chunk := append([]byte(nil), buffer[:count]...)
+			if err := stream.Send(&gen.DyDownloadFileChunk{Data: chunk}); err != nil {
+				return err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return status.Error(codes.Internal, "read file object")
+		}
+		if err := stream.Context().Err(); err != nil {
+			return err
+		}
+	}
+}
+
+func isMissingStorageObject(err error) bool {
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	response := minio.ToErrorResponse(err)
+	return response.Code == "NoSuchKey" || response.Code == "NoSuchObject" || response.StatusCode == 404
 }
 
 func (s *fileServiceServer) GetFileBatch(_ context.Context, req *gen.DyGetFileBatchRequest) (*gen.DyGetFileBatchResponse, error) {
