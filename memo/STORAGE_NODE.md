@@ -474,34 +474,32 @@ obj = s3.get_object(Bucket="default", Key="file.txt")
 print(obj["Body"].read())
 ```
 
-### Registering a Storage Node with the Master
+### User-owned Nodes API
 
-Storage nodes register themselves with the master so it can route storage operations to them.
+Users add a node and its owned storage pool through `POST /api/nodes`. The endpoint validates the remote node identity and shared token, then creates the node and pool atomically. See [`docs/NODES_API.md`](../docs/NODES_API.md) for the complete contract.
 
 ```http
-POST /api/storage-nodes/register HTTP/1.1
-Authorization: Bearer <master-token>
+POST /api/nodes HTTP/1.1
+Authorization: Bearer <user-token>
 Content-Type: application/json
 
 {
   "name": "US East Node",
   "machine_id": "node-us-east-1",
-  "endpoint": "http://storage-node-1.internal:9000",
-  "auth_token": "shared-secret-between-master-and-node",
-  "pool_id": "optional-pool-id"
+  "endpoint": "https://storage-node-1.example.com",
+  "auth_token": "shared-secret-between-user-and-node",
+  "pool": {
+    "name": "US East Node Pool",
+    "bucket": "default",
+    "access_key": "node-s3-access-key",
+    "secret_key": "node-s3-secret-key"
+  }
 }
 ```
 
-### Storage Node Management Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/storage-nodes/register` | Register a new storage node |
-| `GET` | `/api/storage-nodes` | List your registered nodes |
-| `GET` | `/api/storage-nodes/:id` | Get a single node |
-| `PATCH` | `/api/storage-nodes/:id` | Update node config |
-| `DELETE` | `/api/storage-nodes/:id` | Deregister a node |
-| `POST` | `/api/storage-nodes/heartbeat/:machineId` | Node heartbeat |
+The generated pool is a normal user-owned pool. `GET /api/nodes` and
+`GET /api/nodes/:id` list and inspect owned nodes; `DELETE /api/nodes/:id`
+removes the node record but leaves the pool for separate lifecycle management.
 
 ### Storage Administration
 
@@ -526,16 +524,12 @@ The server retains at most 100 detailed failure events in memory. Its total
 server-failure and upload-failure counters continue increasing after older
 details are evicted.
 
-### Heartbeat
+### Health status
 
-Storage nodes should periodically send heartbeats to the master to report their status:
-
-```http
-POST /api/storage-nodes/heartbeat/node-us-east-1 HTTP/1.1
-Authorization: Bearer <token>
-```
-
-The master updates the node's `last_seen_at` timestamp and sets its status to `online`.
+Node creation records the node as `online`. The current storage runtime does not
+send automatic heartbeats, and the Nodes API does not expose a heartbeat route.
+The admin health endpoints therefore report the last recorded status rather than
+actively probing the node.
 
 ### StorageNode Model
 

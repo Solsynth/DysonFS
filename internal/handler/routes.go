@@ -166,14 +166,13 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		s3t.DELETE("/:id", func(c *gin.Context) { deleteS3Token(c, files) })
 	}
 
-	sn := r.Group("/api/storage-nodes")
+	sn := r.Group("/api/nodes")
 	{
-		sn.POST("/register", func(c *gin.Context) { registerStorageNode(c, files) })
-		sn.GET("", func(c *gin.Context) { listStorageNodes(c, files) })
-		sn.GET("/:id", func(c *gin.Context) { getStorageNode(c, files) })
-		sn.PATCH("/:id", func(c *gin.Context) { updateStorageNode(c, files) })
-		sn.DELETE("/:id", func(c *gin.Context) { deleteStorageNode(c, files) })
-		sn.POST("/heartbeat/:machineId", func(c *gin.Context) { storageNodeHeartbeat(c, files) })
+		sn.POST("", func(c *gin.Context) { createNode(c, files) })
+		sn.GET("", func(c *gin.Context) { listNodes(c, files) })
+		sn.GET("/:id", func(c *gin.Context) { getNode(c, files) })
+		sn.PATCH("/:id", func(c *gin.Context) { updateNode(c, files) })
+		sn.DELETE("/:id", func(c *gin.Context) { deleteNode(c, files) })
 	}
 
 	adminStorage := r.Group("/api/admin/storage")
