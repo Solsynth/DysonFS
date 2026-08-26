@@ -2104,13 +2104,18 @@ type clientUploadParameters struct {
 	ClientAnalysis map[string]any `json:"client_analysis,omitempty"`
 	Thumbnail      bool           `json:"thumbnail,omitempty"`
 	Compression    bool           `json:"compression,omitempty"`
+	// MIME type of the client-produced compression derivative. Defaults to
+	// image/webp when empty (legacy clients). Mobile uploads WebP; desktop
+	// uploads JPEG because flutter_image_compress cannot emit WebP off
+	// Android/iOS.
+	CompressionMimeType string `json:"compression_mime_type,omitempty"`
 }
 
-func encodeClientUploadParameters(analysis map[string]any, thumbnail, compression bool) (datatypes.JSON, error) {
+func encodeClientUploadParameters(analysis map[string]any, thumbnail, compression bool, compressionMimeType string) (datatypes.JSON, error) {
 	if len(analysis) == 0 && !thumbnail && !compression {
 		return datatypes.JSON([]byte(`{}`)), nil
 	}
-	params := clientUploadParameters{ClientAnalysis: analysis, Thumbnail: thumbnail, Compression: compression}
+	params := clientUploadParameters{ClientAnalysis: analysis, Thumbnail: thumbnail, Compression: compression, CompressionMimeType: compressionMimeType}
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return nil, err
@@ -2153,7 +2158,11 @@ func addClientDerivativeURLs(ctx context.Context, direct storage.DirectUploadBac
 		response["thumbnail_upload_url"] = thumbnailURL
 		response["thumbnail_key"] = clientThumbnailKey(sourceKey)
 	}
-	compressionURL, err := presignClientDerivative(ctx, direct, clientCompressionKey(sourceKey), "image/webp", params.Compression)
+	compressionMime := strings.TrimSpace(params.CompressionMimeType)
+	if compressionMime == "" {
+		compressionMime = "image/webp"
+	}
+	compressionURL, err := presignClientDerivative(ctx, direct, clientCompressionKey(sourceKey), compressionMime, params.Compression)
 	if err != nil {
 		return err
 	}
@@ -2191,6 +2200,9 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		ClientAnalysis  map[string]any `json:"client_analysis"`
 		WantThumbnail   bool           `json:"want_thumbnail"`
 		WantCompression bool           `json:"want_compression"`
+		// MIME of the compression derivative the client will upload; empty
+		// means the legacy image/webp default.
+		CompressionMimeType string `json:"compression_mime_type"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2207,7 +2219,12 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 	if strings.HasPrefix(strings.ToLower(req.ContentType), "video/") {
 		req.WantCompression = false
 	}
-	clientParamsJSON, err := encodeClientUploadParameters(req.ClientAnalysis, req.WantThumbnail, req.WantCompression)
+	compressionMimeType := strings.TrimSpace(req.CompressionMimeType)
+	if compressionMimeType != "" && !strings.HasPrefix(compressionMimeType, "image/") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "compression_mime_type must be an image MIME type"})
+		return
+	}
+	clientParamsJSON, err := encodeClientUploadParameters(req.ClientAnalysis, req.WantThumbnail, req.WantCompression, compressionMimeType)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -2278,7 +2295,10 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 			}
 			existingParams.Thumbnail = existingParams.Thumbnail || req.WantThumbnail
 			existingParams.Compression = existingParams.Compression || req.WantCompression
-			if updatedParams, paramsErr := encodeClientUploadParameters(existingParams.ClientAnalysis, existingParams.Thumbnail, existingParams.Compression); paramsErr == nil {
+			if existingParams.CompressionMimeType == "" {
+				existingParams.CompressionMimeType = compressionMimeType
+			}
+			if updatedParams, paramsErr := encodeClientUploadParameters(existingParams.ClientAnalysis, existingParams.Thumbnail, existingParams.Compression, existingParams.CompressionMimeType); paramsErr == nil {
 				_ = tasks.DB().Model(&database.PersistentTask{}).Where("task_id = ?", existing.TaskID).Update("parameters", updatedParams).Error
 				existing.Parameters = updatedParams
 			}
@@ -2581,7 +2601,11 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 		}
 		if clientParams.Compression {
 			compressionKey := clientCompressionKey(*task.SourceKey)
-			if _, compressionErr := files.CreateStoredDerivedFile(c.Request.Context(), backend, file.ID, compressionKey, "system.compression.low", "image/webp"); compressionErr != nil {
+			compressionMime := strings.TrimSpace(clientParams.CompressionMimeType)
+			if compressionMime == "" {
+				compressionMime = "image/webp"
+			}
+			if _, compressionErr := files.CreateStoredDerivedFile(c.Request.Context(), backend, file.ID, compressionKey, "system.compression.low", compressionMime); compressionErr != nil {
 				_ = tasks.MarkFailed(task.TaskID, compressionErr.Error())
 				c.JSON(http.StatusBadRequest, gin.H{"error": compressionErr.Error()})
 				return

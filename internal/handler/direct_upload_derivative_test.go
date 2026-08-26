@@ -400,7 +400,7 @@ func TestDirectUploadClientMediaSkipsSourceAnalysis(t *testing.T) {
 	r.Use(testAuthMiddleware(accountID))
 	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, dispatcher)
 
-	prepareBody := fmt.Sprintf(`{"file_name":"movie.mp4","file_size":%d,"content_type":"video/mp4","pool_id":%q,"multipart":true,"client_analysis":{"width":1920,"height":1080,"duration_ms":83420,"aspect_ratio":"16:9"},"want_thumbnail":true}`, len(source), poolID)
+	prepareBody := fmt.Sprintf(`{"file_name":"movie.mp4","file_size":%d,"content_type":"video/mp4","pool_id":%q,"multipart":true,"client_analysis":{"width":1920,"height":1080,"duration_ms":83420,"aspect_ratio":"16:9"},"want_thumbnail":true,"want_compression":true}`, len(source), poolID)
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
 	req.Header.Set("Content-Type", "application/json")
 	wRec := httptest.NewRecorder()
@@ -513,12 +513,114 @@ func TestDirectUploadClientImageCompressionSkipsSourceAnalysis(t *testing.T) {
 	if err := db.Create(&pool).Error; err != nil {
 		t.Fatalf("create pool: %v", err)
 	}
-	source, compression := generateTestJPEG(t), generateTestWebP(t)
+	source, thumbnail, compression := generateTestJPEG(t), generateTestJPEG(t), generateTestWebP(t)
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
 	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
 
-	body := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","pool_id":%q,"multipart":true,"client_analysis":{"width":64,"height":64},"want_compression":true}`, len(source), poolID)
+	body := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","pool_id":%q,"multipart":true,"client_analysis":{"width":64,"height":64},"want_thumbnail":true,"want_compression":true}`, len(source), poolID)
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("prepare status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var prepared struct {
+		TaskID         string `json:"task_id"`
+		ThumbnailURL   string `json:"thumbnail_upload_url"`
+		CompressionURL string `json:"compression_upload_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare response: %v", err)
+	}
+	if prepared.TaskID == "" || prepared.ThumbnailURL == "" || prepared.CompressionURL == "" {
+		t.Fatalf("prepare response = %s, want thumbnail and compression URLs", rec.Body.String())
+	}
+
+	partReq := httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/part", strings.NewReader(`{"part_number":1}`))
+	partReq.Header.Set("Content-Type", "application/json")
+	partRec := httptest.NewRecorder()
+	r.ServeHTTP(partRec, partReq)
+	if partRec.Code != http.StatusOK {
+		t.Fatalf("presign part status = %d, body = %s", partRec.Code, partRec.Body.String())
+	}
+	var part struct {
+		UploadURL string `json:"upload_url"`
+	}
+	if err := json.Unmarshal(partRec.Body.Bytes(), &part); err != nil {
+		t.Fatalf("decode part response: %v", err)
+	}
+	putURL(t, part.UploadURL, source)
+	putURL(t, prepared.ThumbnailURL, thumbnail)
+	putURL(t, prepared.CompressionURL, compression)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/files/upload/"+prepared.TaskID+"/complete", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var completed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &completed); err != nil {
+		t.Fatalf("decode complete response: %v", err)
+	}
+	var parent database.CloudFile
+	if err := db.Preload("Object").First(&parent, "id = ?", completed.ID).Error; err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+	if parent.UploadStatus != database.UploadStatusCompleted || parent.Object == nil || !parent.Object.HasCompression || !parent.Object.HasThumbnail {
+		t.Fatalf("parent status/object = %v/%#v, want completed with compression and thumbnail", parent.UploadStatus, parent.Object)
+	}
+	var children []database.CloudFile
+	if err := db.Where("parent_id = ? AND application_type = ?", completed.ID, "system.compression.low").Find(&children).Error; err != nil {
+		t.Fatalf("query compression child: %v", err)
+	}
+	if len(children) != 1 {
+		t.Fatalf("compression children = %d, want 1", len(children))
+	}
+	var thumbnails []database.CloudFile
+	if err := db.Where("parent_id = ? AND application_type = ?", completed.ID, "system.thumbnail").Find(&thumbnails).Error; err != nil {
+		t.Fatalf("query thumbnail child: %v", err)
+	}
+	if len(thumbnails) != 1 {
+		t.Fatalf("thumbnail children = %d, want 1", len(thumbnails))
+	}
+}
+
+// TestDirectUploadJpegCompressionDerivative verifies a desktop client can
+// upload a JPEG compression derivative: prepare declares
+// compression_mime_type "image/jpeg", the server presigns a JPEG-typed URL
+// and complete validates the uploaded bytes against the declared MIME (the
+// legacy default stays image/webp).
+func TestDirectUploadJpegCompressionDerivative(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	endpoint := startNoAuthMockS3(t, "testbucket")
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	tasks := service.NewTaskService(&database.DB{DB: db})
+	quota := service.NewQuotaService(&database.DB{DB: db})
+	accountID, poolID := uuid.New(), database.NewID()
+	pool := database.FilePool{
+		ID: poolID, Name: "test-s3", AccountID: accountID,
+		StorageConfig: datatypes.JSON([]byte(fmt.Sprintf(
+			`{"enable_signed":true,"enable_ssl":false,"endpoint":%q,"bucket":"testbucket","secret_id":"ak","secret_key":"sk"}`,
+			endpoint))),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	source, compression := generateTestJPEG(t), generateTestJPEG(t)
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+
+	body := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","pool_id":%q,"multipart":true,"client_analysis":{"width":64,"height":64},"want_compression":true,"compression_mime_type":"image/jpeg"}`, len(source), poolID)
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -569,20 +671,22 @@ func TestDirectUploadClientImageCompressionSkipsSourceAnalysis(t *testing.T) {
 	if err := db.Preload("Object").First(&parent, "id = ?", completed.ID).Error; err != nil {
 		t.Fatalf("load parent: %v", err)
 	}
-	if parent.UploadStatus != database.UploadStatusCompleted || parent.Object == nil || !parent.Object.HasCompression {
-		t.Fatalf("parent status/object = %v/%#v, want completed with compression", parent.UploadStatus, parent.Object)
+	if !parent.Object.HasCompression {
+		t.Fatalf("parent object = %#v, want HasCompression", parent.Object)
 	}
 	var children []database.CloudFile
-	if err := db.Where("parent_id = ? AND application_type = ?", completed.ID, "system.compression.low").Find(&children).Error; err != nil {
+	if err := db.Preload("Object").Where("parent_id = ? AND application_type = ?", completed.ID, "system.compression.low").Find(&children).Error; err != nil {
 		t.Fatalf("query compression child: %v", err)
 	}
 	if len(children) != 1 {
 		t.Fatalf("compression children = %d, want 1", len(children))
 	}
+	if children[0].Object == nil || children[0].Object.MimeType != "image/jpeg" {
+		t.Fatalf("compression child object = %#v, want image/jpeg MIME", children[0].Object)
+	}
 }
 
 // generateTestJPEG renders a small but real JPEG with libvips, usable as
-// upload payload or as a stored source object in handler tests.
 func generateTestJPEG(t *testing.T) []byte {
 	t.Helper()
 	img, err := vips.Black(64, 64)
