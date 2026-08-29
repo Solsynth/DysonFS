@@ -18,18 +18,14 @@ tlsSkipVerify = false
 
 Workspace uploads are rejected when this endpoint is not configured.
 
-## Authorization and quota
-
-For every workspace upload, DysonFS verifies through `DyWorkspaceService` that
-the authenticated account is an active workspace member with role `Member`
-(50) or higher. It loads the workspace plan and compares existing live file
-usage plus the requested upload size with `max_storage_bytes` from
-`GetPlanQuota`.
-
-When the limit would be exceeded, the API responds with `403 Forbidden`. This
-check is performed when a chunked task is created and again when it completes,
-so a plan change or concurrent uploads cannot bypass the limit. Personal files,
-which omit `workspace_id`, retain the existing account quota behavior.
+For an **individual workspace** (the account's own drive), the storage limit is
+the owner's personal quota — leveling + perk + extra — computed and served by
+the WattEngine Valve service: `GetPlanQuota(workspace_id)` returns the account
+quota in `max_storage_bytes`, and the charged pool mixes the account's personal
+files with the workspace's files. If Valve is unavailable, DysonFS falls back
+to the local leveling+perk calculation (extra quota lives in Valve and is
+skipped during the outage). Organization workspaces keep the plan-only storage
+limit.
 
 ## Browsing workspace files and quota
 

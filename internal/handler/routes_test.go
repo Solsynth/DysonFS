@@ -102,7 +102,7 @@ func TestRegisterRoutesNoPanic(t *testing.T) {
 
 func TestDirectUploadReturnsSynchronousSourceMetadata(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tempDir := t.TempDir()
 	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	tasks := service.NewTaskService(&database.DB{DB: db})
@@ -168,7 +168,7 @@ func TestDirectUploadReturnsSynchronousSourceMetadata(t *testing.T) {
 
 func TestDirectUploadRequiresFilesUploadPermission(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	accountID := uuid.New()
 	files.SetPermissionChecker(permissionCheckerFunc(func(_ context.Context, gotAccountID, key string) (bool, error) {
@@ -1292,7 +1292,7 @@ func putURL(t *testing.T, url string, body []byte) {
 
 func TestPrepareDirectUploadMultipartFallsBackToProxied(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	tasks := service.NewTaskService(&database.DB{DB: db})
 	quota := service.NewQuotaService(&database.DB{DB: db})
@@ -1326,7 +1326,7 @@ func TestPrepareDirectUploadMultipartFallsBackToProxied(t *testing.T) {
 func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	tasks := service.NewTaskService(&database.DB{DB: db})
 	quota := service.NewQuotaService(&database.DB{DB: db})
@@ -1454,7 +1454,7 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 func TestPrepareDirectUploadDefaultsMissingFileName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	tasks := service.NewTaskService(&database.DB{DB: db})
 	quota := service.NewQuotaService(&database.DB{DB: db})
@@ -1506,7 +1506,7 @@ func TestPrepareDirectUploadDefaultsMissingFileName(t *testing.T) {
 
 func TestCreateUploadTaskDefaultsMissingFileName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	tasks := service.NewTaskService(&database.DB{DB: db})
 	quota := service.NewQuotaService(&database.DB{DB: db})
@@ -1543,7 +1543,7 @@ func TestCreateUploadTaskDefaultsMissingFileName(t *testing.T) {
 func TestPrepareDirectUploadMultipartResumesByHash(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	tasks := service.NewTaskService(&database.DB{DB: db})
 	quota := service.NewQuotaService(&database.DB{DB: db})
@@ -1675,7 +1675,7 @@ func w2s(v map[string]any) string {
 func TestPresignUploadPartRejectsOutOfRangeAndUnknownTask(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	files := service.NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
 	tasks := service.NewTaskService(&database.DB{DB: db})
 	quota := service.NewQuotaService(&database.DB{DB: db})

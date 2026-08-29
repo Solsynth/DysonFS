@@ -34,7 +34,6 @@ type Migrator struct {
 
 type Summary struct {
 	Pools          int64
-	QuotaRecords   int64
 	FileObjects    int64
 	Files          int64
 	FilePerms      int64
@@ -75,7 +74,7 @@ func (m *Migrator) Run(ctx context.Context) (Summary, error) {
 	_ = ctx
 	var summary Summary
 	if err := m.dst.AutoMigrate(
-		&database.FilePool{}, &database.FileObject{}, &database.CloudFile{}, &database.FilePermission{}, &database.PoolPermission{}, &database.PersistentTask{}, &database.QuotaRecord{},
+		&database.FilePool{}, &database.FileObject{}, &database.CloudFile{}, &database.FilePermission{}, &database.PoolPermission{}, &database.PersistentTask{},
 	); err != nil {
 		return summary, err
 	}
@@ -83,9 +82,6 @@ func (m *Migrator) Run(ctx context.Context) (Summary, error) {
 		return summary, err
 	}
 	if err := m.migratePools(&summary); err != nil {
-		return summary, err
-	}
-	if err := m.migrateQuotaRecords(&summary); err != nil {
 		return summary, err
 	}
 	if err := m.migrateFileObjects(&summary); err != nil {
@@ -140,20 +136,6 @@ type legacyPool struct {
 }
 
 func (legacyPool) TableName() string { return "pools" }
-
-type legacyQuotaRecord struct {
-	ID          string     `gorm:"column:id;primaryKey"`
-	AccountID   string     `gorm:"column:account_id"`
-	Name        string     `gorm:"column:name"`
-	Description string     `gorm:"column:description"`
-	Quota       int64      `gorm:"column:quota"`
-	ExpiredAt   *time.Time `gorm:"column:expired_at"`
-	CreatedAt   time.Time  `gorm:"column:created_at"`
-	UpdatedAt   time.Time  `gorm:"column:updated_at"`
-	DeletedAt   *time.Time `gorm:"column:deleted_at"`
-}
-
-func (legacyQuotaRecord) TableName() string { return "quota_records" }
 
 type legacyFileObject struct {
 	ID             string         `gorm:"column:id;primaryKey"`
@@ -237,34 +219,6 @@ func (m *Migrator) migratePools(summary *Summary) error {
 			return err
 		}
 		summary.Pools++
-	}
-	return nil
-}
-
-func (m *Migrator) migrateQuotaRecords(summary *Summary) error {
-	since := m.lastCreatedAt(&database.QuotaRecord{})
-	var rows []legacyQuotaRecord
-	if err := m.src.Where("created_at > ?", since).Order("created_at asc").Find(&rows).Error; err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		fmt.Println("quota_records: up to date")
-		return nil
-	}
-	fmt.Printf("quota_records: migrating %d new records\n", len(rows))
-	for _, row := range rows {
-		rec := database.QuotaRecord{ID: row.ID, AccountID: parseUUID(row.AccountID), Description: row.Description, Name: row.Name, Quota: row.Quota, ExpiredAt: row.ExpiredAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
-		if row.DeletedAt != nil {
-			rec.DeletedAt = gorm.DeletedAt{Time: *row.DeletedAt, Valid: true}
-		}
-		if err := m.save(&rec).Error; err != nil {
-			if m.op.ContinueOnError {
-				summary.Failed++
-				continue
-			}
-			return err
-		}
-		summary.QuotaRecords++
 	}
 	return nil
 }

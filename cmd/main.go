@@ -79,7 +79,7 @@ func main() {
 		if err != nil {
 			logging.Log.Fatal().Err(err).Msg("legacy migration failed")
 		}
-		fmt.Printf("migration complete: pools=%d quota=%d objects=%d files=%d perms=%d derived_files=%d derived_objects=%d skipped=%d failed=%d\n", summary.Pools, summary.QuotaRecords, summary.FileObjects, summary.Files, summary.FilePerms, summary.DerivedFiles, summary.DerivedObjects, summary.Skipped, summary.Failed)
+		fmt.Printf("migration complete: pools=%d objects=%d files=%d perms=%d derived_files=%d derived_objects=%d skipped=%d failed=%d\n", summary.Pools, summary.FileObjects, summary.Files, summary.FilePerms, summary.DerivedFiles, summary.DerivedObjects, summary.Skipped, summary.Failed)
 		return
 	}
 

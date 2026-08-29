@@ -19,7 +19,6 @@ type Config struct {
 	Bundled     BundledConfig     `mapstructure:"bundled"`
 	Auth        AuthConfig        `mapstructure:"auth"`
 	Workspace   WorkspaceConfig   `mapstructure:"workspace"`
-	Wallet      WalletConfig      `mapstructure:"wallet"`
 	Quota       QuotaConfig       `mapstructure:"quota"`
 	Mode        ModeConfig        `mapstructure:"mode"`
 	Files       FileConfig        `mapstructure:"files"`
@@ -91,30 +90,8 @@ type WorkspaceConfig struct {
 	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
 }
 
-// WalletConfig configures the DysonNetwork Wallet DyPaymentService gRPC
-// endpoint. A non-empty Target enables the golden-points quota purchase flow;
-// there is no separate enable flag.
-type WalletConfig struct {
-	Target        string `mapstructure:"target"`
-	UseTLS        bool   `mapstructure:"useTLS"`
-	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
-}
-
 type QuotaConfig struct {
 	Leveling LevelingQuotaConfig `mapstructure:"leveling"`
-	Purchase QuotaPurchaseConfig `mapstructure:"purchase"`
-}
-
-// QuotaPurchaseConfig configures the quantity-based golden-points quota
-// purchase, sold through the DysonNetwork Wallet order flow (see
-// docs/SPONSORED_POSTS.md). The Wallet gRPC endpoint lives in [wallet]; its
-// presence (target set) enables the flow.
-type QuotaPurchaseConfig struct {
-	PricePerGB string        `mapstructure:"pricePerGB"` // decimal price per GB in Currency, e.g. "0.05"
-	Currency   string        `mapstructure:"currency"`   // Wallet currency; default "golds"
-	MinGB      int64         `mapstructure:"minGB"`      // minimum GB per purchase (default 1)
-	MaxGB      int64         `mapstructure:"maxGB"`      // cap on total extra quota (purchases + admin grants); 0 = unlimited
-	ExpiresIn  time.Duration `mapstructure:"expiresIn"`  // granted quota lifetime; 0 or unset = permanent
 }
 
 type LevelingQuotaConfig struct {
@@ -240,9 +217,6 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("quota.leveling.level10", 1024)
 	viper.SetDefault("quota.leveling.level60", 5*1024)
 	viper.SetDefault("quota.leveling.level120", 10*1024)
-	viper.SetDefault("quota.purchase.currency", "golds")
-	viper.SetDefault("quota.purchase.minGB", 1)
-	viper.SetDefault("quota.purchase.maxGB", 0)
 	viper.SetDefault("mode.master", true)
 	viper.SetDefault("mode.worker", false)
 	viper.SetDefault("mode.storage", false)

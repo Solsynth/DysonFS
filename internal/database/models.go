@@ -374,19 +374,6 @@ type UploadChunk struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-type QuotaRecord struct {
-	ID          string         `gorm:"primaryKey;size:36" json:"id"`
-	AccountID   uuid.UUID      `json:"account_id"`
-	Description string         `json:"description"`
-	Name        string         `json:"name"`
-	Quota       int64          `json:"quota"`
-	ExpiredAt   *time.Time     `json:"expired_at"`
-	OrderID     *string        `gorm:"size:36;uniqueIndex" json:"order_id,omitempty"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-}
-
 type StorageNode struct {
 	ID         string         `gorm:"primaryKey;size:36" json:"id"`
 	Name       string         `json:"name"`

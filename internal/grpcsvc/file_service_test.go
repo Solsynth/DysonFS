@@ -107,7 +107,6 @@ func newUploadTestFixture(t *testing.T) *uploadTestFixture {
 		&database.FileObject{},
 		&database.CloudFile{},
 		&database.FilePermission{},
-		&database.QuotaRecord{},
 		&database.PersistentTask{},
 		&database.UploadChunk{},
 	); err != nil {

@@ -838,7 +838,7 @@ func TestMoveBatchSetsIndexedFlag(t *testing.T) {
 }
 
 func TestQuotaUsageCountsBytes(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.QuotaRecord{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
 	svc := NewQuotaService(&database.DB{DB: db})
 	accountID := uuid.New()
 	poolID := database.NewID()
@@ -885,7 +885,7 @@ func TestQuotaUsageCountsBytes(t *testing.T) {
 }
 
 func TestCheckUploadQuota(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.QuotaRecord{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
 	svc := NewQuotaService(&database.DB{DB: db})
 	accountID := uuid.New()
 	const mb = int64(1024 * 1024)
@@ -896,22 +896,21 @@ func TestCheckUploadQuota(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "used.txt", AccountID: accountID, ObjectID: &objectID}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := db.Create(&database.QuotaRecord{ID: database.NewID(), AccountID: accountID, Name: "bonus", Description: "bonus", Quota: 25}).Error; err != nil {
-		t.Fatalf("create quota record: %v", err)
-	}
 	account := &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 60}, PerkLevel: func() *int32 { v := int32(1); return &v }()}
 	svc.SetLevelingConfig(config.LevelingQuotaConfig{Level1: 512, Level10: 1024, Level60: 5 * 1024, Level120: 10 * 1024})
 	summary, err := svc.GetSummary(account)
 	if err != nil {
 		t.Fatalf("GetSummary() error = %v", err)
 	}
-	if summary.BasedQuota != 16*1024 || summary.LevelingQuota != 6*1024 || summary.PerkQuota != 10*1024 || summary.ExtraQuota != 25 || summary.TotalQuota != 16*1024+25 {
-		t.Fatalf("summary = %+v, want base=16GiB leveling=6GiB perk=10GiB extra=25 total=16GiB+25MB", summary)
+	// Extra quota lives in Valve now; without a workspace client the summary is
+	// the local leveling+perk fallback (level 60 = 6 GiB leveling, perk 1 = 10 GiB).
+	if summary.BasedQuota != 16*1024 || summary.LevelingQuota != 6*1024 || summary.PerkQuota != 10*1024 || summary.ExtraQuota != 0 || summary.TotalQuota != 16*1024 {
+		t.Fatalf("summary = %+v, want base=16GiB leveling=6GiB perk=10GiB extra=0 total=16GiB", summary)
 	}
 
 	if err := svc.CheckUploadQuota(account, 17000*mb, 1); err == nil {
 		t.Fatal("CheckUploadQuota() error = nil, want quota exceeded")
-	} else if !errors.Is(err, ErrQuotaExceeded) || !strings.Contains(err.Error(), "used=120MB") || !strings.Contains(err.Error(), "total=16409MB") {
+	} else if !errors.Is(err, ErrQuotaExceeded) || !strings.Contains(err.Error(), "used=120MB") || !strings.Contains(err.Error(), "total=16384MB") {
 		t.Fatalf("CheckUploadQuota() error = %v, want used/total details", err)
 	}
 }
@@ -943,6 +942,142 @@ func TestStorageBytesFromPlanQuota(t *testing.T) {
 				t.Fatalf("storageBytesFromPlanQuota() = (%d, %t), want (%d, %t)", got, ok, test.want, test.ok)
 			}
 		})
+	}
+}
+
+// stubWorkspaceClient implements DyWorkspaceServiceClient for quota tests. It
+// serves one workspace, membership, and a configurable plan quota; other RPCs
+// panic if called.
+type stubWorkspaceClient struct {
+	workspace *gen.DyWorkspace
+	member    bool
+	planQuota *gen.DyWorkspacePlanQuota
+	planErr   error
+}
+
+func (s *stubWorkspaceClient) GetWorkspace(context.Context, *gen.DyGetWorkspaceRequest, ...grpc.CallOption) (*gen.DyWorkspace, error) {
+	return s.workspace, nil
+}
+func (s *stubWorkspaceClient) GetWorkspaceBatch(context.Context, *gen.DyGetWorkspaceBatchRequest, ...grpc.CallOption) (*gen.DyGetWorkspaceBatchResponse, error) {
+	panic("unexpected call")
+}
+func (s *stubWorkspaceClient) GetUserWorkspaces(context.Context, *gen.DyGetUserWorkspacesRequest, ...grpc.CallOption) (*gen.DyGetUserWorkspacesResponse, error) {
+	panic("unexpected call")
+}
+func (s *stubWorkspaceClient) GetIndividualWorkspace(context.Context, *gen.DyGetUserWorkspacesRequest, ...grpc.CallOption) (*gen.DyWorkspace, error) {
+	return s.workspace, nil
+}
+func (s *stubWorkspaceClient) IsMemberWithRole(context.Context, *gen.DyIsWorkspaceMemberWithRoleRequest, ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
+	return wrapperspb.Bool(s.member), nil
+}
+func (s *stubWorkspaceClient) HasPermission(context.Context, *gen.DyHasWorkspacePermissionRequest, ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
+	panic("unexpected call")
+}
+func (s *stubWorkspaceClient) GetPlanQuota(context.Context, *gen.DyGetPlanQuotaRequest, ...grpc.CallOption) (*gen.DyWorkspacePlanQuota, error) {
+	if s.planErr != nil {
+		return nil, s.planErr
+	}
+	return s.planQuota, nil
+}
+func (s *stubWorkspaceClient) LoadMemberAccount(context.Context, *gen.DyLoadWorkspaceMemberRequest, ...grpc.CallOption) (*gen.DyWorkspaceMember, error) {
+	panic("unexpected call")
+}
+func (s *stubWorkspaceClient) LoadMemberAccounts(context.Context, *gen.DyLoadWorkspaceMembersRequest, ...grpc.CallOption) (*gen.DyLoadWorkspaceMembersResponse, error) {
+	panic("unexpected call")
+}
+func (s *stubWorkspaceClient) ListMembers(context.Context, *gen.DyListWorkspaceMembersRequest, ...grpc.CallOption) (*gen.DyListWorkspaceMembersResponse, error) {
+	panic("unexpected call")
+}
+
+func TestIndividualWorkspaceUsesValveAccountQuota(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+	svc.SetLevelingConfig(config.LevelingQuotaConfig{Level1: 512, Level10: 1024, Level60: 5 * 1024, Level120: 10 * 1024})
+
+	accountID := uuid.New()
+	workspaceID := uuid.New()
+	const mb = int64(1024 * 1024)
+
+	// Personal file (30 MiB) + workspace file (20 MiB) share the pool.
+	personalObject := database.NewID()
+	workspaceObject := database.NewID()
+	if err := db.Create(&database.FileObject{ID: personalObject, Size: 30 * mb, MimeType: "text/plain", Hash: "h1"}).Error; err != nil {
+		t.Fatalf("create personal object: %v", err)
+	}
+	if err := db.Create(&database.FileObject{ID: workspaceObject, Size: 20 * mb, MimeType: "text/plain", Hash: "h2"}).Error; err != nil {
+		t.Fatalf("create workspace object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "p.txt", AccountID: accountID, ObjectID: &personalObject}).Error; err != nil {
+		t.Fatalf("create personal file: %v", err)
+	}
+	wsID := workspaceID.String()
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "w.txt", AccountID: accountID, WorkspaceID: &wsID, ObjectID: &workspaceObject}).Error; err != nil {
+		t.Fatalf("create workspace file: %v", err)
+	}
+
+	// Valve serves the account quota: 2 GiB (Valve computes leveling+perk+extra).
+	valveQuotaBytes := int64(2) * 1024 * 1024 * 1024
+	svc.SetWorkspaceClient(&stubWorkspaceClient{
+		workspace: &gen.DyWorkspace{
+			Id:             workspaceID.String(),
+			Type:           gen.DyWorkspaceType_INDIVIDUAL,
+			Plan:           gen.DyWorkspacePlan_FREE,
+			OwnerAccountId: accountID.String(),
+		},
+		member:    true,
+		planQuota: &gen.DyWorkspacePlanQuota{Quotas: map[string]int64{"max_storage_bytes": valveQuotaBytes}},
+	})
+
+	summary, err := svc.GetWorkspaceUsage(context.Background(), workspaceID.String(), accountID.String())
+	if err != nil {
+		t.Fatalf("GetWorkspaceUsage() error = %v", err)
+	}
+	if summary.TotalBytes != valveQuotaBytes {
+		t.Fatalf("total = %d, want Valve account quota %d", summary.TotalBytes, valveQuotaBytes)
+	}
+	if summary.UsedBytes != 50*mb {
+		t.Fatalf("used = %d, want personal+workspace mix 50MiB", summary.UsedBytes)
+	}
+	if summary.TotalFileCount != 2 {
+		t.Fatalf("file count = %d, want 2", summary.TotalFileCount)
+	}
+}
+
+func TestIndividualWorkspaceFallsBackToLocalLevelingPerk(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+	svc.SetLevelingConfig(config.LevelingQuotaConfig{Level1: 512, Level10: 1024, Level60: 5 * 1024, Level120: 10 * 1024})
+	svc.SetAccountClient(&stubAccountClient{account: &gen.DyAccount{
+		Id:      uuid.New().String(),
+		Profile: &gen.DyAccountProfile{Level: 60},
+		PerkLevel: func() *int32 {
+			v := int32(1)
+			return &v
+		}(),
+	}})
+
+	accountID := uuid.New()
+	workspaceID := uuid.New()
+	svc.SetWorkspaceClient(&stubWorkspaceClient{
+		workspace: &gen.DyWorkspace{
+			Id:             workspaceID.String(),
+			Type:           gen.DyWorkspaceType_INDIVIDUAL,
+			Plan:           gen.DyWorkspacePlan_FREE,
+			OwnerAccountId: accountID.String(),
+		},
+		member:  true,
+		planErr: errors.New("valve unavailable"),
+	})
+
+	summary, err := svc.GetWorkspaceUsage(context.Background(), workspaceID.String(), accountID.String())
+	if err != nil {
+		t.Fatalf("GetWorkspaceUsage() error = %v", err)
+	}
+	// Level 60 interpolates to 6 GiB leveling (60% of 10 GiB), perk 1 = 10 GiB
+	// → 16 GiB total (the DysonFS fallback; extra quota is Valve-owned).
+	want := int64(16) * 1024 * 1024 * 1024
+	if summary.TotalBytes != want {
+		t.Fatalf("total = %d, want fallback leveling+perk %d", summary.TotalBytes, want)
 	}
 }
 
@@ -2046,7 +2181,7 @@ func TestCreateUploadedObjectFlagsFollowMediaType(t *testing.T) {
 }
 
 func TestCheckUploadQuotaEnrichesAccountOnce(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.QuotaRecord{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
 	svc := NewQuotaService(&database.DB{DB: db})
 	accountID := uuid.New()
 	client := &stubAccountClient{account: &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 1}}}

@@ -41,27 +41,11 @@ target = ""
 useTLS = false
 tlsSkipVerify = false
 
-[wallet]
-# DysonNetwork Wallet DyPaymentService endpoint. Setting a target enables the
-# golden-points quota purchase flow (see SPONSORED_POSTS.md precedent).
-target = ""
-useTLS = false
-tlsSkipVerify = false
-
 [quota.leveling]
 level1 = 512
 level10 = 1024
 level60 = 5120
 level120 = 10240
-
-# Quantity-based golden-points quota purchase terms, sold via the [wallet]
-# order flow.
-[quota.purchase]
-pricePerGB = "0.05" # decimal price per GB in the currency below
-currency = "golds"  # Wallet currency; default "golds"
-minGB = 1           # minimum GB per purchase
-maxGB = 1024        # cap on total extra quota (purchases + admin grants); 0 = unlimited
-expiresIn = "720h"  # granted quota lifetime; 0 or unset = permanent
 
 [mode]
 master = true

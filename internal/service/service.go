@@ -3620,9 +3620,6 @@ type QuotaService struct {
 	workspaceClient   gen.DyWorkspaceServiceClient
 	sharedQuotaClient gen.DyQuotaServiceClient
 	levelingCfg       config.LevelingQuotaConfig
-	paymentClient     gen.DyPaymentServiceClient
-	purchaseCfg       config.QuotaPurchaseConfig
-	walletCfg         config.WalletConfig
 }
 
 type accountGetter interface {
@@ -3746,7 +3743,7 @@ func (s *QuotaService) CheckUploadQuota(account *gen.DyAccount, size int64, cost
 	if err != nil {
 		return err
 	}
-	summary, err := s.getSummaryForAccount(account)
+	summary, err := s.getSummaryForAccount(context.Background(), account)
 	if err != nil {
 		return err
 	}
@@ -3781,8 +3778,9 @@ func (s *QuotaService) CheckWorkspaceUploadQuota(ctx context.Context, workspaceI
 	return nil
 }
 
-// GetWorkspaceUsage returns the selected workspace's plan limit and live file
-// usage. It never falls back to an account quota.
+// GetWorkspaceUsage returns the selected workspace's storage limit and live
+// file usage. Individual workspaces use the owner's account quota (from Valve,
+// with a local leveling+perk fallback); organization workspaces use the plan.
 func (s *QuotaService) GetWorkspaceUsage(ctx context.Context, workspaceID, accountID string) (WorkspaceUsageSummary, error) {
 	return s.workspaceUsage(ctx, workspaceID, accountID)
 }
@@ -3810,37 +3808,84 @@ func (s *QuotaService) workspaceUsage(ctx context.Context, workspaceID, accountI
 	if !member.GetValue() {
 		return WorkspaceUsageSummary{}, errors.New("workspace membership with member role is required")
 	}
-	planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{
-		Plan:        workspace.GetPlan(),
-		WorkspaceId: workspaceID,
-	})
-	if err != nil {
-		return WorkspaceUsageSummary{}, fmt.Errorf("get workspace plan quota: %w", err)
-	}
+
+	// Individual workspaces are the account's own drive: the storage limit is the
+	// owner's personal quota (leveling + perk + extra), computed and served by the
+	// Valve service. The charged pool mixes the account's personal files with this
+	// workspace's files. If Valve is unavailable, fall back to the local
+	// leveling+perk calculation (extra quota lives in Valve and is skipped).
+	var totalBytes int64
 	var usedBytes int64
-	if s.sharedQuotaClient != nil {
-		usage, err := s.sharedQuotaClient.GetUsedQuota(ctx, &gen.DyGetUsedQuotaRequest{WorkspaceId: workspaceID})
-		if err != nil {
-			return WorkspaceUsageSummary{}, fmt.Errorf("get shared workspace storage usage: %w", err)
+	var totalFiles int64
+	if workspace.GetType() == gen.DyWorkspaceType_INDIVIDUAL {
+		planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{
+			Plan:        workspace.GetPlan(),
+			WorkspaceId: workspaceID,
+		})
+		if err == nil {
+			if total, ok := storageBytesFromPlanQuota(planQuota); ok {
+				totalBytes = total
+			} else {
+				logging.Log.Warn().Err(err).Str("workspace_id", workspaceID).Msg("Valve returned no storage quota for individual workspace; falling back to local leveling+perk quota")
+			}
+		} else {
+			logging.Log.Warn().Err(err).Str("workspace_id", workspaceID).Msg("Valve unavailable; falling back to local leveling+perk quota for individual workspace")
 		}
-		usedBytes = usage.GetUsedBytes()
-	} else {
-		if err := s.db.DB.Model(&database.CloudFile{}).
-			Select("COALESCE(SUM(file_objects.size), 0)").
-			Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
-			Where("cloud_files.workspace_id = ? AND cloud_files.deleted_at IS NULL", workspaceID).
-			Scan(&usedBytes).Error; err != nil {
+
+		if totalBytes <= 0 {
+			account, acctErr := s.enrichedAccount(ctx, &gen.DyAccount{Id: accountID})
+			if acctErr != nil {
+				return WorkspaceUsageSummary{}, fmt.Errorf("resolve account for individual workspace quota: %w", acctErr)
+			}
+			leveling := levelingQuotaFromAccount(account, s.levelingCfg)
+			perk := perkQuotaFromAccount(account)
+			totalBytes = (leveling + perk) * quotaUnitBytes
+		}
+
+		_, personalFiles, personalBytes, err := s.scopedUsageStats(accountID, "")
+		if err != nil {
+			return WorkspaceUsageSummary{}, fmt.Errorf("calculate personal storage usage: %w", err)
+		}
+		_, workspaceFiles, workspaceBytes, err := s.scopedUsageStats(accountID, workspaceID)
+		if err != nil {
 			return WorkspaceUsageSummary{}, fmt.Errorf("calculate workspace storage usage: %w", err)
 		}
+		usedBytes = personalBytes + workspaceBytes
+		totalFiles = personalFiles + workspaceFiles
+	} else {
+		planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{
+			Plan:        workspace.GetPlan(),
+			WorkspaceId: workspaceID,
+		})
+		if err != nil {
+			return WorkspaceUsageSummary{}, fmt.Errorf("get workspace plan quota: %w", err)
+		}
+		var ok bool
+		totalBytes, ok = storageBytesFromPlanQuota(planQuota)
+		if !ok {
+			return WorkspaceUsageSummary{}, errors.New("workspace plan has no storage quota")
+		}
+
+		if s.sharedQuotaClient != nil {
+			usage, err := s.sharedQuotaClient.GetUsedQuota(ctx, &gen.DyGetUsedQuotaRequest{WorkspaceId: workspaceID})
+			if err != nil {
+				return WorkspaceUsageSummary{}, fmt.Errorf("get shared workspace storage usage: %w", err)
+			}
+			usedBytes = usage.GetUsedBytes()
+		} else {
+			if err := s.db.DB.Model(&database.CloudFile{}).
+				Select("COALESCE(SUM(file_objects.size), 0)").
+				Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
+				Where("cloud_files.workspace_id = ? AND cloud_files.deleted_at IS NULL", workspaceID).
+				Scan(&usedBytes).Error; err != nil {
+				return WorkspaceUsageSummary{}, fmt.Errorf("calculate workspace storage usage: %w", err)
+			}
+		}
+		if err := s.db.DB.Model(&database.CloudFile{}).Where("workspace_id = ? AND deleted_at IS NULL", workspaceID).Count(&totalFiles).Error; err != nil {
+			return WorkspaceUsageSummary{}, fmt.Errorf("count workspace files: %w", err)
+		}
 	}
-	var totalFiles int64
-	if err := s.db.DB.Model(&database.CloudFile{}).Where("workspace_id = ? AND deleted_at IS NULL", workspaceID).Count(&totalFiles).Error; err != nil {
-		return WorkspaceUsageSummary{}, fmt.Errorf("count workspace files: %w", err)
-	}
-	totalBytes, ok := storageBytesFromPlanQuota(planQuota)
-	if !ok {
-		return WorkspaceUsageSummary{}, errors.New("workspace plan has no storage quota")
-	}
+
 	remaining := totalBytes - usedBytes
 	if remaining < 0 {
 		remaining = 0
@@ -3853,14 +3898,6 @@ func storageBytesFromPlanQuota(quota *gen.DyWorkspacePlanQuota) (int64, bool) {
 	return totalBytes, ok && totalBytes > 0
 }
 
-func (s *QuotaService) ListRecords(accountID uuid.UUID) ([]database.QuotaRecord, error) {
-	var records []database.QuotaRecord
-	if err := s.db.Where("account_id = ?", accountID).Order("created_at desc").Find(&records).Error; err != nil {
-		return nil, err
-	}
-	return records, nil
-}
-
 func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) {
 	if account == nil {
 		return QuotaSummary{}, fmt.Errorf("account is required")
@@ -3869,37 +3906,39 @@ func (s *QuotaService) GetSummary(account *gen.DyAccount) (QuotaSummary, error) 
 	if err != nil {
 		return QuotaSummary{}, err
 	}
-	return s.getSummaryForAccount(account)
+	return s.getSummaryForAccount(context.Background(), account)
 }
 
-func (s *QuotaService) getSummaryForAccount(account *gen.DyAccount) (QuotaSummary, error) {
-	extraQuota, err := s.extraQuotaMB(account.GetId())
-	if err != nil {
-		return QuotaSummary{}, err
-	}
+func (s *QuotaService) getSummaryForAccount(ctx context.Context, account *gen.DyAccount) (QuotaSummary, error) {
 	levelingQuota := levelingQuotaFromAccount(account, s.levelingCfg)
 	perkQuota := perkQuotaFromAccount(account)
 	basedQuota := levelingQuota + perkQuota
-	return QuotaSummary{BasedQuota: basedQuota, LevelingQuota: levelingQuota, PerkQuota: perkQuota, ExtraQuota: extraQuota, TotalQuota: basedQuota + extraQuota}, nil
-}
 
-// extraQuotaMB returns the account's current extra quota in MB: the sum of all
-// quota records (purchased or manually assigned by an admin) that have not
-// expired. This is the same figure surfaced as QuotaSummary.ExtraQuota.
-func (s *QuotaService) extraQuotaMB(accountID string) (int64, error) {
-	var records []database.QuotaRecord
-	if err := s.db.Where("account_id = ?", accountID).Find(&records).Error; err != nil {
-		return 0, err
-	}
-	var total int64
-	now := time.Now()
-	for _, record := range records {
-		if record.ExpiredAt != nil && record.ExpiredAt.Before(now) {
-			continue
+	// The account quota (leveling + perk + extra) is owned by the Valve service;
+	// it is surfaced through the account's individual workspace plan quota. When
+	// Valve is unavailable, fall back to the local leveling+perk calculation
+	// (extra quota lives in Valve and is skipped).
+	if s.workspaceClient != nil {
+		ind, err := s.workspaceClient.GetIndividualWorkspace(ctx, &gen.DyGetUserWorkspacesRequest{AccountId: account.GetId()})
+		if err == nil && ind != nil {
+			planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{
+				Plan:        ind.GetPlan(),
+				WorkspaceId: ind.GetId(),
+			})
+			if err == nil {
+				if totalBytes, ok := storageBytesFromPlanQuota(planQuota); ok {
+					totalMB := totalBytes / quotaUnitBytes
+					extra := totalMB - basedQuota
+					if extra < 0 {
+						extra = 0
+					}
+					return QuotaSummary{BasedQuota: basedQuota, LevelingQuota: levelingQuota, PerkQuota: perkQuota, ExtraQuota: extra, TotalQuota: totalMB}, nil
+				}
+			}
 		}
-		total += record.Quota
 	}
-	return total, nil
+
+	return QuotaSummary{BasedQuota: basedQuota, LevelingQuota: levelingQuota, PerkQuota: perkQuota, ExtraQuota: 0, TotalQuota: basedQuota}, nil
 }
 
 func baseQuotaFromAccount(account *gen.DyAccount) int64 {
@@ -4020,17 +4059,31 @@ func (s *QuotaService) enrichedAccount(ctx context.Context, account *gen.DyAccou
 	return resolved, nil
 }
 
+// scopedUsageStats aggregates an account's billable file usage in MB, plus the
+// raw byte/file counts. When workspaceID is non-empty only files in that
+// workspace are counted; otherwise only personal files (workspace_id IS NULL)
+// are counted. The MB total applies pool cost multipliers.
 func (s *QuotaService) usageStats(accountID string) (int64, int64, int64, error) {
+	return s.scopedUsageStats(accountID, "")
+}
+
+func (s *QuotaService) scopedUsageStats(accountID, workspaceID string) (int64, int64, int64, error) {
+	query := s.db.Model(&database.CloudFile{}).
+		Select("cloud_files.pool_id, file_objects.size").
+		Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
+		Where("cloud_files.account_id = ? AND cloud_files.deleted_at IS NULL", accountID)
+	if workspaceID == "" {
+		query = query.Where("cloud_files.workspace_id IS NULL")
+	} else {
+		query = query.Where("cloud_files.workspace_id = ?", workspaceID)
+	}
+
 	type usageRow struct {
 		PoolID *string `gorm:"column:pool_id"`
 		Size   int64   `gorm:"column:size"`
 	}
 	var rows []usageRow
-	if err := s.db.Model(&database.CloudFile{}).
-		Select("cloud_files.pool_id, file_objects.size").
-		Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
-		Where("cloud_files.account_id = ? AND cloud_files.deleted_at IS NULL", accountID).
-		Scan(&rows).Error; err != nil {
+	if err := query.Scan(&rows).Error; err != nil {
 		return 0, 0, 0, err
 	}
 

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -133,16 +132,6 @@ func New(cfg *config.Config, mode string) (*App, error) {
 		app.quota.SetWorkspaceClient(workspaceClient)
 		app.quota.SetSharedQuotaClient(gen.NewDyQuotaServiceClient(workspaceConn))
 	}
-	app.quota.SetPurchaseConfig(cfg.Quota.Purchase)
-	app.quota.SetWalletConfig(cfg.Wallet)
-	if cfg.Wallet.Target != "" {
-		paymentClient, paymentConn, err := service.NewPaymentClient(cfg.Wallet)
-		if err != nil {
-			return nil, err
-		}
-		app.paymentConn = paymentConn
-		app.quota.SetPaymentClient(paymentClient)
-	}
 	defaultPoolID, err := app.files.SeedPools(cfg)
 	if err != nil {
 		return nil, err
@@ -248,7 +237,6 @@ func (a *App) startMaster(ctx context.Context) error {
 	go func() { _ = a.httpSrv.ListenAndServe() }()
 	a.startMasterS3()
 	a.startUploadExpirySweep(ctx)
-	a.startQuotaPurchaseListener(ctx)
 	logging.Log.Info().Str("mode", a.mode).Msg("master started")
 	return nil
 }
@@ -286,7 +274,6 @@ func (a *App) startBundled(ctx context.Context) error {
 	go func() { _ = a.httpSrv.ListenAndServe() }()
 	a.startMasterS3()
 	a.startUploadExpirySweep(ctx)
-	a.startQuotaPurchaseListener(ctx)
 	logging.Log.Info().Str("mode", a.mode).Msg("bundled started")
 	return nil
 }
@@ -309,19 +296,6 @@ func (a *App) startUploadExpirySweep(ctx context.Context) {
 			}
 		}
 	}()
-}
-
-// startQuotaPurchaseListener runs the Wallet payment-order consumer in the
-// background whenever purchase is enabled and a bus is available. The consumer
-// blocks until ctx is cancelled; a non-cancellation exit is logged.
-func (a *App) startQuotaPurchaseListener(ctx context.Context) {
-	if a.bus != nil && a.quota != nil && a.quota.PurchaseEnabled() {
-		go func() {
-			if err := a.quota.ConsumePaymentOrders(ctx, a.bus); err != nil && !errors.Is(err, context.Canceled) {
-				logging.Log.Error().Err(err).Msg("quota purchase listener stopped")
-			}
-		}()
-	}
 }
 
 func (a *App) runUploadExpirySweep(ctx context.Context) {

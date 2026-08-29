@@ -293,7 +293,12 @@ Perk quota is added on top of leveling quota:
 - perk `2`: `25GB`
 - perk `3`: `50GB`
 
-Extra quota comes from active `quota_records` and is added after the base quota.
+The account quota (leveling + perk + extra) is owned and computed by the
+WattEngine Valve service; DysonFS surfaces it through the account's individual
+workspace plan quota when the workspace endpoint is configured, falling back to
+the local leveling+perk calculation (without extra quota, which lives in Valve)
+when it is unavailable. Extra-quota purchase and admin grants are served by
+Valve's billing API.
 
 `GET /api/billing/quota` returns:
 

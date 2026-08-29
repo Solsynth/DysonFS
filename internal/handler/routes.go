@@ -116,16 +116,9 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 	b := r.Group("/api/billing")
 	{
 		b.GET("quota", func(c *gin.Context) { getQuota(c, quota) })
-		b.GET("quota/records", func(c *gin.Context) { listQuotaRecords(c, quota) })
 		b.GET("usage", func(c *gin.Context) { getUsage(c, quota) })
 		b.GET("usage/:poolId", func(c *gin.Context) { getPoolUsage(c, quota) })
 		b.GET("workspaces/:workspaceId/quota", func(c *gin.Context) { getWorkspaceQuota(c, quota) })
-	}
-	// Golden-points quota purchase routes; absent when the [wallet] target is
-	// unset (404), matching the WebDAV/WOPI convention.
-	if cfg.Wallet.Target != "" {
-		b.GET("quota/purchase", func(c *gin.Context) { getQuotaPurchaseInfo(c, quota) })
-		b.POST("quota/purchase", func(c *gin.Context) { createQuotaPurchase(c, quota) })
 	}
 
 	if cfg.WebDAV.Enabled {
@@ -771,89 +764,6 @@ func getQuota(c *gin.Context, quota *service.QuotaService) {
 		return
 	}
 	c.JSON(http.StatusOK, summary)
-}
-
-// @Summary List quota records
-// @Tags billing
-// @Produce json
-// @Success 200 {array} database.QuotaRecord
-// @Router /api/billing/quota/records [get]
-func listQuotaRecords(c *gin.Context, quota *service.QuotaService) {
-	result, _, ok := auth.GetAuth(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	records, err := quota.ListRecords(uuid.MustParse(result.Account.GetId()))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.Header("X-Total", strconv.Itoa(len(records)))
-	c.JSON(http.StatusOK, records)
-}
-
-// @Summary Get quota purchase terms
-// @Tags billing
-// @Produce json
-// @Success 200 {object} service.QuotaPurchaseInfo
-// @Router /api/billing/quota/purchase [get]
-func getQuotaPurchaseInfo(c *gin.Context, quota *service.QuotaService) {
-	_, _, ok := auth.GetAuth(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	c.JSON(http.StatusOK, quota.PurchaseInfo())
-}
-
-// @Summary Create quota purchase order
-// @Description Create a Wallet order for quantityGB GB of extra quota at the configured per-GB price; the user pays it via the Wallet API, and the granted quota lands in quota records once the payment event arrives.
-// @Tags billing
-// @Accept json
-// @Produce json
-// @Param body body object true "purchase request" SchemaExample({"quantity_gb":10})
-// @Success 200 {object} map[string]any
-// @Failure 400 {object} map[string]any
-// @Failure 401 {object} map[string]any
-// @Failure 502 {object} map[string]any
-// @Failure 503 {object} map[string]any
-// @Router /api/billing/quota/purchase [post]
-func createQuotaPurchase(c *gin.Context, quota *service.QuotaService) {
-	result, _, ok := auth.GetAuth(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	var req struct {
-		QuantityGB int64 `json:"quantity_gb"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.QuantityGB <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity_gb is required"})
-		return
-	}
-	order, err := quota.CreatePurchaseOrder(c.Request.Context(), result.Account.GetId(), req.QuantityGB)
-	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrPurchaseNotConfigured):
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quota purchase is not configured"})
-		case errors.Is(err, service.ErrPurchaseQuantityTooLow):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "quantity_gb is below the minimum"})
-		case errors.Is(err, service.ErrPurchaseQuantityTooHigh):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "quantity_gb would exceed the maximum extra quota"})
-		default:
-			logging.Log.Error().Err(err).Msg("create quota purchase order failed")
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create order"})
-		}
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"order_id":    order.GetId(),
-		"amount":      order.GetAmount(),
-		"currency":    order.GetCurrency().GetValue(),
-		"quantity_gb": req.QuantityGB,
-		"quota_mb":    req.QuantityGB * 1024,
-	})
 }
 
 // @Summary Get quota usage

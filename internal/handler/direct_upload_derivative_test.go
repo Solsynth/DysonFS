@@ -32,7 +32,7 @@ import (
 func TestDirectUploadImageGeneratesCompressionDerivative(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	defaultStor := storage.NewLocalBackend(t.TempDir())
 	files := service.NewFileService(&database.DB{DB: db}, defaultStor)
 	tasks := service.NewTaskService(&database.DB{DB: db})
@@ -165,7 +165,7 @@ func TestDirectUploadVideoGeneratesThumbnailDerivative(t *testing.T) {
 	}
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	defaultStor := storage.NewLocalBackend(t.TempDir())
 	files := service.NewFileService(&database.DB{DB: db}, defaultStor)
 	tasks := service.NewTaskService(&database.DB{DB: db})
@@ -267,7 +267,7 @@ func TestDirectUploadVideoGeneratesThumbnailDerivative(t *testing.T) {
 func TestDirectUploadMultipartImageGeneratesCompressionDerivative(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	defaultStor := storage.NewLocalBackend(t.TempDir())
 	files := service.NewFileService(&database.DB{DB: db}, defaultStor)
 	tasks := service.NewTaskService(&database.DB{DB: db})
@@ -371,7 +371,7 @@ func TestDirectUploadMultipartImageGeneratesCompressionDerivative(t *testing.T) 
 func TestDirectUploadClientMediaSkipsSourceAnalysis(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	defaultStor := storage.NewLocalBackend(t.TempDir())
 	files := service.NewFileService(&database.DB{DB: db}, defaultStor)
 	tasks := service.NewTaskService(&database.DB{DB: db})
@@ -496,7 +496,7 @@ func TestDirectUploadClientMediaSkipsSourceAnalysis(t *testing.T) {
 func TestDirectUploadClientImageCompressionSkipsSourceAnalysis(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	stor := storage.NewLocalBackend(t.TempDir())
 	files := service.NewFileService(&database.DB{DB: db}, stor)
 	tasks := service.NewTaskService(&database.DB{DB: db})
@@ -598,7 +598,7 @@ func TestDirectUploadClientImageCompressionSkipsSourceAnalysis(t *testing.T) {
 func TestDirectUploadJpegCompressionDerivative(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	endpoint := startNoAuthMockS3(t, "testbucket")
-	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.QuotaRecord{}, &database.PersistentTask{})
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.PersistentTask{})
 	stor := storage.NewLocalBackend(t.TempDir())
 	files := service.NewFileService(&database.DB{DB: db}, stor)
 	tasks := service.NewTaskService(&database.DB{DB: db})
