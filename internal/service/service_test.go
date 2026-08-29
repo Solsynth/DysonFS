@@ -884,6 +884,48 @@ func TestQuotaUsageCountsBytes(t *testing.T) {
 	}
 }
 
+func TestCheckUploadQuotaCountsWorkspaceFiles(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+	accountID := uuid.New()
+	const mb = int64(1024 * 1024)
+
+	// Personal file: 80 MiB.
+	personalObj := database.NewID()
+	if err := db.Create(&database.FileObject{ID: personalObj, Size: 80 * mb, MimeType: "text/plain", Hash: "h1"}).Error; err != nil {
+		t.Fatalf("create personal object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "personal.txt", AccountID: accountID, ObjectID: &personalObj}).Error; err != nil {
+		t.Fatalf("create personal file: %v", err)
+	}
+
+	// Workspace file: 80 MiB.
+	wsID := database.NewID()
+	wsObj := database.NewID()
+	if err := db.Create(&database.FileObject{ID: wsObj, Size: 80 * mb, MimeType: "text/plain", Hash: "h2"}).Error; err != nil {
+		t.Fatalf("create workspace object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "workspace.txt", AccountID: accountID, WorkspaceID: &wsID, ObjectID: &wsObj}).Error; err != nil {
+		t.Fatalf("create workspace file: %v", err)
+	}
+
+	account := &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 60}, PerkLevel: func() *int32 { v := int32(1); return &v }()}
+	svc.SetLevelingConfig(config.LevelingQuotaConfig{Level1: 512, Level10: 1024, Level60: 5 * 1024, Level120: 10 * 1024})
+
+	// Total quota = 16 GiB = 16384 MiB. Combined usage = 80 + 80 = 160 MiB.
+	// Uploading 16225 MiB should fail (160 + 16225 = 16385 > 16384).
+	if err := svc.CheckUploadQuota(account, 16225*mb, 1); err == nil {
+		t.Fatal("CheckUploadQuota() error = nil, want quota exceeded for combined usage")
+	} else if !errors.Is(err, ErrQuotaExceeded) || !strings.Contains(err.Error(), "used=160MB") {
+		t.Fatalf("CheckUploadQuota() error = %v, want used=160MB (personal+workspace)", err)
+	}
+
+	// Uploading 16224 MiB should succeed (160 + 16224 = 16384 = limit).
+	if err := svc.CheckUploadQuota(account, 16224*mb, 1); err != nil {
+		t.Fatalf("CheckUploadQuota() error = %v, want nil (at limit)", err)
+	}
+}
+
 func TestCheckUploadQuota(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
 	svc := NewQuotaService(&database.DB{DB: db})

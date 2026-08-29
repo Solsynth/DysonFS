@@ -3747,7 +3747,9 @@ func (s *QuotaService) CheckUploadQuota(account *gen.DyAccount, size int64, cost
 	if err != nil {
 		return err
 	}
-	usedMB, err := s.billableUsage(account.GetId())
+	// Count all account files (personal + workspace) since personal files and
+	// workspace files share the same account quota.
+	usedMB, err := s.totalBillableUsage(account.GetId())
 	if err != nil {
 		return err
 	}
@@ -4133,6 +4135,57 @@ func (s *QuotaService) scopedUsageStats(accountID, workspaceID string) (int64, i
 func (s *QuotaService) billableUsage(accountID string) (int64, error) {
 	total, _, _, err := s.usageStats(accountID)
 	return total, err
+}
+
+// totalBillableUsage returns the billable MB for ALL of an account's files
+// (personal + every workspace). This matches how the personal workspace quota
+// counts storage: personal files and workspace files share one account quota.
+func (s *QuotaService) totalBillableUsage(accountID string) (int64, error) {
+	var files []database.CloudFile
+	if err := s.db.Preload("Object").Where("account_id = ? AND deleted_at IS NULL", accountID).Find(&files).Error; err != nil {
+		return 0, err
+	}
+	if len(files) == 0 {
+		return 0, nil
+	}
+
+	poolIDs := make([]string, 0)
+	for _, f := range files {
+		if f.PoolID != nil && strings.TrimSpace(*f.PoolID) != "" {
+			poolIDs = append(poolIDs, strings.TrimSpace(*f.PoolID))
+		}
+	}
+	poolMultipliers := map[string]float64{}
+	if len(poolIDs) > 0 {
+		var pools []database.FilePool
+		if err := s.db.Where("id IN ?", poolIDs).Find(&pools).Error; err != nil {
+			return 0, err
+		}
+		for _, pool := range pools {
+			multiplier := 1.0
+			var billing PoolBillingConfig
+			_ = json.Unmarshal(pool.BillingConfig, &billing)
+			if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
+				multiplier = *billing.CostMultiplier
+			}
+			poolMultipliers[pool.ID] = multiplier
+		}
+	}
+
+	var total int64
+	for _, f := range files {
+		if f.Object == nil || f.Object.Size <= 0 {
+			continue
+		}
+		multiplier := 1.0
+		if f.PoolID != nil {
+			if cached, ok := poolMultipliers[strings.TrimSpace(*f.PoolID)]; ok {
+				multiplier = cached
+			}
+		}
+		total += int64(math.Ceil(float64(f.Object.Size) * multiplier / float64(quotaUnitBytes)))
+	}
+	return total, nil
 }
 
 func (s *QuotaService) GetPoolUsage(accountID uuid.UUID, poolID string) (map[string]any, error) {

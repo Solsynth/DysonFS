@@ -52,6 +52,23 @@ GET /api/billing/workspaces/WORKSPACE_ID/quota
 The response contains `used_bytes`, `total_bytes`, `remaining_bytes`, and
 `total_file_count`.
 
+### Shared account quota
+
+Personal files and workspace files share the same account quota. When checking
+whether an upload fits:
+
+- **Personal file upload** (`workspace_id` absent): counts ALL of the account's
+  files (personal + every workspace) against the account quota (leveling + perk
+  + extra from Valve). This prevents workspace files from silently eating the
+  shared quota and then allowing personal uploads that exceed it.
+- **Workspace upload**: counts only that workspace's files against the plan's
+  `max_storage_bytes`. For individual workspaces the limit IS the account quota,
+  and the charged pool is personal + workspace files. For organization
+  workspaces, only that workspace's files are charged.
+- **Personal workspace display**: the quota gauge shows combined personal +
+  workspace file usage against the account quota so the user sees true shared
+  consumption.
+
 ## WebDAV
 
 WebDAV uses the personal namespace by default. Select a workspace by adding
