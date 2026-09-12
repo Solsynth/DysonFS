@@ -280,7 +280,9 @@ Transform query params (all optional):
 
 - `width`, `height`: target box; scale-down by default, `contain`/`outside`/
   `fill` may enlarge
-- `fit`: `cover` (default) | `contain` | `fill` | `inside` | `outside`
+- `fit`: `cover` (default; crop to fill) | `contain` (fit, may enlarge) |
+  `fill` (stretch) | `inside` (fit, never enlarge; preserves aspect ratio) |
+  `outside` (cover, may enlarge)
 - `gravity`: `center` (default) | `top` | `bottom` | `left` | `right` |
   `entropy` — crop anchor for `cover`
 - `format`: `jpeg` (or `jpg`) | `png` | `webp` | `avif`; defaults to the
@@ -320,13 +322,13 @@ kind = "disk" # none | memory | disk | s3
 dir = "/var/lib/dyson-drive/media-cache" # required when kind = "disk"
 # poolId = "01CACHEPOOL0000000000000000000" # file pool id, required when kind = "s3"
 maxBytes = 10737418240
-ttl = "720h"
+ttl = "0s" # 0 = never expire by time; eviction is budget-driven (maxBytes)
 
 [media.presets.thumb]
 width = 256
 height = 256
-fit = "cover"
-format = "webp"
+fit = "inside" # scale down to fit the box, preserving aspect ratio; never crops
+format = "jpeg"
 quality = 75
 ```
 
@@ -334,11 +336,15 @@ quality = 75
   headers still apply
 - `"memory"` keeps an in-process LRU bounded by `media.cache.maxBytes`; tune
   `maxBytes` to available RAM
-- `"disk"` keeps an LRU on disk at `media.cache.dir` (idle TTL + byte budget)
+- `"disk"` keeps an LRU on disk at `media.cache.dir`
 - `"s3"` writes derivatives to a dedicated file pool's bucket: configure a
   hidden, non-default pool in `[[pools]]` and reference its id via
   `media.cache.poolId`. Keys live under the `media-cache/` prefix; there is no
   eviction (use bucket lifecycle rules)
+- cache entries never expire by time (`media.cache.ttl = "0s"`, the default);
+  eviction is budget-driven — the disk/memory sweeps drop the
+  least-recently-used entries once `media.cache.maxBytes` is exceeded. Set
+  `ttl` to a positive duration to also expire entries idle past that window
 
 Example:
 

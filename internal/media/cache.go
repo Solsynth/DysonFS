@@ -165,11 +165,15 @@ func (c *diskCache) sweep(ctx context.Context) {
 	}
 }
 
-// sweepOnce evicts entries idle beyond the TTL, then, if the cache still
-// exceeds the byte budget, the oldest entries (by last access) until it fits.
+// sweepOnce evicts entries idle beyond the TTL (when ttl > 0), then, if the
+// cache still exceeds the byte budget, the oldest entries (by last access)
+// until it fits. With ttl = 0 there is no time-based expiry; cleanup is purely
+// budget-driven.
 func (c *diskCache) sweepOnce() {
-	now := time.Now()
-	cutoff := now.Add(-c.ttl)
+	var cutoff time.Time
+	if c.ttl > 0 {
+		cutoff = time.Now().Add(-c.ttl)
+	}
 	type entry struct {
 		path string
 		mod  time.Time
@@ -187,7 +191,7 @@ func (c *diskCache) sweepOnce() {
 		if err != nil {
 			return nil
 		}
-		if info.ModTime().Before(cutoff) {
+		if c.ttl > 0 && info.ModTime().Before(cutoff) {
 			if os.Remove(path) == nil {
 				deleted++
 			}

@@ -289,7 +289,7 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("media.cacheControlMaxAge", time.Hour)
 	viper.SetDefault("media.cache.kind", "none")
 	viper.SetDefault("media.cache.maxBytes", 10*1024*1024*1024)
-	viper.SetDefault("media.cache.ttl", 720*time.Hour)
+	viper.SetDefault("media.cache.ttl", time.Duration(0)) // 0 = never expire by time; eviction is budget-driven
 	viper.SetDefault("s3.secure", true)
 	viper.SetDefault("storageNode.port", "9000")
 	viper.SetDefault("storageNode.machineId", "")

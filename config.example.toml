@@ -80,7 +80,7 @@ kind = "disk" # none | memory | disk | s3
 dir = "/var/lib/dyson-drive/media-cache" # required when kind = "disk"
 # poolId = "01CACHEPOOL0000000000000000000" # file pool id, required when kind = "s3"
 maxBytes = 10737418240
-ttl = "720h"
+ttl = "0s" # 0 = never expire by time; eviction is budget-driven (maxBytes)
 
 # Dedicated object-storage cache pool for kind = "s3". Reference it from
 # [media.cache] poolId; keep it hidden and non-default.
@@ -98,15 +98,14 @@ ttl = "720h"
 [media.presets.thumb]
 width = 256
 height = 256
-fit = "cover"
-format = "webp"
+fit = "inside" # scale down to fit the box, preserving aspect ratio; never crops
+format = "jpeg"
 quality = 75
 
 [media.presets.avatar]
 width = 128
 height = 128
-fit = "cover"
-gravity = "center"
+fit = "inside"
 format = "webp"
 
 [[pools]]
