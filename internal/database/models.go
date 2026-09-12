@@ -56,9 +56,9 @@ type CloudFile struct {
 	Name             string           `json:"name"`
 	Description      *string          `json:"description"`
 	AccountID        uuid.UUID        `gorm:"index:idx_cloud_files_unindexed_listing,priority:1;index:idx_cloud_files_root_listing,priority:1;index:idx_cloud_files_account_usage,priority:1,where:deleted_at IS NULL" json:"account_id"`
-	WorkspaceID      *string          `gorm:"size:36;index;index:idx_cloud_files_workspace_usage,priority:1,where:deleted_at IS NULL" json:"workspace_id,omitempty"`
-	PoolID           *string          `gorm:"size:36;index:idx_cloud_files_account_usage,priority:3,where:deleted_at IS NULL" json:"pool_id"`
-	ObjectID         *string          `gorm:"size:36;index:idx_cloud_files_workspace_usage,priority:2,where:deleted_at IS NULL;index:idx_cloud_files_account_usage,priority:2,where:deleted_at IS NULL" json:"object_id"`
+	WorkspaceID      *string          `gorm:"size:36;index;index:idx_cloud_files_workspace_usage,priority:1,where:deleted_at IS NULL;index:idx_cloud_files_account_usage,priority:2,where:deleted_at IS NULL" json:"workspace_id,omitempty"`
+	PoolID           *string          `gorm:"size:36;index:idx_cloud_files_account_usage,priority:4,where:deleted_at IS NULL" json:"pool_id"`
+	ObjectID         *string          `gorm:"size:36;index:idx_cloud_files_workspace_usage,priority:2,where:deleted_at IS NULL;index:idx_cloud_files_account_usage,priority:3,where:deleted_at IS NULL" json:"object_id"`
 	ParentID         *string          `gorm:"size:36;index:idx_cloud_files_parent_deleted,priority:1;index:idx_cloud_files_parent_active,where:deleted_at IS NULL;index:idx_cloud_files_unindexed_listing,priority:3;index:idx_cloud_files_root_listing,priority:3" json:"parent_id"`
 	Indexed          bool             `gorm:"index:idx_cloud_files_unindexed_listing,priority:2;index:idx_cloud_files_root_listing,priority:2" json:"indexed"`
 	IsFolder         bool             `json:"is_folder"`
