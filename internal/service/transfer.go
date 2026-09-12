@@ -92,6 +92,11 @@ func NewStagedFileInfo(path, contentType string, size int64, hash string) *Stage
 	return &StagedFileInfo{Size: size, ContentType: detectSourceMime(path, contentType), Hash: hash}
 }
 
+// uploadKeyPrefix namespaces all user-file objects so a bucket shared with
+// other internal data (e.g. the media transform cache under media-cache/)
+// never collides, and so cache cleanup can never touch user files.
+const uploadKeyPrefix = "uploads/"
+
 func (s *FileService) UploadStagedFile(ctx context.Context, path string, info *StagedFileInfo) (string, error) {
 	if info == nil {
 		return "", fmt.Errorf("staged file info is required")
@@ -102,7 +107,7 @@ func (s *FileService) UploadStagedFile(ctx context.Context, path string, info *S
 	}
 	defer stage.Close()
 
-	storageKey := database.NewID()
+	storageKey := uploadKeyPrefix + database.NewID()
 	if err := s.Storage().Put(ctx, storageKey, stage, info.Size, info.ContentType); err != nil {
 		return "", fmt.Errorf("upload to storage: %w", err)
 	}
@@ -112,6 +117,13 @@ func (s *FileService) UploadStagedFile(ctx context.Context, path string, info *S
 func (s *FileService) CreateUploadedObject(storageKey string, info *StagedFileInfo, analysis *SourceAnalysis) (*database.FileObject, error) {
 	if info == nil {
 		return nil, fmt.Errorf("staged file info is required")
+	}
+	// The object id stays a clean id while its storage key carries the
+	// uploads/ namespace prefix. Unprefixed keys (legacy callers/tests) pass
+	// through unchanged.
+	objectID := strings.TrimPrefix(storageKey, uploadKeyPrefix)
+	if strings.TrimSpace(objectID) == "" {
+		objectID = database.NewID()
 	}
 	meta := datatypes.JSON([]byte(`{}`))
 	if analysis != nil {
@@ -123,7 +135,7 @@ func (s *FileService) CreateUploadedObject(storageKey string, info *StagedFileIn
 	}
 	hasThumbnail, hasCompression := derivedCompatibilityFlags(info.ContentType)
 	object := &database.FileObject{
-		ID:             storageKey,
+		ID:             objectID,
 		Size:           info.Size,
 		MimeType:       info.ContentType,
 		Hash:           info.Hash,

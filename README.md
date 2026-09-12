@@ -338,15 +338,25 @@ quality = 75
 - `"memory"` keeps an in-process LRU bounded by `media.cache.maxBytes`; tune
   `maxBytes` to available RAM
 - `"disk"` keeps an LRU on disk at `media.cache.dir`
-- `"s3"` stores derivatives in a dedicated file pool's bucket and serves them
-  via **presigned-URL 307 redirects** — derivative bytes never pass through
-  DysonFS. Configure a hidden, non-default pool in `[[pools]]` and reference
-  its id via `media.cache.poolId`; the pool's storage credentials sign the
-  URLs. Keys live under the `media-cache/` prefix; there is no eviction (use
-  bucket lifecycle rules)
+- `"s3"` stores derivatives in a file pool's bucket under the `media-cache/`
+  prefix and serves them via **presigned-URL 307 redirects** — derivative bytes
+  never pass through DysonFS. Reference the pool's id via `media.cache.poolId`;
+  the pool's storage credentials sign the URLs
+
+Bucket namespaces (safe to share one bucket between uploads and the cache):
+
+- user files (sources + thumbnails/compressed variants) live under `uploads/`
+- media transform derivatives live under `media-cache/`
+- cache code never reads or writes outside `media-cache/`; the disk sweeper is
+  scoped to `media.cache.dir`, and the s3 tier has no code eviction — if you
+  add bucket lifecycle rules, **scope them to the `media-cache/` prefix only**
+  so source files are never deleted
+- the cache pool should be `hidden = true` and **must not be `default = true`**:
+  uploads without an explicit `pool_id` route to the default pool, and
+  server-staged uploads write to the default pool's backend regardless of
+  `pool_id` metadata
 - hidden pools are internal-only: never listed to users and never usable as an
-  upload destination (`CanUsePool` refuses them); the media cache is the
-  intended use. Keep the default pool `hidden = false`
+  upload destination (refused by the upload flows and `CanUsePool`)
 - cache entries never expire by time (`media.cache.ttl = "0s"`, the default);
   eviction is budget-driven — the disk/memory sweeps drop the
   least-recently-used entries once `media.cache.maxBytes` is exceeded. Set

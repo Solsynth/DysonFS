@@ -84,7 +84,11 @@ ttl = "0s" # 0 = never expire by time; eviction is budget-driven (maxBytes)
 
 # Dedicated object-storage cache pool for kind = "s3". Reference it from
 # [media.cache] poolId. Hidden pools are internal-only: never listed, never a
-# user upload destination. Presigned URLs require real credentials.
+# user upload destination. This pool must NOT be the default pool — uploads
+# without an explicit pool_id route to the default pool, and server-staged
+# uploads always write to the default pool's backend. Presigned URLs require
+# real credentials. If uploads and cache share one bucket, the uploads/ and
+# media-cache/ prefixes keep them apart; scope lifecycle rules to media-cache/.
 # [[pools]]
 # id = "01CACHEPOOL0000000000000000000"
 # name = "media-cache"

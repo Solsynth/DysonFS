@@ -2222,6 +2222,41 @@ func TestCreateUploadedObjectFlagsFollowMediaType(t *testing.T) {
 	}
 }
 
+func TestUploadStagedFileUsesUploadsPrefix(t *testing.T) {
+	db := openTestDB(t, &database.FileObject{})
+	tmp := t.TempDir()
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+
+	stagedPath := filepath.Join(tmp, "staged.bin")
+	if err := os.WriteFile(stagedPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write staged file: %v", err)
+	}
+	info := &StagedFileInfo{Size: 5, ContentType: "text/plain", Hash: "hash"}
+	key, err := svc.UploadStagedFile(context.Background(), stagedPath, info)
+	if err != nil {
+		t.Fatalf("UploadStagedFile() error = %v", err)
+	}
+	if !strings.HasPrefix(key, "uploads/") {
+		t.Fatalf("storage key = %q, want uploads/ prefix", key)
+	}
+	if _, err := stor.Stat(context.Background(), key); err != nil {
+		t.Fatalf("object missing at %q: %v", key, err)
+	}
+
+	// The object id stays clean while the storage key carries the prefix.
+	object, err := svc.CreateUploadedObject(key, info, nil)
+	if err != nil {
+		t.Fatalf("CreateUploadedObject() error = %v", err)
+	}
+	if strings.Contains(object.ID, "/") || object.ID == key {
+		t.Fatalf("object id = %q, want a clean id distinct from key %q", object.ID, key)
+	}
+	if object.StorageKey == nil || *object.StorageKey != key {
+		t.Fatalf("object storage key = %v, want %q", object.StorageKey, key)
+	}
+}
+
 func TestCheckUploadQuotaEnrichesAccountOnce(t *testing.T) {
 	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
 	svc := NewQuotaService(&database.DB{DB: db})
@@ -2280,7 +2315,7 @@ func TestListPoolsReturnsAvailablePools(t *testing.T) {
 	publicOtherID := database.NewID() // other-owned, public
 	sharedOtherID := database.NewID() // other-owned, granted to owner
 	plainOtherID := database.NewID()  // other-owned, private, not hidden
-	systemID := database.NewID() // config pool: zero account, hidden (internal-only)
+	systemID := database.NewID()      // config pool: zero account, hidden (internal-only)
 
 	for _, pool := range []database.FilePool{
 		{ID: hiddenOwnedID, Name: "hidden-owned", AccountID: ownerID, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`)), IsHidden: true},

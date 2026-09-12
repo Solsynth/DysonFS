@@ -2763,7 +2763,7 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 		}
 		uploadDuration := time.Since(uploadStartedAt)
 		analysisDuration := time.Since(analysisStartedAt)
-		storageKey := &object.ID
+		storageKey := object.StorageKey
 		if overwriteTarget != nil {
 			createdFile, err = files.OverwriteFile(overwriteTarget.ID, object.ID, storageKey)
 		} else {
@@ -3012,7 +3012,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 		}
 		uploadDuration := time.Since(uploadStartedAt)
 		analysisDuration := time.Since(analysisStartedAt)
-		storageKey := &object.ID
+		storageKey := object.StorageKey
 		if task.OverwriteID != nil && strings.TrimSpace(*task.OverwriteID) != "" {
 			created, err = files.OverwriteFile(strings.TrimSpace(*task.OverwriteID), object.ID, storageKey)
 		} else {

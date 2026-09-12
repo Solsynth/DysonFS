@@ -524,7 +524,7 @@ func (s *fileServiceServer) persistStagedUpload(ctx context.Context, options *no
 			_ = s.files.Storage().Delete(context.Background(), stored.key)
 			return nil, uploadStatus(err)
 		}
-		storageKey := &object.ID
+		storageKey := object.StorageKey
 		if options.overwriteID != nil {
 			created, err = s.files.OverwriteFile(*options.overwriteID, object.ID, storageKey)
 		} else {

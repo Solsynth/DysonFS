@@ -261,7 +261,7 @@ func (b *MasterBackend) PutObject(ctx context.Context, bucket, key string, reade
 		return err
 	}
 
-	storageKey := &object.ID
+	storageKey := object.StorageKey
 	fileName := key
 	if fileName == "" {
 		fileName = "upload-" + object.ID

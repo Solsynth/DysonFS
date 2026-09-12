@@ -668,5 +668,5 @@ func (w *Worker) upsertChild(parent *database.CloudFile, evt eventbus.FileUpload
 }
 
 func storageKey(parentID, suffix string) string {
-	return parentID + suffix
+	return "uploads/" + parentID + suffix
 }

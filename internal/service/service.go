@@ -135,6 +135,9 @@ func (s *FileService) DirectUploadBackend(poolID *string) (storage.DirectUploadB
 	if err != nil {
 		return nil, err
 	}
+	if pool.IsHidden {
+		return nil, fmt.Errorf("hidden pools are internal-only; not usable for user uploads")
+	}
 	if !pool.StorageConfig.EnableSigned {
 		return nil, fmt.Errorf("storage pool does not allow direct uploads; use proxied upload")
 	}
@@ -2933,6 +2936,11 @@ func (s *FileService) CreateWorkspaceUploadedFile(accountID uuid.UUID, workspace
 		return nil, err
 	}
 	resolvedPoolID := s.resolvedPoolID(poolID)
+	if resolvedPoolID != nil {
+		if pool, err := s.GetPool(*resolvedPoolID); err == nil && pool.IsHidden {
+			return nil, fmt.Errorf("hidden pools are internal-only; not usable for user uploads")
+		}
+	}
 	finalIndexed := indexed
 	if !finalIndexed && parentID != nil && strings.TrimSpace(*parentID) != "" {
 		var parent database.CloudFile
@@ -4080,52 +4088,88 @@ func (s *QuotaService) usageStats(accountID string) (int64, int64, int64, error)
 	return s.scopedUsageStats(accountID, "")
 }
 
-func (s *QuotaService) scopedUsageStats(accountID, workspaceID string) (int64, int64, int64, error) {
+// usageRow is one billable file's (storage pool, size) pair.
+type usageRow struct {
+	PoolID *string `gorm:"column:pool_id"`
+	Size   int64   `gorm:"column:size"`
+}
+
+// scanUsageRows loads only the (pool_id, size) pairs a quota calculation needs.
+// The object is joined for its size rather than preloaded, so a calculation
+// never materializes whole CloudFile rows (and their JSONB metadata) nor sends
+// one giant `file_objects.id IN (...)` statement back to the database.
+//
+// workspaceID narrows the scope: nil bills personal files plus every
+// workspace, an empty string bills personal files only, and any other value
+// bills that single workspace. poolID narrows to one storage pool when set.
+func (s *QuotaService) scanUsageRows(accountID string, workspaceID *string, poolID *string) ([]usageRow, error) {
 	query := s.db.Model(&database.CloudFile{}).
 		Select("cloud_files.pool_id, file_objects.size").
 		Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
 		Where("cloud_files.account_id = ? AND cloud_files.deleted_at IS NULL", accountID)
-	if workspaceID == "" {
-		query = query.Where("cloud_files.workspace_id IS NULL")
-	} else {
-		query = query.Where("cloud_files.workspace_id = ?", workspaceID)
+	if workspaceID != nil {
+		if *workspaceID == "" {
+			query = query.Where("cloud_files.workspace_id IS NULL")
+		} else {
+			query = query.Where("cloud_files.workspace_id = ?", *workspaceID)
+		}
+	}
+	if poolID != nil {
+		query = query.Where("cloud_files.pool_id = ?", *poolID)
 	}
 
-	type usageRow struct {
-		PoolID *string `gorm:"column:pool_id"`
-		Size   int64   `gorm:"column:size"`
-	}
 	var rows []usageRow
 	if err := query.Scan(&rows).Error; err != nil {
-		return 0, 0, 0, err
+		return nil, err
 	}
+	return rows, nil
+}
 
+// poolUsageMultipliers resolves the billing cost multiplier of every pool the
+// rows reference, defaulting to 1 for unset or unknown pools.
+func (s *QuotaService) poolUsageMultipliers(rows []usageRow) (map[string]float64, error) {
 	poolIDs := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
-		if row.PoolID != nil && strings.TrimSpace(*row.PoolID) != "" {
-			poolIDs = append(poolIDs, strings.TrimSpace(*row.PoolID))
+		if row.PoolID == nil {
+			continue
 		}
-	}
-	poolMultipliers := map[string]float64{}
-	if len(poolIDs) > 0 {
-		var pools []database.FilePool
-		if err := s.db.Where("id IN ?", poolIDs).Find(&pools).Error; err != nil {
-			return 0, 0, 0, err
+		id := strings.TrimSpace(*row.PoolID)
+		if id == "" {
+			continue
 		}
-		for _, pool := range pools {
-			multiplier := 1.0
-			var billing PoolBillingConfig
-			_ = json.Unmarshal(pool.BillingConfig, &billing)
-			if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
-				multiplier = *billing.CostMultiplier
-			}
-			poolMultipliers[pool.ID] = multiplier
+		if _, ok := seen[id]; ok {
+			continue
 		}
+		seen[id] = struct{}{}
+		poolIDs = append(poolIDs, id)
 	}
 
-	var total int64
-	var fileCount int64
-	var usageBytes int64
+	multipliers := make(map[string]float64, len(poolIDs))
+	if len(poolIDs) == 0 {
+		return multipliers, nil
+	}
+
+	var pools []database.FilePool
+	if err := s.db.Where("id IN ?", poolIDs).Find(&pools).Error; err != nil {
+		return nil, err
+	}
+	for _, pool := range pools {
+		multiplier := 1.0
+		var billing PoolBillingConfig
+		_ = json.Unmarshal(pool.BillingConfig, &billing)
+		if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
+			multiplier = *billing.CostMultiplier
+		}
+		multipliers[pool.ID] = multiplier
+	}
+	return multipliers, nil
+}
+
+// sumBillableUsage applies each file's pool cost multiplier and rounds it up
+// to the quota unit individually, matching how a single upload is billed.
+func sumBillableUsage(rows []usageRow, multipliers map[string]float64) (int64, int64, int64) {
+	var total, fileCount, usageBytes int64
 	for _, row := range rows {
 		if row.Size <= 0 {
 			continue
@@ -4134,12 +4178,25 @@ func (s *QuotaService) scopedUsageStats(accountID, workspaceID string) (int64, i
 		usageBytes += row.Size
 		multiplier := 1.0
 		if row.PoolID != nil {
-			if cached, ok := poolMultipliers[strings.TrimSpace(*row.PoolID)]; ok {
-				multiplier = cached
+			if resolved, ok := multipliers[strings.TrimSpace(*row.PoolID)]; ok {
+				multiplier = resolved
 			}
 		}
 		total += int64(math.Ceil(float64(row.Size) * multiplier / float64(quotaUnitBytes)))
 	}
+	return total, fileCount, usageBytes
+}
+
+func (s *QuotaService) scopedUsageStats(accountID, workspaceID string) (int64, int64, int64, error) {
+	rows, err := s.scanUsageRows(accountID, &workspaceID, nil)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	multipliers, err := s.poolUsageMultipliers(rows)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	total, fileCount, usageBytes := sumBillableUsage(rows, multipliers)
 	return total, fileCount, usageBytes, nil
 }
 
@@ -4152,50 +4209,15 @@ func (s *QuotaService) billableUsage(accountID string) (int64, error) {
 // (personal + every workspace). This matches how the personal workspace quota
 // counts storage: personal files and workspace files share one account quota.
 func (s *QuotaService) totalBillableUsage(accountID string) (int64, error) {
-	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ? AND deleted_at IS NULL", accountID).Find(&files).Error; err != nil {
+	rows, err := s.scanUsageRows(accountID, nil, nil)
+	if err != nil {
 		return 0, err
 	}
-	if len(files) == 0 {
-		return 0, nil
+	multipliers, err := s.poolUsageMultipliers(rows)
+	if err != nil {
+		return 0, err
 	}
-
-	poolIDs := make([]string, 0)
-	for _, f := range files {
-		if f.PoolID != nil && strings.TrimSpace(*f.PoolID) != "" {
-			poolIDs = append(poolIDs, strings.TrimSpace(*f.PoolID))
-		}
-	}
-	poolMultipliers := map[string]float64{}
-	if len(poolIDs) > 0 {
-		var pools []database.FilePool
-		if err := s.db.Where("id IN ?", poolIDs).Find(&pools).Error; err != nil {
-			return 0, err
-		}
-		for _, pool := range pools {
-			multiplier := 1.0
-			var billing PoolBillingConfig
-			_ = json.Unmarshal(pool.BillingConfig, &billing)
-			if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
-				multiplier = *billing.CostMultiplier
-			}
-			poolMultipliers[pool.ID] = multiplier
-		}
-	}
-
-	var total int64
-	for _, f := range files {
-		if f.Object == nil || f.Object.Size <= 0 {
-			continue
-		}
-		multiplier := 1.0
-		if f.PoolID != nil {
-			if cached, ok := poolMultipliers[strings.TrimSpace(*f.PoolID)]; ok {
-				multiplier = cached
-			}
-		}
-		total += int64(math.Ceil(float64(f.Object.Size) * multiplier / float64(quotaUnitBytes)))
-	}
+	total, _, _ := sumBillableUsage(rows, multipliers)
 	return total, nil
 }
 
@@ -4208,26 +4230,15 @@ func (s *QuotaService) GetPoolUsage(accountID uuid.UUID, poolID string) (map[str
 }
 
 func (s *QuotaService) billableUsageForPool(accountID uuid.UUID, poolID string) (int64, error) {
-	var files []database.CloudFile
-	if err := s.db.Preload("Object").Where("account_id = ? AND pool_id = ? AND deleted_at IS NULL", accountID, poolID).Find(&files).Error; err != nil {
+	rows, err := s.scanUsageRows(accountID.String(), nil, &poolID)
+	if err != nil {
 		return 0, err
 	}
-	var multiplier float64 = 1
-	var pool database.FilePool
-	if err := s.db.First(&pool, "id = ?", poolID).Error; err == nil {
-		var billing PoolBillingConfig
-		_ = json.Unmarshal(pool.BillingConfig, &billing)
-		if billing.CostMultiplier != nil && *billing.CostMultiplier > 0 {
-			multiplier = *billing.CostMultiplier
-		}
+	multipliers, err := s.poolUsageMultipliers(rows)
+	if err != nil {
+		return 0, err
 	}
-	var total int64
-	for _, file := range files {
-		if file.Object == nil || file.Object.Size <= 0 {
-			continue
-		}
-		total += int64(math.Ceil(float64(file.Object.Size) * multiplier / float64(quotaUnitBytes)))
-	}
+	total, _, _ := sumBillableUsage(rows, multipliers)
 	return total, nil
 }
 

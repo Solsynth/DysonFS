@@ -224,10 +224,12 @@ func (c *diskCache) sweepOnce() {
 	}
 }
 
-// s3Cache stores derivatives in object storage under a fixed prefix in a
-// dedicated file pool's bucket (media.cache.poolId). It has no eviction: the
-// operator manages bucket lifecycle rules. The media-cache/ prefix keeps the
-// cache keys distinct from any user data in the same bucket.
+// s3Cache stores derivatives in a dedicated file pool's bucket
+// (media.cache.poolId) under the media-cache/ prefix. The prefix keeps the
+// cache namespaced so cache and user files (uploads/) can share one bucket
+// without colliding, and so cache eviction can be scoped to media-cache/* only.
+// It has no eviction in code: the operator manages bucket lifecycle rules and
+// must scope them to the media-cache/ prefix.
 type s3Cache struct {
 	backend  storage.Backend
 	prefix   string
