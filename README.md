@@ -269,6 +269,79 @@ WOPI endpoints:
 - `POST /wopi/files/:id/contents`
 - `POST /wopi/files/:id`
 
+### Media transforms
+
+The content routes (`GET /api/files/:id` and `GET /api/files/:id/open`) can
+serve on-the-fly image derivatives instead of a storage redirect. Enable with
+the `[media]` config section; without it, transform query parameters are
+ignored and the routes keep their redirect behavior.
+
+Transform query params (all optional):
+
+- `width`, `height`: target box; scale-down by default, `contain`/`outside`/
+  `fill` may enlarge
+- `fit`: `cover` (default) | `contain` | `fill` | `inside` | `outside`
+- `gravity`: `center` (default) | `top` | `bottom` | `left` | `right` |
+  `entropy` — crop anchor for `cover`
+- `format`: `jpeg` (or `jpg`) | `png` | `webp` | `avif`; defaults to the
+  source's own format (fallback `webp`)
+- `quality`: within `qualityMin..qualityMax`; defaults to `defaultQuality`
+  (ignored for PNG)
+- `preset`: named preset from `[media.presets.*]`; explicit query values
+  override preset fields
+
+Behavior:
+
+- images only: non-image sources return `415`
+- sources above `maxSourceBytes` or `maxPixels` return `413`
+- animated (multi-page) sources return `415`
+- when the requested size exceeds the selected source and
+  `escalateToOriginal = true`, the parent original is used instead (once)
+- output is streamed with `ETag`/`Last-Modified`/`Range`/`304` support and
+  `Cache-Control: public`
+- the compressed derivative (`system.compression.low`) is the transform source
+  by default for images; `?original=1` selects the original
+
+Config:
+
+```toml
+[media]
+enable = true
+maxSourceBytes = 10485760
+maxWidth = 4096
+maxHeight = 4096
+qualityMin = 40
+qualityMax = 90
+defaultQuality = 80
+allowedFormats = ["jpeg", "png", "webp", "avif"]
+
+[media.cache]
+kind = "local" # none | local | storage
+dir = "/var/lib/dyson-drive/media-cache"
+maxBytes = 10737418240
+ttl = "720h"
+
+[media.presets.thumb]
+width = 256
+height = 256
+fit = "cover"
+format = "webp"
+quality = 75
+```
+
+- `media.cache.kind = "none"` (default) disables server-side caching; HTTP
+  headers still apply
+- `"local"` keeps an LRU on disk at `media.cache.dir` (idle TTL + byte budget)
+- `"storage"` writes derivatives to the default pool backend under
+  `media-cache/` (no eviction; use bucket lifecycle rules)
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  'http://localhost:8080/api/files/<ID>?width=200&format=png' -o thumb.png
+```
+
 ### Quota And Billing
 
 Quota values are reported in MB.

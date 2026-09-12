@@ -15,6 +15,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/grpcsvc"
 	"src.solsynth.dev/sosys/filesystem/internal/handler"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
+	"src.solsynth.dev/sosys/filesystem/internal/media"
 	"src.solsynth.dev/sosys/filesystem/internal/s3server"
 	"src.solsynth.dev/sosys/filesystem/internal/server"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
@@ -22,6 +23,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/worker"
 	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
 
+	"github.com/davidbyttow/govips/v2/vips"
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
@@ -40,6 +42,7 @@ type App struct {
 	redis          *redis.Client
 	stor           storage.Backend
 	files          *service.FileService
+	media          *media.Service
 	wopi           *service.WOPIService
 	tasks          *service.TaskService
 	quota          *service.QuotaService
@@ -142,6 +145,15 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	}
 	app.stor = backend
 	app.files.SetStorage(backend)
+	if cfg.Media.Enable {
+		vips.Startup(nil) // idempotent; configures libvips once, before any worker use
+		med, err := media.New(cfg.Media, app.stor)
+		if err != nil {
+			return nil, fmt.Errorf("init media: %w", err)
+		}
+		app.files.SetMedia(med)
+		app.media = med
+	}
 	if natsConn != nil {
 		app.bus = eventbus.New(natsConn)
 	}
@@ -237,6 +249,9 @@ func (a *App) startMaster(ctx context.Context) error {
 	go func() { _ = a.httpSrv.ListenAndServe() }()
 	a.startMasterS3()
 	a.startUploadExpirySweep(ctx)
+	if a.media != nil {
+		go a.media.Start(ctx)
+	}
 	logging.Log.Info().Str("mode", a.mode).Msg("master started")
 	return nil
 }
@@ -274,6 +289,9 @@ func (a *App) startBundled(ctx context.Context) error {
 	go func() { _ = a.httpSrv.ListenAndServe() }()
 	a.startMasterS3()
 	a.startUploadExpirySweep(ctx)
+	if a.media != nil {
+		go a.media.Start(ctx)
+	}
 	logging.Log.Info().Str("mode", a.mode).Msg("bundled started")
 	return nil
 }

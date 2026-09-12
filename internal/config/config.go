@@ -24,6 +24,7 @@ type Config struct {
 	Files       FileConfig        `mapstructure:"files"`
 	WOPI        WOPIConfig        `mapstructure:"wopi"`
 	WebDAV      WebDAVConfig      `mapstructure:"webdav"`
+	Media       MediaConfig       `mapstructure:"media"`
 	Pools       []PoolConfig      `mapstructure:"pools"`
 	S3          S3Config          `mapstructure:"s3"`
 	MasterS3    MasterS3Config    `mapstructure:"masterS3"`
@@ -125,6 +126,47 @@ type WOPIConfig struct {
 type WebDAVConfig struct {
 	Enabled bool   `mapstructure:"enabled"`
 	Prefix  string `mapstructure:"prefix"`
+}
+
+// MediaConfig configures the on-the-fly media transform proxy on the content
+// routes (/api/files/:id and /api/files/:id/open).
+type MediaConfig struct {
+	Enable             bool                         `mapstructure:"enable"`
+	MaxSourceBytes     int64                        `mapstructure:"maxSourceBytes"`
+	MaxWidth           int                          `mapstructure:"maxWidth"`
+	MaxHeight          int                          `mapstructure:"maxHeight"`
+	MaxPixels          int64                        `mapstructure:"maxPixels"`
+	MaxOutputBytes     int64                        `mapstructure:"maxOutputBytes"`
+	AllowedFormats     []string                     `mapstructure:"allowedFormats"`
+	QualityMin         int                          `mapstructure:"qualityMin"`
+	QualityMax         int                          `mapstructure:"qualityMax"`
+	DefaultQuality     int                          `mapstructure:"defaultQuality"`
+	EscalateToOriginal bool                         `mapstructure:"escalateToOriginal"`
+	MaxConcurrent      int                          `mapstructure:"maxConcurrent"`
+	CacheControlMaxAge time.Duration                `mapstructure:"cacheControlMaxAge"`
+	Cache              MediaCacheConfig             `mapstructure:"cache"`
+	Presets            map[string]MediaPresetConfig `mapstructure:"presets"`
+}
+
+// MediaCacheConfig configures the derivative cache tier for media transforms.
+// Kind is one of "none" (default), "local" (disk LRU) or "storage" (object
+// storage under the media-cache/ prefix; no eviction).
+type MediaCacheConfig struct {
+	Kind     string        `mapstructure:"kind"`
+	Dir      string        `mapstructure:"dir"`
+	MaxBytes int64         `mapstructure:"maxBytes"`
+	TTL      time.Duration `mapstructure:"ttl"`
+}
+
+// MediaPresetConfig is a named transform preset. Zero-value fields fall back
+// to the same defaults as explicit query parameters.
+type MediaPresetConfig struct {
+	Width   int    `mapstructure:"width"`
+	Height  int    `mapstructure:"height"`
+	Fit     string `mapstructure:"fit"`
+	Gravity string `mapstructure:"gravity"`
+	Format  string `mapstructure:"format"`
+	Quality int    `mapstructure:"quality"`
 }
 
 type PoolConfig struct {
@@ -231,6 +273,22 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("wopi.proofCacheTtl", 1*time.Hour)
 	viper.SetDefault("webdav.enabled", false)
 	viper.SetDefault("webdav.prefix", "/webdav")
+	viper.SetDefault("media.enable", false)
+	viper.SetDefault("media.maxSourceBytes", 10*1024*1024) // stop for more than 10MB files
+	viper.SetDefault("media.maxWidth", 4096)
+	viper.SetDefault("media.maxHeight", 4096)
+	viper.SetDefault("media.maxPixels", 40_000_000)
+	viper.SetDefault("media.maxOutputBytes", 32*1024*1024)
+	viper.SetDefault("media.allowedFormats", []string{"jpeg", "png", "webp", "avif"})
+	viper.SetDefault("media.qualityMin", 40)
+	viper.SetDefault("media.qualityMax", 90)
+	viper.SetDefault("media.defaultQuality", 80)
+	viper.SetDefault("media.escalateToOriginal", true)
+	viper.SetDefault("media.maxConcurrent", 0) // 0 = runtime.NumCPU()
+	viper.SetDefault("media.cacheControlMaxAge", time.Hour)
+	viper.SetDefault("media.cache.kind", "none")
+	viper.SetDefault("media.cache.maxBytes", 10*1024*1024*1024)
+	viper.SetDefault("media.cache.ttl", 720*time.Hour)
 	viper.SetDefault("s3.secure", true)
 	viper.SetDefault("storageNode.port", "9000")
 	viper.SetDefault("storageNode.machineId", "")

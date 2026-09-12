@@ -28,6 +28,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
+	"src.solsynth.dev/sosys/filesystem/internal/media"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	gen "src.solsynth.dev/sosys/go/proto"
 
@@ -118,6 +119,7 @@ type FileService struct {
 	db                *database.DB
 	stor              storage.Backend
 	cache             sharedcache.CacheService
+	media             *media.Service
 	defaultPoolID     string
 	accessSecret      string
 	permissionChecker PermissionChecker
@@ -157,6 +159,12 @@ func NewFileService(db *database.DB, stor storage.Backend) *FileService {
 func (s *FileService) SetCache(cache sharedcache.CacheService) {
 	s.cache = cache
 }
+
+// SetMedia wires the on-the-fly media transform service (nil to disable).
+func (s *FileService) SetMedia(med *media.Service) { s.media = med }
+
+// Media returns the media transform service, or nil when not configured.
+func (s *FileService) Media() *media.Service { return s.media }
 
 func (s *FileService) DB() *database.DB { return s.db }
 

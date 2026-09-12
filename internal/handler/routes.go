@@ -479,6 +479,13 @@ func bearerToken(header string) string {
 // @Param download query bool false "Download"
 // @Param original query bool false "Prefer original source object"
 // @Param thumbnail query bool false "Prefer thumbnail variant"
+// @Param width query string false "Transform width"
+// @Param height query string false "Transform height"
+// @Param fit query string false "Transform fit: cover|contain|fill|inside|outside"
+// @Param gravity query string false "Transform gravity: center|top|bottom|left|right|entropy"
+// @Param format query string false "Transform format: jpeg|png|webp|avif"
+// @Param quality query string false "Transform quality"
+// @Param preset query string false "Named transform preset"
 // @Success 307
 // @Failure 404 {object} map[string]any
 // @Router /api/files/{id} [get]
@@ -512,6 +519,11 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
+	download := c.Query("download") == "1" || strings.EqualFold(c.Query("download"), "true")
+	if hasTransformParams(c) {
+		serveMediaTransform(c, cfg, files, file, download)
+		return
+	}
 	if file.StorageKey == nil && file.Object != nil && file.Object.StorageKey != nil {
 		file.StorageKey = file.Object.StorageKey
 	}
@@ -519,7 +531,6 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "file storage key missing"})
 		return
 	}
-	download := c.Query("download") == "1" || strings.EqualFold(c.Query("download"), "true")
 	name := file.Name
 	if file.Object != nil && file.Object.MimeType != "" {
 		_ = file.Object.MimeType
@@ -529,7 +540,6 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	_ = cfg
 	c.Redirect(http.StatusTemporaryRedirect, url)
 }
 
