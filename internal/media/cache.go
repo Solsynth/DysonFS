@@ -18,9 +18,11 @@ import (
 
 // cacheStore is the derivative cache tier contract. Implementations must never
 // let read/write errors escape: a cache failure degrades to a fresh render.
+// contentType is the derivative's MIME type; tiers that store opaque bytes
+// (memory/disk) ignore it, the s3 tier stores it as object metadata.
 type cacheStore interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
-	Put(ctx context.Context, key string, data []byte) error
+	Put(ctx context.Context, key string, data []byte, contentType string) error
 }
 
 // noopCache disables server-side caching. It is the default when no cache kind
@@ -28,7 +30,9 @@ type cacheStore interface {
 type noopCache struct{}
 
 func (noopCache) Get(ctx context.Context, key string) ([]byte, bool, error) { return nil, false, nil }
-func (noopCache) Put(ctx context.Context, key string, data []byte) error    { return nil }
+func (noopCache) Put(ctx context.Context, key string, data []byte, contentType string) error {
+	return nil
+}
 
 // memoryCache is an in-process LRU bounded by maxBytes, with optional idle TTL.
 // Eviction is inline: Put evicts least-recently-used entries beyond the byte
@@ -75,7 +79,7 @@ func (c *memoryCache) Get(ctx context.Context, key string) ([]byte, bool, error)
 	return e.data, true, nil
 }
 
-func (c *memoryCache) Put(ctx context.Context, key string, data []byte) error {
+func (c *memoryCache) Put(ctx context.Context, key string, data []byte, contentType string) error {
 	if int64(len(data)) > c.maxBytes {
 		return nil // an entry larger than the whole budget would evict everything
 	}
@@ -139,7 +143,7 @@ func (c *diskCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	return data, true, nil
 }
 
-func (c *diskCache) Put(ctx context.Context, key string, data []byte) error {
+func (c *diskCache) Put(ctx context.Context, key string, data []byte, contentType string) error {
 	path := c.path(key)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -250,6 +254,6 @@ func (c *s3Cache) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	return out, true, nil
 }
 
-func (c *s3Cache) Put(ctx context.Context, key string, data []byte) error {
-	return c.backend.Put(ctx, c.prefix+key, bytes.NewReader(data), int64(len(data)), "application/octet-stream")
+func (c *s3Cache) Put(ctx context.Context, key string, data []byte, contentType string) error {
+	return c.backend.Put(ctx, c.prefix+key, bytes.NewReader(data), int64(len(data)), contentType)
 }

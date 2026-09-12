@@ -2280,7 +2280,7 @@ func TestListPoolsReturnsAvailablePools(t *testing.T) {
 	publicOtherID := database.NewID() // other-owned, public
 	sharedOtherID := database.NewID() // other-owned, granted to owner
 	plainOtherID := database.NewID()  // other-owned, private, not hidden
-	systemID := database.NewID()      // config pool: zero account, hidden (like config.example.toml)
+	systemID := database.NewID() // config pool: zero account, hidden (internal-only)
 
 	for _, pool := range []database.FilePool{
 		{ID: hiddenOwnedID, Name: "hidden-owned", AccountID: ownerID, PolicyConfig: datatypes.JSON([]byte(`{"public_usable":true}`)), IsHidden: true},
@@ -2320,25 +2320,28 @@ func TestListPoolsReturnsAvailablePools(t *testing.T) {
 		}
 	}
 
-	// Owner sees own pools (even hidden), public pools, granted pools, and
-	// the global config pool — but not other users' private pools.
-	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: ownerID.String()}}, hiddenOwnedID, publicOtherID, sharedOtherID, systemID)
+	// Hidden pools are internal-only (e.g. the media transform cache) and never
+	// surface in user-facing listings, even to their owner or as config pools.
+	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: ownerID.String()}}, publicOtherID, sharedOtherID)
 	// Another user sees what they own plus the global pool.
-	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, publicOtherID, sharedOtherID, plainOtherID, systemID)
+	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, publicOtherID, sharedOtherID, plainOtherID)
 	// Anonymous callers only see public pools and the global config pool.
-	wantPools(t, AccessContext{}, publicOtherID, systemID)
+	wantPools(t, AccessContext{}, publicOtherID)
 	// Superusers see the same set as their account — never other users'
-	// private pools; ListAllPools is the full view.
-	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: ownerID.String(), IsSuperuser: true}}, hiddenOwnedID, publicOtherID, sharedOtherID, systemID)
+	// private pools and never hidden pools; ListAllPools is the full view.
+	wantPools(t, AccessContext{Account: &gen.DyAccount{Id: ownerID.String(), IsSuperuser: true}}, publicOtherID, sharedOtherID)
 
-	// The global config pool must also pass the write check used by uploads
-	// and getPool, despite being marked hidden in config.
+	// A hidden config pool must NOT pass the write check used by uploads and
+	// getPool: it is internal-only. Superusers still can use it.
 	systemPool, err := svc.GetPool(systemID)
 	if err != nil {
 		t.Fatalf("GetPool() error = %v", err)
 	}
-	if !svc.CanUsePool(AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, systemPool, "write") {
-		t.Fatal("non-owner cannot use global config pool")
+	if svc.CanUsePool(AccessContext{Account: &gen.DyAccount{Id: otherID.String()}}, systemPool, "write") {
+		t.Fatal("non-superuser can use hidden config pool, want internal-only")
+	}
+	if !svc.CanUsePool(AccessContext{Account: &gen.DyAccount{Id: otherID.String(), IsSuperuser: true}}, systemPool, "write") {
+		t.Fatal("superuser cannot use hidden config pool")
 	}
 
 	all, err := svc.ListAllPools()

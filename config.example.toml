@@ -83,7 +83,8 @@ maxBytes = 10737418240
 ttl = "0s" # 0 = never expire by time; eviction is budget-driven (maxBytes)
 
 # Dedicated object-storage cache pool for kind = "s3". Reference it from
-# [media.cache] poolId; keep it hidden and non-default.
+# [media.cache] poolId. Hidden pools are internal-only: never listed, never a
+# user upload destination. Presigned URLs require real credentials.
 # [[pools]]
 # id = "01CACHEPOOL0000000000000000000"
 # name = "media-cache"
@@ -92,6 +93,8 @@ ttl = "0s" # 0 = never expire by time; eviction is budget-driven (maxBytes)
 # enableSigned = false
 # endpoint = "https://s3.example.com"
 # bucket = "dyson-media-cache"
+# secretId = "CACHE_ACCESS_KEY"
+# secretKey = "CACHE_SECRET_KEY"
 # [pools.billing]
 # [pools.policy]
 
@@ -109,10 +112,10 @@ fit = "inside"
 format = "webp"
 
 [[pools]]
-id = "01SYSTEMPOOLID00000000000000"
+id = "01SYSTEMPOOLID00000000000000000"
 name = "system"
 default = true
-hidden = true
+hidden = false # hidden pools are internal-only (e.g. media cache) and unusable for user uploads
 
 [pools.storage]
 enableSigned = true

@@ -438,8 +438,8 @@ func TestOpenFileTransformCacheS3(t *testing.T) {
 	fileID := seedMediaTestFile(t, db, stor, generateTestJPEG(t), "image/jpeg", "hash-1")
 
 	cfg := &config.Config{Media: mediaTestConfig()}
-	// poolId identifies the dedicated cache pool; the app resolves its backend
-	// (here the test passes the local backend directly).
+	// poolId identifies the dedicated (hidden) cache pool; the app resolves its
+	// backend (here the test passes the local backend directly).
 	cfg.Media.Cache = config.MediaCacheConfig{Kind: "s3", PoolID: "01CACHEPOOL0000000000000000000", MaxBytes: 10 * 1024 * 1024}
 	med, err := media.New(cfg.Media, stor)
 	if err != nil {
@@ -448,20 +448,33 @@ func TestOpenFileTransformCacheS3(t *testing.T) {
 	files.SetMedia(med)
 	r := mediaTestRouter(t, cfg, files, db)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/files/"+fileID+"?width=16&format=jpeg", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
-	}
-	if ct := w.Header().Get("Content-Type"); ct != "image/jpeg" {
-		t.Fatalf("Content-Type = %q, want image/jpeg", ct)
+	// The s3 tier never streams derivative bytes: both a miss (first request,
+	// render + put) and a hit (second request) serve a presigned redirect.
+	var firstETag string
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/files/"+fileID+"?width=16&format=jpeg", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusTemporaryRedirect {
+			t.Fatalf("request %d status = %d, want %d (s3 tier serves presigned redirect), body = %s", i, w.Code, http.StatusTemporaryRedirect, w.Body.String())
+		}
+		etag := strings.Trim(w.Header().Get("ETag"), `"`)
+		if etag == "" {
+			t.Fatalf("request %d: ETag missing", i)
+		}
+		if i == 0 {
+			firstETag = etag
+		} else if etag != firstETag {
+			t.Fatalf("request %d ETag %q differs from first %q", i, etag, firstETag)
+		}
+		loc := w.Header().Get("Location")
+		if !strings.Contains(loc, "media-cache/"+etag) {
+			t.Fatalf("request %d location = %q, want it to reference media-cache/%s", i, loc, etag)
+		}
 	}
 
-	// The derivative must be stored under the media-cache/ prefix in the
-	// default pool backend.
-	cacheKey := strings.Trim(w.Header().Get("ETag"), `"`)
-	cachePath := filepath.Join(base, "media-cache", cacheKey)
+	// The derivative must exist in the cache bucket under the media-cache/ prefix.
+	cachePath := filepath.Join(base, "media-cache", firstETag)
 	if _, err := os.Stat(cachePath); err != nil {
 		t.Fatalf("storage cache object missing at %s: %v", cachePath, err)
 	}

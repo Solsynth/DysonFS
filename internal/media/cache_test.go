@@ -10,7 +10,7 @@ import (
 func TestMediaMemoryCacheGetPut(t *testing.T) {
 	c := newMemoryCache(1024, 0)
 	ctx := context.Background()
-	if err := c.Put(ctx, "a", []byte("alpha")); err != nil {
+	if err := c.Put(ctx, "a", []byte("alpha"), "image/jpeg"); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
 	data, ok, err := c.Get(ctx, "a")
@@ -25,8 +25,8 @@ func TestMediaMemoryCacheGetPut(t *testing.T) {
 func TestMediaMemoryCachePutReplacesExisting(t *testing.T) {
 	c := newMemoryCache(1024, 0)
 	ctx := context.Background()
-	_ = c.Put(ctx, "a", []byte("one"))
-	_ = c.Put(ctx, "a", []byte("two"))
+	_ = c.Put(ctx, "a", []byte("one"), "image/jpeg")
+	_ = c.Put(ctx, "a", []byte("two"), "image/jpeg")
 	data, ok, _ := c.Get(ctx, "a")
 	if !ok || string(data) != "two" {
 		t.Fatalf("Get() = %q, %v; want two, true", data, ok)
@@ -40,7 +40,7 @@ func TestMediaMemoryCacheByteBudgetEvictsLRU(t *testing.T) {
 	c := newMemoryCache(100, 0)
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		if err := c.Put(ctx, string(rune('a'+i)), make([]byte, 40)); err != nil {
+		if err := c.Put(ctx, string(rune('a'+i)), make([]byte, 40), "image/jpeg"); err != nil {
 			t.Fatalf("Put(%d) error = %v", i, err)
 		}
 	}
@@ -63,12 +63,12 @@ func TestMediaMemoryCacheAccessRefreshesLRU(t *testing.T) {
 	c := newMemoryCache(90, 0)
 	ctx := context.Background()
 	// Three 40-byte items exceed the 90-byte budget; access order decides eviction.
-	_ = c.Put(ctx, "a", make([]byte, 40))
-	_ = c.Put(ctx, "b", make([]byte, 40))
+	_ = c.Put(ctx, "a", make([]byte, 40), "image/jpeg")
+	_ = c.Put(ctx, "b", make([]byte, 40), "image/jpeg")
 	if _, _, err := c.Get(ctx, "a"); err != nil {
 		t.Fatalf("Get(a) error = %v", err)
 	}
-	_ = c.Put(ctx, "c", make([]byte, 40))
+	_ = c.Put(ctx, "c", make([]byte, 40), "image/jpeg")
 	if _, ok, _ := c.Get(ctx, "a"); !ok {
 		t.Fatal("touched entry evicted, want LRU 'b' evicted")
 	}
@@ -83,7 +83,7 @@ func TestMediaMemoryCacheAccessRefreshesLRU(t *testing.T) {
 func TestMediaMemoryCacheTTLExpiry(t *testing.T) {
 	c := newMemoryCache(1024, 5*time.Millisecond)
 	ctx := context.Background()
-	if err := c.Put(ctx, "a", []byte("alpha")); err != nil {
+	if err := c.Put(ctx, "a", []byte("alpha"), "image/jpeg"); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
 	if _, ok, _ := c.Get(ctx, "a"); !ok {
@@ -98,7 +98,7 @@ func TestMediaMemoryCacheTTLExpiry(t *testing.T) {
 func TestMediaMemoryCacheOversizeItemSkipped(t *testing.T) {
 	c := newMemoryCache(10, 0)
 	ctx := context.Background()
-	if err := c.Put(ctx, "big", make([]byte, 100)); err != nil {
+	if err := c.Put(ctx, "big", make([]byte, 100), "image/jpeg"); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
 	if _, ok, _ := c.Get(ctx, "big"); ok {
@@ -115,10 +115,10 @@ func TestMediaDiskCacheSweepNoTTLKeepsEntries(t *testing.T) {
 	ctx := context.Background()
 	keyA := strings.Repeat("a", 64) // cache keys are sha256 hex
 	keyB := strings.Repeat("b", 64)
-	if err := c.Put(ctx, keyA, []byte("alpha")); err != nil {
+	if err := c.Put(ctx, keyA, []byte("alpha"), "image/jpeg"); err != nil {
 		t.Fatalf("Put(a) error = %v", err)
 	}
-	if err := c.Put(ctx, keyB, []byte("beta")); err != nil {
+	if err := c.Put(ctx, keyB, []byte("beta"), "image/jpeg"); err != nil {
 		t.Fatalf("Put(b) error = %v", err)
 	}
 	c.sweepOnce()
@@ -137,11 +137,11 @@ func TestMediaDiskCacheSweepBudgetEvictsOldest(t *testing.T) {
 	ctx := context.Background()
 	bigKey := strings.Repeat("b", 64)
 	smallKey := strings.Repeat("s", 64)
-	if err := c.Put(ctx, bigKey, []byte("0123456789abcdef")); err != nil {
+	if err := c.Put(ctx, bigKey, []byte("0123456789abcdef"), "image/jpeg"); err != nil {
 		t.Fatalf("Put(big) error = %v", err)
 	}
 	time.Sleep(2 * time.Millisecond) // distinct mtimes make eviction order deterministic
-	if err := c.Put(ctx, smallKey, []byte("hi")); err != nil {
+	if err := c.Put(ctx, smallKey, []byte("hi"), "image/jpeg"); err != nil {
 		t.Fatalf("Put(small) error = %v", err)
 	}
 	c.sweepOnce()

@@ -22,8 +22,9 @@ type SourceResolver interface {
 	ResolveStorageKey(file *database.CloudFile) string
 }
 
-// Result is the outcome of a render: the transformed bytes plus the metadata
-// needed to serve them with correct HTTP caching semantics.
+// Result is the outcome of a render: either the transformed bytes (memory/disk/
+// none tiers) or a marker for an s3-tier presigned-URL redirect, plus the
+// metadata needed to serve it with correct HTTP semantics.
 type Result struct {
 	Bytes       []byte
 	ContentType string
@@ -31,6 +32,11 @@ type Result struct {
 	ETag        string // hex CacheKey
 	ModTime     time.Time
 	FromCache   bool
+	// Redirect is set when the s3 cache tier served the derivative: Bytes is
+	// nil and the caller should issue a 307 to the URL from SignedCacheURL
+	// instead of streaming. This keeps the derivative bytes off the DysonFS
+	// request path.
+	Redirect bool
 }
 
 // Service renders on-the-fly image transforms with bounded concurrency and an

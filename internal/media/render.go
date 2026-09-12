@@ -99,6 +99,25 @@ func (s *Service) Render(ctx context.Context, resolver SourceResolver, file *dat
 	}
 	key := p.CacheKey(file.ID, objectHash, objectSize)
 
+	if sc, ok := s.cache.(*s3Cache); ok {
+		// s3 tier: never proxy the derivative bytes through DysonFS. A cache
+		// hit is a Stat + presigned redirect; a miss renders in-process, puts
+		// to the cache bucket, then redirects.
+		if info, err := sc.backend.Stat(ctx, sc.prefix+key); err == nil && info.Size <= s.cfg.MaxOutputBytes {
+			return &Result{ContentType: contentTypeFor(format), Ext: extFor(format), ETag: key, FromCache: true, Redirect: true}, nil
+		}
+		out, err := renderImage(img, p, format, s.cfg)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.cache.Put(ctx, key, out, contentTypeFor(format)); err != nil {
+			// A failed put leaves the cache cold; the redirect still serves once
+			// the next request re-renders, so the error is not fatal.
+			logging.Log.Error().Err(err).Str("key", key).Msg("media s3 cache put failed")
+		}
+		return &Result{ContentType: contentTypeFor(format), Ext: extFor(format), ETag: key, FromCache: false, Redirect: true}, nil
+	}
+
 	if cached, ok, err := s.cache.Get(ctx, key); err == nil && ok && len(cached) <= int(s.cfg.MaxOutputBytes) {
 		return &Result{
 			Bytes:       cached,
@@ -110,22 +129,12 @@ func (s *Service) Render(ctx context.Context, resolver SourceResolver, file *dat
 		}, nil
 	}
 
-	if err := applyTransform(img, p, s.cfg); err != nil {
-		return nil, err
-	}
-	if err := img.RemoveMetadata(); err != nil {
-		return nil, fmt.Errorf("remove metadata: %w", err)
-	}
-
-	out, err := exportImage(img, format, p.Quality)
+	out, err := renderImage(img, p, format, s.cfg)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(out)) > s.cfg.MaxOutputBytes {
-		return nil, ErrOutputTooLarge
-	}
 
-	if err := s.cache.Put(ctx, key, out); err != nil {
+	if err := s.cache.Put(ctx, key, out, contentTypeFor(format)); err != nil {
 		// Cache failures never fail the response; the derivative is still valid.
 		logging.Log.Error().Err(err).Str("key", key).Msg("media cache put failed")
 	}
@@ -138,6 +147,41 @@ func (s *Service) Render(ctx context.Context, resolver SourceResolver, file *dat
 		ModTime:     info.ModTime,
 		FromCache:   false,
 	}, nil
+}
+
+// signedURLTTL bounds presigned cache URLs issued for the s3 tier. The client
+// follows the redirect immediately, so the window only needs to cover the
+// follow fetch (and any CDN replay within it).
+const signedURLTTL = 15 * time.Minute
+
+// SignedCacheURL presigns a URL for a cached derivative (s3 tier only). It
+// returns "" when the cache is not s3-backed. filename/download are forwarded
+// to the backend so the object is served inline or as an attachment.
+func (s *Service) SignedCacheURL(ctx context.Context, key, filename string, download bool, ttl time.Duration) (string, error) {
+	sc, ok := s.cache.(*s3Cache)
+	if !ok {
+		return "", nil
+	}
+	return sc.backend.SignedURL(ctx, sc.prefix+key, ttl, filename, download)
+}
+
+// renderImage applies the transform, strips metadata, exports, and enforces
+// the output size limit. Callers must hold the service semaphore.
+func renderImage(img *vips.ImageRef, p Params, format Format, cfg config.MediaConfig) ([]byte, error) {
+	if err := applyTransform(img, p, cfg); err != nil {
+		return nil, err
+	}
+	if err := img.RemoveMetadata(); err != nil {
+		return nil, fmt.Errorf("remove metadata: %w", err)
+	}
+	out, err := exportImage(img, format, p.Quality)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(out)) > cfg.MaxOutputBytes {
+		return nil, ErrOutputTooLarge
+	}
+	return out, nil
 }
 
 // resolveFormat picks the output format: an explicit param wins; otherwise the

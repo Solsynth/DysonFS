@@ -300,7 +300,8 @@ Behavior:
 - when the requested size exceeds the selected source and
   `escalateToOriginal = true`, the parent original is used instead (once)
 - output is streamed with `ETag`/`Last-Modified`/`Range`/`304` support and
-  `Cache-Control: public`
+  `Cache-Control: public` — except the `"s3"` cache tier, which 307-redirects
+  to a presigned object URL instead
 - the compressed derivative (`system.compression.low`) is the transform source
   by default for images; `?original=1` selects the original
 
@@ -337,10 +338,15 @@ quality = 75
 - `"memory"` keeps an in-process LRU bounded by `media.cache.maxBytes`; tune
   `maxBytes` to available RAM
 - `"disk"` keeps an LRU on disk at `media.cache.dir`
-- `"s3"` writes derivatives to a dedicated file pool's bucket: configure a
-  hidden, non-default pool in `[[pools]]` and reference its id via
-  `media.cache.poolId`. Keys live under the `media-cache/` prefix; there is no
-  eviction (use bucket lifecycle rules)
+- `"s3"` stores derivatives in a dedicated file pool's bucket and serves them
+  via **presigned-URL 307 redirects** — derivative bytes never pass through
+  DysonFS. Configure a hidden, non-default pool in `[[pools]]` and reference
+  its id via `media.cache.poolId`; the pool's storage credentials sign the
+  URLs. Keys live under the `media-cache/` prefix; there is no eviction (use
+  bucket lifecycle rules)
+- hidden pools are internal-only: never listed to users and never usable as an
+  upload destination (`CanUsePool` refuses them); the media cache is the
+  intended use. Keep the default pool `hidden = false`
 - cache entries never expire by time (`media.cache.ttl = "0s"`, the default);
   eviction is budget-driven — the disk/memory sweeps drop the
   least-recently-used entries once `media.cache.maxBytes` is exceeded. Set

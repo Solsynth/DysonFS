@@ -450,11 +450,12 @@ func (s *FileService) GetPool(id string) (*Pool, error) {
 func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
 	// Narrow candidates in SQL. Config-seeded pools (account_id IS NULL or the
 	// zero UUID) are global, the caller's own pools always qualify, and any
-	// other pool must at least not be hidden to be visible. The final
-	// visibility pass (public, explicit grants) runs in Go below. Note: the
-	// listing intentionally does not expand for superusers — private pools
-	// only ever surface to their owner; ListAllPools (admin API) is the
-	// superuser's full view.
+	// other pool must at least not be hidden to be a candidate. Hidden pools
+	// are internal-only (e.g. the media transform cache) and never surface in
+	// user-facing listings — poolVisibleTo below filters the config/own-hidden
+	// rows the SQL clause still admits. Note: the listing intentionally does
+	// not expand for superusers — private pools only ever surface to their
+	// owner; ListAllPools (admin API) is the superuser's full view.
 	query := s.db.DB
 	switch {
 	case ctx.Account == nil:
@@ -503,15 +504,17 @@ func (s *FileService) ListPools(ctx AccessContext) ([]Pool, error) {
 // intentionally absent: private pools only surface to their owner, and a
 // superuser's full view is ListAllPools.
 func poolVisibleTo(pool database.FilePool, ctx AccessContext, grants []database.PoolPermission) bool {
+	// Hidden pools are internal-only (e.g. the media transform cache) and
+	// never appear in user-facing pool listings.
+	if pool.IsHidden {
+		return false
+	}
 	if ctx.Account != nil && pool.AccountID.String() == ctx.Account.GetId() {
 		return true
 	}
 	// Config-seeded pools have no owner and are global.
 	if pool.AccountID == uuid.Nil {
 		return true
-	}
-	if pool.IsHidden {
-		return false
 	}
 	var policy PoolConfig
 	_ = json.Unmarshal(pool.PolicyConfig, &policy)
@@ -660,13 +663,13 @@ func (s *FileService) CanUsePool(ctx AccessContext, pool *Pool, permission strin
 	if ctx.Account != nil && ctx.Account.GetIsSuperuser() {
 		return true
 	}
+	// Hidden pools are internal-only (e.g. the media transform cache): never a
+	// user upload/read destination, regardless of ownership. Superusers bypass.
+	if pool.IsHidden {
+		return false
+	}
 	if ctx.Account != nil && pool.AccountID.String() == ctx.Account.GetId() {
 		return true
-	}
-	// Config-seeded pools (zero account ID) are global; hidden only hides
-	// user-owned pools from other accounts.
-	if pool.AccountID != uuid.Nil && pool.IsHidden {
-		return false
 	}
 	if pool.PolicyConfig.PublicUsable {
 		return true
