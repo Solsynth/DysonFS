@@ -149,11 +149,12 @@ type MediaConfig struct {
 }
 
 // MediaCacheConfig configures the derivative cache tier for media transforms.
-// Kind is one of "none" (default), "local" (disk LRU) or "storage" (object
-// storage under the media-cache/ prefix; no eviction).
+// Kind is one of "none" (default), "memory" (in-process LRU), "disk" (LRU on
+// local disk) or "s3" (dedicated object-storage pool bucket).
 type MediaCacheConfig struct {
 	Kind     string        `mapstructure:"kind"`
-	Dir      string        `mapstructure:"dir"`
+	Dir      string        `mapstructure:"dir"`    // required when kind = "disk"
+	PoolID   string        `mapstructure:"poolId"` // file pool id when kind = "s3"
 	MaxBytes int64         `mapstructure:"maxBytes"`
 	TTL      time.Duration `mapstructure:"ttl"`
 }

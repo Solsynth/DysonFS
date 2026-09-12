@@ -37,7 +37,7 @@ type Result struct {
 // optional cache tier.
 type Service struct {
 	cfg     config.MediaConfig
-	backend storage.Backend // default pool backend, used only when cache kind = "storage"
+	backend storage.Backend // storage backend for the s3 cache tier (resolved from cache.poolId by the app)
 	cache   cacheStore      // noopCache unless a cache kind is configured
 	sem     chan struct{}   // nil when the concurrency limit is <= 1
 }
@@ -56,16 +56,21 @@ func New(cfg config.MediaConfig, backend storage.Backend) (*Service, error) {
 	switch cfg.Cache.Kind {
 	case "", "none":
 		// No server-side caching; HTTP headers still apply.
-	case "local":
+	case "memory":
+		store = newMemoryCache(cfg.Cache.MaxBytes, cfg.Cache.TTL)
+	case "disk":
 		if strings.TrimSpace(cfg.Cache.Dir) == "" {
-			return nil, errors.New(`media.cache.dir is required when cache.kind = "local"`)
+			return nil, errors.New(`media.cache.dir is required when cache.kind = "disk"`)
 		}
-		store = &localCache{dir: cfg.Cache.Dir, maxBytes: cfg.Cache.MaxBytes, ttl: cfg.Cache.TTL}
-	case "storage":
+		store = &diskCache{dir: cfg.Cache.Dir, maxBytes: cfg.Cache.MaxBytes, ttl: cfg.Cache.TTL}
+	case "s3":
+		if strings.TrimSpace(cfg.Cache.PoolID) == "" {
+			return nil, errors.New(`media.cache.poolId is required when cache.kind = "s3"`)
+		}
 		if backend == nil {
-			return nil, errors.New(`media cache kind "storage" requires a storage backend`)
+			return nil, errors.New(`media cache kind "s3" requires a storage backend`)
 		}
-		store = &storageCache{backend: backend, prefix: "media-cache/", maxBytes: cfg.Cache.MaxBytes}
+		store = &s3Cache{backend: backend, prefix: "media-cache/", maxBytes: cfg.Cache.MaxBytes}
 	default:
 		return nil, fmt.Errorf("unknown media cache kind %q", cfg.Cache.Kind)
 	}
@@ -87,10 +92,10 @@ func (s *Service) Enabled() bool {
 	return s != nil && s.cfg.Enable
 }
 
-// Start launches background maintenance (currently only the local-cache
+// Start launches background maintenance (currently only the disk-cache
 // sweeper). It is a no-op otherwise and returns immediately.
 func (s *Service) Start(ctx context.Context) {
-	if lc, ok := s.cache.(*localCache); ok {
-		go lc.sweep(ctx)
+	if dc, ok := s.cache.(*diskCache); ok {
+		go dc.sweep(ctx)
 	}
 }

@@ -316,8 +316,9 @@ defaultQuality = 80
 allowedFormats = ["jpeg", "png", "webp", "avif"]
 
 [media.cache]
-kind = "local" # none | local | storage
-dir = "/var/lib/dyson-drive/media-cache"
+kind = "disk" # none | memory | disk | s3
+dir = "/var/lib/dyson-drive/media-cache" # required when kind = "disk"
+# poolId = "01CACHEPOOL0000000000000000000" # file pool id, required when kind = "s3"
 maxBytes = 10737418240
 ttl = "720h"
 
@@ -331,9 +332,13 @@ quality = 75
 
 - `media.cache.kind = "none"` (default) disables server-side caching; HTTP
   headers still apply
-- `"local"` keeps an LRU on disk at `media.cache.dir` (idle TTL + byte budget)
-- `"storage"` writes derivatives to the default pool backend under
-  `media-cache/` (no eviction; use bucket lifecycle rules)
+- `"memory"` keeps an in-process LRU bounded by `media.cache.maxBytes`; tune
+  `maxBytes` to available RAM
+- `"disk"` keeps an LRU on disk at `media.cache.dir` (idle TTL + byte budget)
+- `"s3"` writes derivatives to a dedicated file pool's bucket: configure a
+  hidden, non-default pool in `[[pools]]` and reference its id via
+  `media.cache.poolId`. Keys live under the `media-cache/` prefix; there is no
+  eviction (use bucket lifecycle rules)
 
 Example:
 

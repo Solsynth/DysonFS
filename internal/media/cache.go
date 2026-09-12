@@ -2,12 +2,14 @@ package media
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
@@ -28,20 +30,98 @@ type noopCache struct{}
 func (noopCache) Get(ctx context.Context, key string) ([]byte, bool, error) { return nil, false, nil }
 func (noopCache) Put(ctx context.Context, key string, data []byte) error    { return nil }
 
-// localCache is a disk LRU: cache keys map to sharded paths, reads touch the
+// memoryCache is an in-process LRU bounded by maxBytes, with optional idle TTL.
+// Eviction is inline: Put evicts least-recently-used entries beyond the byte
+// budget; Get drops entries idle past the TTL. No background sweeper is needed
+// (entries never referenced are reclaimed under byte pressure).
+type memoryCache struct {
+	mu       sync.Mutex
+	maxBytes int64
+	ttl      time.Duration
+	entries  map[string]*list.Element // key -> element (value *memEntry)
+	lru      *list.List
+	size     int64
+}
+
+type memEntry struct {
+	key     string
+	data    []byte
+	modTime time.Time
+}
+
+func newMemoryCache(maxBytes int64, ttl time.Duration) *memoryCache {
+	return &memoryCache{
+		maxBytes: maxBytes,
+		ttl:      ttl,
+		entries:  make(map[string]*list.Element),
+		lru:      list.New(),
+	}
+}
+
+func (c *memoryCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.entries[key]
+	if !ok {
+		return nil, false, nil
+	}
+	e := el.Value.(*memEntry)
+	if c.ttl > 0 && time.Since(e.modTime) > c.ttl {
+		c.removeElement(el)
+		return nil, false, nil
+	}
+	e.modTime = time.Now()
+	c.lru.MoveToFront(el)
+	return e.data, true, nil
+}
+
+func (c *memoryCache) Put(ctx context.Context, key string, data []byte) error {
+	if int64(len(data)) > c.maxBytes {
+		return nil // an entry larger than the whole budget would evict everything
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.entries[key]; ok {
+		e := el.Value.(*memEntry)
+		c.size -= int64(len(e.data))
+		e.data = data
+		e.modTime = time.Now()
+		c.lru.MoveToFront(el)
+	} else {
+		c.entries[key] = c.lru.PushFront(&memEntry{key: key, data: data, modTime: time.Now()})
+	}
+	c.size += int64(len(data))
+	for c.size > c.maxBytes {
+		if last := c.lru.Back(); last != nil {
+			c.removeElement(last)
+		} else {
+			break
+		}
+	}
+	return nil
+}
+
+func (c *memoryCache) removeElement(el *list.Element) {
+	e := el.Value.(*memEntry)
+	c.lru.Remove(el)
+	delete(c.entries, e.key)
+	c.size -= int64(len(e.data))
+}
+
+// diskCache is a disk LRU: cache keys map to sharded paths, reads touch the
 // file (recency), and a periodic sweep evicts idle entries beyond the TTL and
 // the oldest entries beyond the byte budget.
-type localCache struct {
+type diskCache struct {
 	dir      string
 	maxBytes int64
 	ttl      time.Duration
 }
 
-func (c *localCache) path(key string) string {
+func (c *diskCache) path(key string) string {
 	return filepath.Join(c.dir, key[:2], key[2:4], key)
 }
 
-func (c *localCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
+func (c *diskCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	path := c.path(key)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -59,7 +139,7 @@ func (c *localCache) Get(ctx context.Context, key string) ([]byte, bool, error) 
 	return data, true, nil
 }
 
-func (c *localCache) Put(ctx context.Context, key string, data []byte) error {
+func (c *diskCache) Put(ctx context.Context, key string, data []byte) error {
 	path := c.path(key)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -72,7 +152,7 @@ func (c *localCache) Put(ctx context.Context, key string, data []byte) error {
 }
 
 // sweep runs the periodic eviction loop until ctx is cancelled.
-func (c *localCache) sweep(ctx context.Context) {
+func (c *diskCache) sweep(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -87,7 +167,7 @@ func (c *localCache) sweep(ctx context.Context) {
 
 // sweepOnce evicts entries idle beyond the TTL, then, if the cache still
 // exceeds the byte budget, the oldest entries (by last access) until it fits.
-func (c *localCache) sweepOnce() {
+func (c *diskCache) sweepOnce() {
 	now := time.Now()
 	cutoff := now.Add(-c.ttl)
 	type entry struct {
@@ -136,17 +216,17 @@ func (c *localCache) sweepOnce() {
 	}
 }
 
-// storageCache stores derivatives in object storage under a fixed prefix,
-// sharing the default pool backend. It has no eviction: the operator manages
-// bucket lifecycle rules. This keeps user S3 listings clean since the cache
-// prefix never overlaps per-file pool buckets.
-type storageCache struct {
+// s3Cache stores derivatives in object storage under a fixed prefix in a
+// dedicated file pool's bucket (media.cache.poolId). It has no eviction: the
+// operator manages bucket lifecycle rules. The media-cache/ prefix keeps the
+// cache keys distinct from any user data in the same bucket.
+type s3Cache struct {
 	backend  storage.Backend
 	prefix   string
 	maxBytes int64
 }
 
-func (c *storageCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
+func (c *s3Cache) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	rc, info, err := c.backend.Get(ctx, c.prefix+key)
 	if err != nil {
 		return nil, false, nil
@@ -157,7 +237,7 @@ func (c *storageCache) Get(ctx context.Context, key string) ([]byte, bool, error
 	}
 	out, err := io.ReadAll(io.LimitReader(rc, c.maxBytes+1))
 	if err != nil {
-		logging.Log.Error().Err(err).Str("key", key).Msg("media storage cache read failed")
+		logging.Log.Error().Err(err).Str("key", key).Msg("media s3 cache read failed")
 		return nil, false, nil
 	}
 	if int64(len(out)) > c.maxBytes {
@@ -166,6 +246,6 @@ func (c *storageCache) Get(ctx context.Context, key string) ([]byte, bool, error
 	return out, true, nil
 }
 
-func (c *storageCache) Put(ctx context.Context, key string, data []byte) error {
+func (c *s3Cache) Put(ctx context.Context, key string, data []byte) error {
 	return c.backend.Put(ctx, c.prefix+key, bytes.NewReader(data), int64(len(data)), "application/octet-stream")
 }

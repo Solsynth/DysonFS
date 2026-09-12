@@ -76,10 +76,24 @@ defaultQuality = 80
 allowedFormats = ["jpeg", "png", "webp", "avif"]
 
 [media.cache]
-kind = "local" # none | local | storage
-dir = "/var/lib/dyson-drive/media-cache"
+kind = "disk" # none | memory | disk | s3
+dir = "/var/lib/dyson-drive/media-cache" # required when kind = "disk"
+# poolId = "01CACHEPOOL0000000000000000000" # file pool id, required when kind = "s3"
 maxBytes = 10737418240
 ttl = "720h"
+
+# Dedicated object-storage cache pool for kind = "s3". Reference it from
+# [media.cache] poolId; keep it hidden and non-default.
+# [[pools]]
+# id = "01CACHEPOOL0000000000000000000"
+# name = "media-cache"
+# hidden = true
+# [pools.storage]
+# enableSigned = false
+# endpoint = "https://s3.example.com"
+# bucket = "dyson-media-cache"
+# [pools.billing]
+# [pools.policy]
 
 [media.presets.thumb]
 width = 256

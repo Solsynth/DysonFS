@@ -337,7 +337,7 @@ func TestOpenFileTransformDisabledWhenMediaOff(t *testing.T) {
 	}
 }
 
-func TestOpenFileTransformCacheLocalSecondHit(t *testing.T) {
+func TestOpenFileTransformCacheDiskSecondHit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	stor := storage.NewLocalBackend(t.TempDir())
@@ -346,7 +346,7 @@ func TestOpenFileTransformCacheLocalSecondHit(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	cfg := &config.Config{Media: mediaTestConfig()}
-	cfg.Media.Cache = config.MediaCacheConfig{Kind: "local", Dir: cacheDir, MaxBytes: 10 * 1024 * 1024}
+	cfg.Media.Cache = config.MediaCacheConfig{Kind: "disk", Dir: cacheDir, MaxBytes: 10 * 1024 * 1024}
 	med, err := media.New(cfg.Media, stor)
 	if err != nil {
 		t.Fatalf("media.New() error = %v", err)
@@ -387,7 +387,49 @@ func TestOpenFileTransformCacheLocalSecondHit(t *testing.T) {
 	}
 }
 
-func TestOpenFileTransformCacheStorage(t *testing.T) {
+func TestOpenFileTransformCacheMemorySecondHit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	fileID := seedMediaTestFile(t, db, stor, generateTestJPEG(t), "image/jpeg", "hash-1")
+
+	cfg := &config.Config{Media: mediaTestConfig()}
+	cfg.Media.Cache = config.MediaCacheConfig{Kind: "memory", MaxBytes: 10 * 1024 * 1024}
+	med, err := media.New(cfg.Media, stor)
+	if err != nil {
+		t.Fatalf("media.New() error = %v", err)
+	}
+	files.SetMedia(med)
+	r := mediaTestRouter(t, cfg, files, db)
+
+	var firstBody, firstETag string
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/files/"+fileID+"?width=16&format=webp", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want %d, body = %s", i, w.Code, http.StatusOK, w.Body.String())
+		}
+		body := w.Body.String()
+		etag := w.Header().Get("ETag")
+		if etag == "" {
+			t.Fatalf("request %d: ETag missing", i)
+		}
+		if i == 0 {
+			firstBody, firstETag = body, etag
+		} else {
+			if body != firstBody {
+				t.Fatal("second request body differs from first (memory cache not used)")
+			}
+			if etag != firstETag {
+				t.Fatalf("second request ETag %q differs from first %q", etag, firstETag)
+			}
+		}
+	}
+}
+
+func TestOpenFileTransformCacheS3(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	base := t.TempDir()
@@ -396,7 +438,9 @@ func TestOpenFileTransformCacheStorage(t *testing.T) {
 	fileID := seedMediaTestFile(t, db, stor, generateTestJPEG(t), "image/jpeg", "hash-1")
 
 	cfg := &config.Config{Media: mediaTestConfig()}
-	cfg.Media.Cache = config.MediaCacheConfig{Kind: "storage", MaxBytes: 10 * 1024 * 1024}
+	// poolId identifies the dedicated cache pool; the app resolves its backend
+	// (here the test passes the local backend directly).
+	cfg.Media.Cache = config.MediaCacheConfig{Kind: "s3", PoolID: "01CACHEPOOL0000000000000000000", MaxBytes: 10 * 1024 * 1024}
 	med, err := media.New(cfg.Media, stor)
 	if err != nil {
 		t.Fatalf("media.New() error = %v", err)

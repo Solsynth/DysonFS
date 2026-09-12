@@ -147,7 +147,19 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	app.files.SetStorage(backend)
 	if cfg.Media.Enable {
 		vips.Startup(nil) // idempotent; configures libvips once, before any worker use
-		med, err := media.New(cfg.Media, app.stor)
+		cacheBackend := app.stor
+		if cfg.Media.Cache.Kind == "s3" {
+			pid := strings.TrimSpace(cfg.Media.Cache.PoolID)
+			if pid == "" {
+				return nil, fmt.Errorf(`init media: media.cache.poolId is required when cache.kind = "s3"`)
+			}
+			poolBackend, err := app.files.BackendForPoolID(&pid)
+			if err != nil {
+				return nil, fmt.Errorf("init media: resolve cache pool %q: %w", pid, err)
+			}
+			cacheBackend = poolBackend
+		}
+		med, err := media.New(cfg.Media, cacheBackend)
 		if err != nil {
 			return nil, fmt.Errorf("init media: %w", err)
 		}
