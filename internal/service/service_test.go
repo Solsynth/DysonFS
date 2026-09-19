@@ -271,7 +271,7 @@ func TestPurgeFileDeletesDereferencedObjectAndRemote(t *testing.T) {
 	}
 	fileID := database.NewID()
 	accountID := uuid.New()
-	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
 	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: fileID, SubjectType: "private", Permission: "read"}).Error; err != nil {
@@ -322,10 +322,10 @@ func TestPurgeFileDeletesDescendantsAndTheirObjects(t *testing.T) {
 	if err := db.Create(&database.FileObject{ID: grandchildObjectID, Size: 7, MimeType: "text/plain", Hash: "grandchild-hash", StorageKey: &grandchildStorageKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
 		t.Fatalf("create grandchild object: %v", err)
 	}
-	if err := db.Create(&database.CloudFile{ID: childID, Name: "child.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &rootID, ObjectID: &childObjectID, StorageKey: &childStorageKey, Indexed: true}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: childID, Name: "child.txt", AccountID: accountID, PoolID: ptr(poolID), ParentID: &rootID, ObjectID: &childObjectID, StorageKey: &childStorageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create child file: %v", err)
 	}
-	if err := db.Create(&database.CloudFile{ID: grandchildID, Name: "grandchild.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &childID, ObjectID: &grandchildObjectID, StorageKey: &grandchildStorageKey, Indexed: true}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: grandchildID, Name: "grandchild.txt", AccountID: accountID, PoolID: ptr(poolID), ParentID: &childID, ObjectID: &grandchildObjectID, StorageKey: &grandchildStorageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create grandchild file: %v", err)
 	}
 	for _, perm := range []database.FilePermission{
@@ -388,7 +388,7 @@ func TestPurgeFileKeepsSharedObjectAndRemote(t *testing.T) {
 	secondFileID := database.NewID()
 	accountID := uuid.New()
 	for _, fileID := range []string{firstFileID, secondFileID} {
-		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 			t.Fatalf("create file %s: %v", fileID, err)
 		}
 	}
@@ -441,10 +441,10 @@ func TestOverwriteFileSwapsObjectAndDeletesDereferencedSource(t *testing.T) {
 			t.Fatalf("create object %s: %v", object.ID, err)
 		}
 	}
-	if err := db.Create(&database.CloudFile{ID: fileID, Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &oldObjectID, StorageKey: &oldStorageKey, Indexed: true}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), ObjectID: &oldObjectID, StorageKey: &oldStorageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
 		t.Fatalf("create derived file: %v", err)
 	}
 	if err := stor.Put(context.Background(), oldStorageKey, strings.NewReader("hello"), int64(len("hello")), "text/plain"); err != nil {
@@ -520,7 +520,7 @@ func TestOverwriteFileKeepsSharedPreviousObject(t *testing.T) {
 		}
 	}
 	for _, fileID := range []string{firstFileID, secondFileID} {
-		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &sharedObjectID, StorageKey: &sharedStorageKey, Indexed: true}).Error; err != nil {
+		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), ObjectID: &sharedObjectID, StorageKey: &sharedStorageKey, Indexed: true}).Error; err != nil {
 			t.Fatalf("create file %s: %v", fileID, err)
 		}
 	}
@@ -574,10 +574,10 @@ func TestFastOverwriteFileUpdatesExistingObject(t *testing.T) {
 			t.Fatalf("create object %s: %v", object.ID, err)
 		}
 	}
-	if err := db.Create(&database.CloudFile{ID: fileID, Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "doc.txt", AccountID: accountID, PoolID: ptr(poolID), ParentID: &fileID, ObjectID: &derivedObjectID, StorageKey: &derivedStorageKey, Indexed: false, ApplicationType: &derivedType}).Error; err != nil {
 		t.Fatalf("create derived file: %v", err)
 	}
 	if err := stor.Put(context.Background(), storageKey, strings.NewReader("old"), int64(len("old")), "text/plain"); err != nil {
@@ -660,7 +660,7 @@ func TestFastOverwriteFileFallsBackWhenObjectShared(t *testing.T) {
 		t.Fatalf("create object: %v", err)
 	}
 	for _, fileID := range []string{firstFileID, secondFileID} {
-		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+		if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.txt", AccountID: accountID, PoolID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 			t.Fatalf("create file %s: %v", fileID, err)
 		}
 	}
@@ -1274,7 +1274,7 @@ func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testi
 	if err := db.Create(&database.FileObject{ID: objectID, Size: 3, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
 		t.Fatalf("create object: %v", err)
 	}
-	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "sample.txt", AccountID: accountID, PoolID: ptr(poolID), ObjectID: &objectID, StorageKey: &storageKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
 	if err := stor.Put(context.Background(), storageKey, strings.NewReader("abc"), int64(len("abc")), "text/plain"); err != nil {
@@ -1285,7 +1285,7 @@ func TestRepairMissingReplicasCreatesReplicaOnlyForExistingRemoteObject(t *testi
 	if err := db.Create(&database.FileObject{ID: missingID, Size: 4, MimeType: "text/plain", Hash: "hash2", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
 		t.Fatalf("create missing object: %v", err)
 	}
-	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "missing.txt", AccountID: accountID, PoolID: ptr(poolID), StorageID: ptr(poolID), ObjectID: &missingID, StorageKey: &missingKey, Indexed: true}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: "missing.txt", AccountID: accountID, PoolID: ptr(poolID), ObjectID: &missingID, StorageKey: &missingKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create missing file: %v", err)
 	}
 	previews, summary, err := svc.PreviewMissingReplicas(context.Background(), 0)

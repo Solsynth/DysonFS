@@ -64,7 +64,6 @@ type CloudFile struct {
 	IsFolder         bool             `json:"is_folder"`
 	IsMarkedRecycle  bool             `gorm:"index:idx_cloud_files_unindexed_listing,priority:4" json:"is_marked_recycle"`
 	ExpiredAt        *time.Time       `json:"expired_at"`
-	StorageID        *string          `gorm:"size:36" json:"storage_id"`
 	StorageURL       *string          `gorm:"size:255" json:"storage_url"`
 	StorageKey       *string          `gorm:"size:64" json:"storage_key"`
 	FileMeta         datatypes.JSON   `gorm:"type:jsonb" json:"file_meta"`
@@ -178,7 +177,6 @@ func (f *CloudFile) MarshalJSON() ([]byte, error) {
 		"application_type":    f.ApplicationType,
 		"status":              f.UploadStatus,
 		"is_marked_recycle":   f.IsMarkedRecycle,
-		"storage_id":          f.StorageID,
 		"storage_url":         f.StorageURL,
 		"account_id":          f.AccountID,
 		"workspace_id":        f.WorkspaceID,

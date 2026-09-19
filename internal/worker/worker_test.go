@@ -75,11 +75,11 @@ func TestProcessPoolMigrationsMovesObjectAndTracksProgress(t *testing.T) {
 		t.Fatalf("create object: %v", err)
 	}
 	fileID := database.NewID()
-	if err := db.Create(&database.CloudFile{ID: fileID, Name: "file.txt", AccountID: ownerID, PoolID: &sourcePoolID, StorageID: &sourcePoolID, StorageKey: &storageKey, ObjectID: &objectID}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "file.txt", AccountID: ownerID, PoolID: &sourcePoolID, StorageKey: &storageKey, ObjectID: &objectID}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
 	unselectedFileID := database.NewID()
-	if err := db.Create(&database.CloudFile{ID: unselectedFileID, Name: "stay.txt", AccountID: ownerID, PoolID: &sourcePoolID, StorageID: &sourcePoolID}).Error; err != nil {
+	if err := db.Create(&database.CloudFile{ID: unselectedFileID, Name: "stay.txt", AccountID: ownerID, PoolID: &sourcePoolID}).Error; err != nil {
 		t.Fatalf("create unselected file: %v", err)
 	}
 	if err := storage.NewLocalBackend(sourceDir).Put(context.Background(), storageKey, strings.NewReader(string(content)), int64(len(content)), "text/plain"); err != nil {
@@ -104,7 +104,7 @@ func TestProcessPoolMigrationsMovesObjectAndTracksProgress(t *testing.T) {
 	if err := db.First(&file, "id = ?", fileID).Error; err != nil {
 		t.Fatalf("reload file: %v", err)
 	}
-	if file.PoolID == nil || *file.PoolID != targetPoolID || file.StorageID == nil || *file.StorageID != targetPoolID {
+	if file.PoolID == nil || *file.PoolID != targetPoolID {
 		t.Fatalf("file = %+v, want target pool", file)
 	}
 	var unselected database.CloudFile

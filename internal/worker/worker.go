@@ -187,12 +187,12 @@ func (w *Worker) moveFileToPool(ctx context.Context, file *database.CloudFile, s
 			return err
 		}
 	}
-	if err := w.db.Model(&database.CloudFile{}).Where("id = ?", file.ID).Updates(map[string]any{"pool_id": targetPool.ID, "storage_id": targetPool.ID}).Error; err != nil {
+	if err := w.db.Model(&database.CloudFile{}).Where("id = ?", file.ID).Updates(map[string]any{"pool_id": targetPool.ID}).Error; err != nil {
 		return err
 	}
 	if key != "" && !reflect.DeepEqual(sourcePool.StorageConfig, targetPool.StorageConfig) {
 		var refs int64
-		if err := w.db.Model(&database.CloudFile{}).Where("storage_id = ? AND storage_key = ?", sourcePool.ID, key).Count(&refs).Error; err != nil {
+		if err := w.db.Model(&database.CloudFile{}).Where("pool_id = ? AND storage_key = ?", sourcePool.ID, key).Count(&refs).Error; err != nil {
 			return err
 		}
 		if refs == 0 {

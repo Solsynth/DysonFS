@@ -304,9 +304,6 @@
                 "parent_id": {
                     "type": "string"
                 },
-                "storage_id": {
-                    "type": "string"
-                },
                 "storage_key": {
                     "type": "string"
                 },

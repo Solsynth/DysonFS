@@ -11,7 +11,6 @@ type FileUploadedEvent struct {
 	FileID             string `json:"file_id"`
 	TaskID             string `json:"task_id"`
 	RemoteID           string `json:"remote_id"`
-	StorageID          string `json:"storage_id,omitempty"`
 	StorageKey         string `json:"storage_key,omitempty"`
 	ContentType        string `json:"content_type,omitempty"`
 	ProcessingFilePath string `json:"processing_file_path"`

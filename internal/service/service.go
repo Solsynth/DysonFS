@@ -274,10 +274,10 @@ func (s *FileService) BackendForPoolID(poolID *string) (storage.Backend, error) 
 }
 
 func (s *FileService) BackendForFile(file *database.CloudFile) (storage.Backend, error) {
-	if file == nil || file.StorageID == nil || strings.TrimSpace(*file.StorageID) == "" {
+	if file == nil || file.PoolID == nil || strings.TrimSpace(*file.PoolID) == "" {
 		return s.stor, nil
 	}
-	return s.BackendForPoolID(file.StorageID)
+	return s.BackendForPoolID(file.PoolID)
 }
 
 func backendFromPoolStorage(cfg PoolStorageConfig, fallback storage.Backend) (storage.Backend, error) {
@@ -1832,7 +1832,7 @@ func (s *FileService) purgeObjectIfDereferenced(tx *gorm.DB, file *database.Clou
 
 	storageKey := firstNonEmptyPtr(object.StorageKey, file.StorageKey, file.ObjectID)
 	if storageKey != nil && strings.TrimSpace(*storageKey) != "" {
-		backend, err := s.backendForStorageTarget(file.StorageID, file.PoolID)
+		backend, err := s.backendForStorageTarget(file.PoolID)
 		if err != nil {
 			// Metadata purge should still succeed if the storage target is gone.
 			logging.Log.Warn().Err(err).Str("objectId", objectID).Msg("storage backend unavailable during purge")
@@ -1863,10 +1863,7 @@ func normalizeFileIDs(ids []string) []string {
 	return out
 }
 
-func (s *FileService) backendForStorageTarget(storageID, poolID *string) (storage.Backend, error) {
-	if storageID != nil && strings.TrimSpace(*storageID) != "" {
-		return s.BackendForPoolID(storageID)
-	}
+func (s *FileService) backendForStorageTarget(poolID *string) (storage.Backend, error) {
 	if poolID != nil && strings.TrimSpace(*poolID) != "" {
 		return s.BackendForPoolID(poolID)
 	}
@@ -2948,7 +2945,7 @@ func (s *FileService) CreateWorkspaceUploadedFile(accountID uuid.UUID, workspace
 			finalIndexed = true
 		}
 	}
-	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, WorkspaceID: workspaceID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: finalIndexed, ApplicationType: appType, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage, UploadStatus: database.UploadStatusCompleted}
+	file := &database.CloudFile{ID: database.NewID(), Name: name, Description: firstNonEmptyPtr(description), AccountID: accountID, WorkspaceID: workspaceID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: firstNonEmptyPtr(parentID), Indexed: finalIndexed, ApplicationType: appType, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`)), ExpiredAt: expiredAt, Usage: usage, UploadStatus: database.UploadStatusCompleted}
 	if hash != nil && strings.TrimSpace(*hash) != "" {
 		file.FileMeta = datatypes.JSON([]byte(fmt.Sprintf(`{"hash":%q}`, strings.TrimSpace(*hash))))
 	}
@@ -3184,11 +3181,11 @@ func (s *FileService) CreateDerivedFile(accountID uuid.UUID, parentID string, na
 	var file *database.CloudFile
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		var parent database.CloudFile
-		if err := tx.Select("pool_id", "storage_id").First(&parent, "id = ?", parentID).Error; err != nil {
+		if err := tx.Select("pool_id").First(&parent, "id = ?", parentID).Error; err != nil {
 			return err
 		}
 		resolvedPoolID := s.resolvedPoolID(parent.PoolID)
-		file = &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, StorageID: resolvedPoolID, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
+		file = &database.CloudFile{ID: database.NewID(), Name: name, AccountID: accountID, PoolID: resolvedPoolID, ObjectID: &objectID, ParentID: &pt, Indexed: false, ApplicationType: &typeName, StorageKey: storageKey, UserMeta: datatypes.JSON([]byte(`{}`))}
 		return tx.Create(file).Error
 	}); err != nil {
 		return nil, err
@@ -3280,7 +3277,7 @@ func (s *FileService) evaluateMissingReplicaCandidate(ctx context.Context, candi
 		return preview, false, err
 	}
 	preview.FileID = file.ID
-	poolID := s.resolvedPoolID(firstNonEmptyPtr(file.PoolID, file.StorageID))
+	poolID := s.resolvedPoolID(file.PoolID)
 	if poolID == nil {
 		preview.Status = "missing-pool"
 		preview.Detail = "no pool mapping available for object"
