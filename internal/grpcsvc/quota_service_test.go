@@ -39,7 +39,7 @@ func TestGetUsedQuotaCountsActiveWorkspaceObjects(t *testing.T) {
 		t.Fatalf("create deleted-object file: %v", err)
 	}
 
-	server := &quotaServiceServer{files: service.NewFileService(&database.DB{DB: db}, nil)}
+	server := &quotaServiceServer{quota: service.NewQuotaService(&database.DB{DB: db})}
 	response, err := server.GetUsedQuota(context.Background(), &gen.DyGetUsedQuotaRequest{WorkspaceId: workspaceID})
 	if err != nil {
 		t.Fatalf("GetUsedQuota() error = %v", err)

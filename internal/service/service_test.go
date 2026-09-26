@@ -23,6 +23,8 @@ import (
 	"gorm.io/gorm"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
@@ -991,10 +993,11 @@ func TestStorageBytesFromPlanQuota(t *testing.T) {
 // serves one workspace, membership, and a configurable plan quota; other RPCs
 // panic if called.
 type stubWorkspaceClient struct {
-	workspace *gen.DyWorkspace
-	member    bool
-	planQuota *gen.DyWorkspacePlanQuota
-	planErr   error
+	workspace     *gen.DyWorkspace
+	member        bool
+	planQuota     *gen.DyWorkspacePlanQuota
+	planErr       error
+	individualErr error
 }
 
 func (s *stubWorkspaceClient) GetWorkspace(context.Context, *gen.DyGetWorkspaceRequest, ...grpc.CallOption) (*gen.DyWorkspace, error) {
@@ -1007,6 +1010,9 @@ func (s *stubWorkspaceClient) GetUserWorkspaces(context.Context, *gen.DyGetUserW
 	panic("unexpected call")
 }
 func (s *stubWorkspaceClient) GetIndividualWorkspace(context.Context, *gen.DyGetUserWorkspacesRequest, ...grpc.CallOption) (*gen.DyWorkspace, error) {
+	if s.individualErr != nil {
+		return nil, s.individualErr
+	}
 	return s.workspace, nil
 }
 func (s *stubWorkspaceClient) IsMemberWithRole(context.Context, *gen.DyIsWorkspaceMemberWithRoleRequest, ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
@@ -1120,6 +1126,211 @@ func TestIndividualWorkspaceFallsBackToLocalLevelingPerk(t *testing.T) {
 	want := int64(16) * 1024 * 1024 * 1024
 	if summary.TotalBytes != want {
 		t.Fatalf("total = %d, want fallback leveling+perk %d", summary.TotalBytes, want)
+	}
+}
+
+// seedUsageFile creates a file object plus its cloud file row.
+func seedUsageFile(t *testing.T, db *gorm.DB, accountID uuid.UUID, workspaceID *string, size int64) {
+	t.Helper()
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: size, MimeType: "text/plain", Hash: objectID}).Error; err != nil {
+		t.Fatalf("create file object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: database.NewID(), Name: objectID, AccountID: accountID, WorkspaceID: workspaceID, ObjectID: &objectID}).Error; err != nil {
+		t.Fatalf("create cloud file: %v", err)
+	}
+}
+
+// Individual workspaces admit bot accounts, so every member sees the owner's
+// pool: charging the requesting member's own files would hand each member an
+// independent full quota against the same limit.
+func TestIndividualWorkspaceChargesOwnerPoolToEveryMember(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+
+	ownerID := uuid.New()
+	botID := uuid.New()
+	workspaceID := uuid.New()
+	workspace := workspaceID.String()
+	const mb = int64(1024 * 1024)
+
+	seedUsageFile(t, db, ownerID, nil, 30*mb)
+	seedUsageFile(t, db, ownerID, &workspace, 10*mb)
+	seedUsageFile(t, db, botID, &workspace, 20*mb)
+
+	svc.SetWorkspaceClient(&stubWorkspaceClient{
+		workspace: &gen.DyWorkspace{
+			Id:             workspaceID.String(),
+			Type:           gen.DyWorkspaceType_INDIVIDUAL,
+			Plan:           gen.DyWorkspacePlan_FREE,
+			OwnerAccountId: ownerID.String(),
+		},
+		member:    true,
+		planQuota: &gen.DyWorkspacePlanQuota{Quotas: map[string]int64{"max_storage_bytes": 60 * mb}},
+	})
+
+	summary, err := svc.GetWorkspaceUsage(context.Background(), workspaceID.String(), botID.String())
+	if err != nil {
+		t.Fatalf("GetWorkspaceUsage() error = %v", err)
+	}
+	if summary.UsedBytes != 60*mb {
+		t.Fatalf("used = %d, want the owner's whole pool 60MiB", summary.UsedBytes)
+	}
+	if summary.TotalFileCount != 3 {
+		t.Fatalf("file count = %d, want 3", summary.TotalFileCount)
+	}
+
+	if err := svc.CheckWorkspaceUploadQuota(context.Background(), workspaceID.String(), botID.String(), 1); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("CheckWorkspaceUploadQuota() error = %v, want ErrQuotaExceeded at the owner's limit", err)
+	}
+}
+
+// Files other members store in the account's individual workspace consume the
+// same account quota, so personal uploads must see them.
+func TestCheckUploadQuotaCountsMembersInOwnIndividualWorkspace(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+
+	ownerID := uuid.New()
+	botID := uuid.New()
+	workspaceID := uuid.New()
+	workspace := workspaceID.String()
+	const mb = int64(1024 * 1024)
+
+	seedUsageFile(t, db, ownerID, nil, 30*mb)
+	seedUsageFile(t, db, botID, &workspace, 20*mb)
+
+	svc.SetWorkspaceClient(&stubWorkspaceClient{
+		workspace: &gen.DyWorkspace{
+			Id:             workspaceID.String(),
+			Type:           gen.DyWorkspaceType_INDIVIDUAL,
+			Plan:           gen.DyWorkspacePlan_FREE,
+			OwnerAccountId: ownerID.String(),
+		},
+		member: true,
+	})
+
+	account := &gen.DyAccount{Id: ownerID.String(), Profile: &gen.DyAccountProfile{Level: 60}}
+	err := svc.CheckUploadQuota(account, 17000*mb, 1)
+	if err == nil {
+		t.Fatal("CheckUploadQuota() error = nil, want quota exceeded")
+	}
+	if !strings.Contains(err.Error(), "used=50MB") {
+		t.Fatalf("CheckUploadQuota() error = %v, want used=50MB (personal + member files)", err)
+	}
+}
+
+// Valve polls this figure for its shared-quota snapshot, so an individual
+// workspace must report the pool its limit covers, not just own files.
+func TestChargedWorkspaceBytesReportsTheSharedPool(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+
+	ownerID := uuid.New()
+	botID := uuid.New()
+	workspaceID := uuid.New()
+	workspace := workspaceID.String()
+	const mb = int64(1024 * 1024)
+
+	seedUsageFile(t, db, ownerID, nil, 30*mb)
+	seedUsageFile(t, db, ownerID, &workspace, 10*mb)
+	seedUsageFile(t, db, botID, &workspace, 20*mb)
+
+	svc.SetWorkspaceClient(&stubWorkspaceClient{
+		workspace: &gen.DyWorkspace{
+			Id:             workspaceID.String(),
+			Type:           gen.DyWorkspaceType_INDIVIDUAL,
+			Plan:           gen.DyWorkspacePlan_FREE,
+			OwnerAccountId: ownerID.String(),
+		},
+	})
+
+	used, err := svc.ChargedWorkspaceBytes(context.Background(), workspaceID.String())
+	if err != nil {
+		t.Fatalf("ChargedWorkspaceBytes() error = %v", err)
+	}
+	if used != 60*mb {
+		t.Fatalf("used = %d, want personal + workspace 60MiB", used)
+	}
+
+	// Organization workspaces are charged their own files against the plan quota.
+	organizationID := uuid.New()
+	organization := organizationID.String()
+	seedUsageFile(t, db, ownerID, &organization, 10*mb)
+	seedUsageFile(t, db, botID, &organization, 20*mb)
+	svc.SetWorkspaceClient(&stubWorkspaceClient{
+		workspace: &gen.DyWorkspace{
+			Id:   organizationID.String(),
+			Type: gen.DyWorkspaceType_ORGANIZATION,
+			Plan: gen.DyWorkspacePlan_PRO,
+		},
+	})
+
+	used, err = svc.ChargedWorkspaceBytes(context.Background(), organizationID.String())
+	if err != nil {
+		t.Fatalf("ChargedWorkspaceBytes() error = %v", err)
+	}
+	if used != 30*mb {
+		t.Fatalf("used = %d, want workspace files only 30MiB", used)
+	}
+}
+
+// Accounts without a provisioned individual workspace have no extra workspace
+// pool; resolving one must not break the personal quota check.
+func TestCheckUploadQuotaToleratesMissingIndividualWorkspace(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+
+	accountID := uuid.New()
+	const mb = int64(1024 * 1024)
+	seedUsageFile(t, db, accountID, nil, 30*mb)
+
+	svc.SetWorkspaceClient(&stubWorkspaceClient{
+		individualErr: status.Error(codes.NotFound, "individual workspace not found"),
+	})
+
+	account := &gen.DyAccount{Id: accountID.String(), Profile: &gen.DyAccountProfile{Level: 60}}
+	err := svc.CheckUploadQuota(account, 17000*mb, 1)
+	if err == nil {
+		t.Fatal("CheckUploadQuota() error = nil, want quota exceeded")
+	}
+	if !strings.Contains(err.Error(), "used=30MB") {
+		t.Fatalf("CheckUploadQuota() error = %v, want used=30MB (own files only)", err)
+	}
+}
+
+// The usage gauge must report the pool the upload checks enforce, so a user
+// cannot read free space that the next upload will refuse.
+func TestGetUsageReportsTheSharedPool(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{})
+	svc := NewQuotaService(&database.DB{DB: db})
+
+	ownerID := uuid.New()
+	botID := uuid.New()
+	workspaceID := uuid.New()
+	workspace := workspaceID.String()
+	const mb = int64(1024 * 1024)
+
+	seedUsageFile(t, db, ownerID, nil, 30*mb)
+	seedUsageFile(t, db, ownerID, &workspace, 10*mb)
+	seedUsageFile(t, db, botID, &workspace, 20*mb)
+
+	svc.SetWorkspaceClient(&stubWorkspaceClient{
+		workspace: &gen.DyWorkspace{
+			Id:             workspaceID.String(),
+			Type:           gen.DyWorkspaceType_INDIVIDUAL,
+			Plan:           gen.DyWorkspacePlan_FREE,
+			OwnerAccountId: ownerID.String(),
+		},
+		planQuota: &gen.DyWorkspacePlanQuota{Quotas: map[string]int64{"max_storage_bytes": 60 * mb}},
+	})
+
+	summary, err := svc.GetUsage(&gen.DyAccount{Id: ownerID.String(), Profile: &gen.DyAccountProfile{Level: 60}})
+	if err != nil {
+		t.Fatalf("GetUsage() error = %v", err)
+	}
+	if summary.UsedQuota != 60 || summary.TotalQuota != 60 || summary.TotalFileCount != 3 || summary.TotalUsageBytes != 60*mb {
+		t.Fatalf("summary = %+v, want used=60 total=60 count=3 bytes=60MiB", summary)
 	}
 }
 

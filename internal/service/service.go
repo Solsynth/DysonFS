@@ -35,8 +35,10 @@ import (
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -3763,9 +3765,10 @@ func (s *QuotaService) CheckUploadQuota(account *gen.DyAccount, size int64, cost
 	if err != nil {
 		return err
 	}
-	// Count all account files (personal + workspace) since personal files and
-	// workspace files share the same account quota.
-	usedMB, err := s.totalBillableUsage(account.GetId())
+	// Count the account's whole pool (personal files + every workspace file,
+	// including files other members uploaded into the account's own individual
+	// workspace) since they share one account quota.
+	usedMB, _, _, err := s.accountPoolStats(context.Background(), account.GetId())
 	if err != nil {
 		return err
 	}
@@ -3803,6 +3806,65 @@ func (s *QuotaService) GetWorkspaceUsage(ctx context.Context, workspaceID, accou
 	return s.workspaceUsage(ctx, workspaceID, accountID)
 }
 
+// ChargedWorkspaceBytes returns the bytes charged to a workspace's storage
+// quota, without a membership check: the workspace's own files, plus the
+// owner's personal files when the workspace is an individual (personal) drive.
+// Valve's shared-quota poller subtracts this figure from the same account quota
+// the upload paths enforce, so the published gauge and the admission checks
+// agree.
+func (s *QuotaService) ChargedWorkspaceBytes(ctx context.Context, workspaceID string) (int64, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if _, err := uuid.Parse(workspaceID); err != nil {
+		return 0, fmt.Errorf("invalid workspace id: %w", err)
+	}
+
+	// Without the workspace service the type is unknown; report the workspace's
+	// own files so the poller keeps running, rather than failing every workspace.
+	if s.workspaceClient == nil {
+		_, _, usedBytes, err := s.workspacePoolStats(workspaceID)
+		return usedBytes, err
+	}
+
+	workspace, err := s.workspaceClient.GetWorkspace(ctx, &gen.DyGetWorkspaceRequest{Query: &gen.DyGetWorkspaceRequest_Id{Id: workspaceID}})
+	if err != nil {
+		logging.Log.Warn().Err(err).Str("workspace_id", workspaceID).
+			Msg("failed to resolve workspace type for shared quota; reporting its own files only")
+		_, _, usedBytes, err := s.workspacePoolStats(workspaceID)
+		return usedBytes, err
+	}
+
+	// Organization workspaces are charged their own files against the plan quota.
+	if workspace.GetType() != gen.DyWorkspaceType_INDIVIDUAL || strings.TrimSpace(workspace.GetOwnerAccountId()) == "" {
+		_, _, usedBytes, err := s.workspacePoolStats(workspaceID)
+		return usedBytes, err
+	}
+
+	usedBytes, _, err := s.individualWorkspaceUsage(workspace, "")
+	return usedBytes, err
+}
+
+// individualWorkspaceUsage sums the pool charged to an individual (personal)
+// workspace: every file in the workspace, whichever member uploaded it, plus the
+// owner's personal files. The pool's limit is the owner's account quota, so
+// charging the requesting member's own files instead would hand every member of
+// the personal workspace an independent full quota.
+func (s *QuotaService) individualWorkspaceUsage(workspace *gen.DyWorkspace, accountID string) (int64, int64, error) {
+	ownerID := strings.TrimSpace(workspace.GetOwnerAccountId())
+	if ownerID == "" {
+		ownerID = strings.TrimSpace(accountID)
+	}
+
+	_, personalFiles, personalBytes, err := s.scopedUsageStats(ownerID, "")
+	if err != nil {
+		return 0, 0, fmt.Errorf("calculate personal storage usage: %w", err)
+	}
+	_, workspaceFiles, workspaceBytes, err := s.workspacePoolStats(workspace.GetId())
+	if err != nil {
+		return 0, 0, fmt.Errorf("calculate workspace storage usage: %w", err)
+	}
+	return personalBytes + workspaceBytes, personalFiles + workspaceFiles, nil
+}
+
 func (s *QuotaService) workspaceUsage(ctx context.Context, workspaceID, accountID string) (WorkspaceUsageSummary, error) {
 	if s.workspaceClient == nil {
 		return WorkspaceUsageSummary{}, errors.New("workspace uploads are not configured")
@@ -3829,9 +3891,10 @@ func (s *QuotaService) workspaceUsage(ctx context.Context, workspaceID, accountI
 
 	// Individual workspaces are the account's own drive: the storage limit is the
 	// owner's personal quota (leveling + perk + extra), computed and served by the
-	// Valve service. The charged pool mixes the account's personal files with this
-	// workspace's files. If Valve is unavailable, fall back to the local
-	// leveling+perk calculation (extra quota lives in Valve and is skipped).
+	// Valve service. The charged pool is that owner's personal files together with
+	// every file in this workspace, whichever member uploaded it. If Valve is
+	// unavailable, fall back to the local leveling+perk calculation (extra quota
+	// lives in Valve and is skipped).
 	var totalBytes int64
 	var usedBytes int64
 	var totalFiles int64
@@ -3860,16 +3923,11 @@ func (s *QuotaService) workspaceUsage(ctx context.Context, workspaceID, accountI
 			totalBytes = (leveling + perk) * quotaUnitBytes
 		}
 
-		_, personalFiles, personalBytes, err := s.scopedUsageStats(accountID, "")
-		if err != nil {
-			return WorkspaceUsageSummary{}, fmt.Errorf("calculate personal storage usage: %w", err)
+		var usageErr error
+		usedBytes, totalFiles, usageErr = s.individualWorkspaceUsage(workspace, accountID)
+		if usageErr != nil {
+			return WorkspaceUsageSummary{}, usageErr
 		}
-		_, workspaceFiles, workspaceBytes, err := s.scopedUsageStats(accountID, workspaceID)
-		if err != nil {
-			return WorkspaceUsageSummary{}, fmt.Errorf("calculate workspace storage usage: %w", err)
-		}
-		usedBytes = personalBytes + workspaceBytes
-		totalFiles = personalFiles + workspaceFiles
 	} else {
 		planQuota, err := s.workspaceClient.GetPlanQuota(ctx, &gen.DyGetPlanQuotaRequest{
 			Plan:        workspace.GetPlan(),
@@ -4036,7 +4094,9 @@ func (s *QuotaService) GetUsage(account *gen.DyAccount) (UsageSummary, error) {
 	if err != nil {
 		return UsageSummary{}, err
 	}
-	usedMB, fileCount, usageBytes, err := s.usageStats(account.GetId())
+	// Report the pool the upload checks enforce, not just the personal namespace:
+	// personal files and the account's own workspace share one account quota.
+	usedMB, fileCount, usageBytes, err := s.accountPoolStats(context.Background(), account.GetId())
 	if err != nil {
 		return UsageSummary{}, err
 	}
@@ -4075,14 +4135,6 @@ func (s *QuotaService) enrichedAccount(ctx context.Context, account *gen.DyAccou
 		_ = s.cache.SetData(ctx, key, resolved, "DyAccount", 5*time.Minute)
 	}
 	return resolved, nil
-}
-
-// scopedUsageStats aggregates an account's billable file usage in MB, plus the
-// raw byte/file counts. When workspaceID is non-empty only files in that
-// workspace are counted; otherwise only personal files (workspace_id IS NULL)
-// are counted. The MB total applies pool cost multipliers.
-func (s *QuotaService) usageStats(accountID string) (int64, int64, int64, error) {
-	return s.scopedUsageStats(accountID, "")
 }
 
 // usageRow is one billable file's (storage pool, size) pair.
@@ -4184,11 +4236,50 @@ func sumBillableUsage(rows []usageRow, multipliers map[string]float64) (int64, i
 	return total, fileCount, usageBytes
 }
 
+// scopedUsageStats aggregates an account's billable file usage in MB, plus the
+// raw byte/file counts. When workspaceID is non-empty only files in that
+// workspace are counted; otherwise only personal files (workspace_id IS NULL)
+// are counted. The MB total applies pool cost multipliers.
 func (s *QuotaService) scopedUsageStats(accountID, workspaceID string) (int64, int64, int64, error) {
 	rows, err := s.scanUsageRows(accountID, &workspaceID, nil)
 	if err != nil {
 		return 0, 0, 0, err
 	}
+	return s.statsForRows(rows)
+}
+
+// scanWorkspaceRows loads the (pool_id, size) pairs of every file in one
+// workspace, whichever member uploaded it. excludeAccountID, when set, skips
+// that uploader's rows so a caller's own rows are never counted twice.
+func (s *QuotaService) scanWorkspaceRows(workspaceID, excludeAccountID string) ([]usageRow, error) {
+	query := s.db.Model(&database.CloudFile{}).
+		Select("cloud_files.pool_id, file_objects.size").
+		Joins("JOIN file_objects ON file_objects.id = cloud_files.object_id AND file_objects.deleted_at IS NULL").
+		Where("cloud_files.workspace_id = ? AND cloud_files.deleted_at IS NULL", workspaceID)
+	if excludeAccountID != "" {
+		query = query.Where("cloud_files.account_id <> ?", excludeAccountID)
+	}
+
+	var rows []usageRow
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// workspacePoolStats aggregates a whole workspace's files regardless of
+// uploader: the charged pool of an individual workspace.
+func (s *QuotaService) workspacePoolStats(workspaceID string) (int64, int64, int64, error) {
+	rows, err := s.scanWorkspaceRows(workspaceID, "")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return s.statsForRows(rows)
+}
+
+// statsForRows applies each file's pool cost multiplier and returns the billable
+// MB total plus the raw file and byte counts.
+func (s *QuotaService) statsForRows(rows []usageRow) (int64, int64, int64, error) {
 	multipliers, err := s.poolUsageMultipliers(rows)
 	if err != nil {
 		return 0, 0, 0, err
@@ -4197,25 +4288,36 @@ func (s *QuotaService) scopedUsageStats(accountID, workspaceID string) (int64, i
 	return total, fileCount, usageBytes, nil
 }
 
-func (s *QuotaService) billableUsage(accountID string) (int64, error) {
-	total, _, _, err := s.usageStats(accountID)
-	return total, err
-}
-
-// totalBillableUsage returns the billable MB for ALL of an account's files
-// (personal + every workspace). This matches how the personal workspace quota
-// counts storage: personal files and workspace files share one account quota.
-func (s *QuotaService) totalBillableUsage(accountID string) (int64, error) {
+// accountPoolStats aggregates the pool charged to an account's quota: every file
+// the account owns (personal + every workspace it uploaded to) plus files other
+// members uploaded into the account's own individual workspace, which shares the
+// same account quota. Both the upload checks and the usage gauge report it.
+func (s *QuotaService) accountPoolStats(ctx context.Context, accountID string) (int64, int64, int64, error) {
 	rows, err := s.scanUsageRows(accountID, nil, nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
-	multipliers, err := s.poolUsageMultipliers(rows)
-	if err != nil {
-		return 0, err
+
+	if s.workspaceClient != nil {
+		individual, err := s.workspaceClient.GetIndividualWorkspace(ctx, &gen.DyGetUserWorkspacesRequest{AccountId: accountID})
+		switch {
+		case err != nil && status.Code(err) == codes.NotFound:
+			// No individual workspace provisioned: there is no extra workspace pool.
+		case err != nil:
+			logging.Log.Warn().Err(err).Str("account_id", accountID).
+				Msg("failed to resolve the individual workspace; shared quota may under-count its files")
+		case strings.TrimSpace(individual.GetId()) != "":
+			// The account's own rows above already cover its files in that
+			// workspace, so only the other members' rows are added.
+			extra, err := s.scanWorkspaceRows(individual.GetId(), accountID)
+			if err != nil {
+				return 0, 0, 0, err
+			}
+			rows = append(rows, extra...)
+		}
 	}
-	total, _, _ := sumBillableUsage(rows, multipliers)
-	return total, nil
+
+	return s.statsForRows(rows)
 }
 
 func (s *QuotaService) GetPoolUsage(accountID uuid.UUID, poolID string) (map[string]any, error) {

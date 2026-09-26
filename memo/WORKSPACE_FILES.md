@@ -21,11 +21,15 @@ Workspace uploads are rejected when this endpoint is not configured.
 For an **individual workspace** (the account's own drive), the storage limit is
 the owner's personal quota — leveling + perk + extra — computed and served by
 the WattEngine Valve service: `GetPlanQuota(workspace_id)` returns the account
-quota in `max_storage_bytes`, and the charged pool mixes the account's personal
-files with the workspace's files. If Valve is unavailable, DysonFS falls back
-to the local leveling+perk calculation (extra quota lives in Valve and is
-skipped during the outage). Organization workspaces keep the plan-only storage
-limit.
+quota in `max_storage_bytes`, and the charged pool is the owner's personal files
+together with every file in the workspace, whichever member uploaded it. If
+Valve is unavailable, DysonFS falls back to the local leveling+perk calculation
+(extra quota lives in Valve and is skipped during the outage). Organization
+workspaces keep the plan-only storage limit and charge only their own files.
+
+DysonFS publishes the same charged pool to Valve through
+`DyQuotaService.GetUsedQuota`, so the account quota Valve reports as used, and
+the limit it publishes for the workspace, come from one figure.
 
 ## Browsing workspace files and quota
 
@@ -58,13 +62,17 @@ Personal files and workspace files share the same account quota. When checking
 whether an upload fits:
 
 - **Personal file upload** (`workspace_id` absent): counts ALL of the account's
-  files (personal + every workspace) against the account quota (leveling + perk
+  files (personal + every workspace) plus files other members stored in the
+  account's own individual workspace, against the account quota (leveling + perk
   + extra from Valve). This prevents workspace files from silently eating the
   shared quota and then allowing personal uploads that exceed it.
 - **Workspace upload**: counts only that workspace's files against the plan's
-  `max_storage_bytes`. For individual workspaces the limit IS the account quota,
-  and the charged pool is personal + workspace files. For organization
-  workspaces, only that workspace's files are charged.
+  `max_storage_bytes`. For individual workspaces the limit IS the owner's
+  account quota, and the charged pool is the owner's personal files plus every
+  file in the workspace, whichever member uploaded it — so every member of the
+  personal workspace, including invited bot accounts, is charged the owner's one
+  pool instead of getting an independent quota. For organization workspaces,
+  only that workspace's files are charged.
 - **Personal workspace display**: the quota gauge shows combined personal +
   workspace file usage against the account quota so the user sees true shared
   consumption.

@@ -90,7 +90,7 @@ Both direct upload and chunked upload creation accept the same metadata payload:
 - `direct` upload uses multipart form data with the same field names, plus `file`
 - `index` controls whether the file is indexed; defaults to `false`, but automatically becomes `true` when `parent_id` points to an indexed folder
 - `parent_id` is optional and can still be resolved server-side when omitted
-- `workspace_id` is optional; when provided, the uploader must be an active workspace member (role `Member` or higher), the resulting file is owned by that workspace, and the workspace plan's storage limit is used instead of the uploader's personal quota
+- `workspace_id` is optional; when provided, the uploader must be an active workspace member (role `Member` or higher), the resulting file is owned by that workspace, and the workspace plan's storage limit is used instead of the uploader's personal quota. An individual workspace's limit is the owner's account quota, and its charged pool is that owner's personal files plus every file in the workspace, whichever member uploaded it
 - workspace uploads require the `workspace.target` WattEngine gRPC configuration
 - `overwrite_id` is optional; when set, the upload replaces the content of an existing file instead of creating a new `cloud_files` row
 - `fast_mode` is optional; when used with `overwrite_id`, the server tries to overwrite the existing backing object in place
@@ -424,6 +424,9 @@ Valve's billing API.
 Usage accounting rules:
 
 - `used_quota` is billable usage in MB, not raw bytes
+- `used_quota` covers the same pool the upload checks enforce: the account's
+  files (personal + every workspace it uploaded to) plus files other members
+  stored in the account's own individual workspace
 - raw file bytes are returned separately as `total_usage_bytes`
 - pool billing `cost_multiplier` affects billable usage and quota checks
 - the multiplier is applied per file based on the file's pool
