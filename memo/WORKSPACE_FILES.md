@@ -18,6 +18,15 @@ tlsSkipVerify = false
 
 Workspace uploads are rejected when this endpoint is not configured.
 
+Valve must be able to reach this service in return: give each storage service an
+entry in Valve's `StorageQuota:Servers` config (`Name` + `Target`, e.g. `drive` →
+the DysonFS gRPC endpoint and `flywheel` → Flywheel's). Valve's poller then asks
+every configured service for workspace usage once a minute. Without an entry
+Valve cannot collect usage: its `GET /api/workspaces/{slug}/quota/storage`
+returns `503`, and organization-workspace quota checks here fail closed.
+Individual (personal) workspaces keep working, because DysonFS computes their
+pool from its own database plus the account quota Valve serves.
+
 For an **individual workspace** (the account's own drive), the storage limit is
 the owner's personal quota — leveling + perk + extra — computed and served by
 the WattEngine Valve service: `GetPlanQuota(workspace_id)` returns the account
