@@ -2239,6 +2239,127 @@ func TestReanalyzeFilesDeduplicatesAndUpdatesSourceMetadata(t *testing.T) {
 	}
 }
 
+func TestScheduleSourceReanalysisFlagsOnlyMediaObjects(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+
+	imageObjectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: imageObjectID, Size: 4, MimeType: "image/jpeg", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create image object: %v", err)
+	}
+	imageFileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: imageFileID, Name: "photo.jpg", AccountID: uuid.New(), ObjectID: &imageObjectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create image file: %v", err)
+	}
+	textObjectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: textObjectID, Size: 4, MimeType: "text/plain", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create text object: %v", err)
+	}
+	textFileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: textFileID, Name: "notes.txt", AccountID: uuid.New(), ObjectID: &textObjectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create text file: %v", err)
+	}
+
+	if err := svc.ScheduleSourceReanalysis(imageFileID); err != nil {
+		t.Fatalf("ScheduleSourceReanalysis(image) error = %v", err)
+	}
+	if err := svc.ScheduleSourceReanalysis(textFileID); err != nil {
+		t.Fatalf("ScheduleSourceReanalysis(text) error = %v", err)
+	}
+
+	var imageObject, textObject database.FileObject
+	if err := db.First(&imageObject, "id = ?", imageObjectID).Error; err != nil {
+		t.Fatalf("reload image object: %v", err)
+	}
+	if err := db.First(&textObject, "id = ?", textObjectID).Error; err != nil {
+		t.Fatalf("reload text object: %v", err)
+	}
+	if !imageObject.NeedsReanalysis {
+		t.Fatal("image object was not queued for reanalysis")
+	}
+	if textObject.NeedsReanalysis {
+		t.Fatal("text object was queued for reanalysis although the server derives no metadata for it")
+	}
+}
+
+func TestReanalyzeStoredObjectReplacesClientMetadata(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	tmp := t.TempDir()
+	stor := storage.NewLocalBackend(tmp)
+	svc := NewFileService(&database.DB{DB: db}, stor)
+
+	imgPath := filepath.Join(tmp, "source.png")
+	encoded, err := os.Create(imgPath)
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	if err := png.Encode(encoded, blankImage(4, 5)); err != nil {
+		_ = encoded.Close()
+		t.Fatalf("encode image: %v", err)
+	}
+	_ = encoded.Close()
+	payload, err := os.ReadFile(imgPath)
+	if err != nil {
+		t.Fatalf("read image: %v", err)
+	}
+
+	objectID := database.NewID()
+	if err := stor.Put(context.Background(), objectID, bytes.NewReader(payload), int64(len(payload)), "image/png"); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+	clientMeta := datatypes.JSON([]byte(`{"analysis_source":"client","width":1920,"height":1080,"duration_ms":83420,"aspect_ratio":"16:9"}`))
+	if err := db.Create(&database.FileObject{ID: objectID, Size: int64(len(payload)), MimeType: "image/png", StorageKey: &objectID, Meta: clientMeta}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	fileID := database.NewID()
+	queuedAt := time.Now().Add(-time.Minute)
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "photo.png", AccountID: uuid.New(), ObjectID: &objectID, Indexed: true, UpdatedAt: queuedAt}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	file, err := svc.ReanalyzeStoredObject(context.Background(), objectID)
+	if err != nil {
+		t.Fatalf("ReanalyzeStoredObject() error = %v", err)
+	}
+	if file == nil || file.Object == nil {
+		t.Fatal("expected the refreshed file with its object")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(file.Object.Meta, &meta); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if meta["analysis_source"] != "server" {
+		t.Fatalf("analysis_source = %v, want server", meta["analysis_source"])
+	}
+	if meta["width"] != float64(4) || meta["height"] != float64(5) {
+		t.Fatalf("dimensions = %v x %v, want the server-measured 4 x 5", meta["width"], meta["height"])
+	}
+	if _, ok := meta["blurhash"].(string); !ok {
+		t.Fatalf("blurhash missing from server metadata: %#v", meta)
+	}
+	if _, ok := meta["exif_version"]; !ok {
+		t.Fatalf("exif_version missing from server metadata: %#v", meta)
+	}
+	if _, ok := meta["duration_ms"]; ok {
+		t.Fatalf("client-only duration_ms survived server reanalysis: %#v", meta)
+	}
+	if !file.UpdatedAt.After(queuedAt) {
+		t.Fatalf("file updated_at = %v, want advanced past %v so the metadata event supersedes the client snapshot", file.UpdatedAt, queuedAt)
+	}
+}
+
+func TestReanalyzeStoredObjectRequiresLiveFile(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(t.TempDir()))
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 1, MimeType: "image/png", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	if _, err := svc.ReanalyzeStoredObject(context.Background(), objectID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("ReanalyzeStoredObject() error = %v, want gorm.ErrRecordNotFound", err)
+	}
+}
+
 func TestCanAccessFileInheritsPermissionsFromAncestors(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

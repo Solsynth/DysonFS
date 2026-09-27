@@ -210,10 +210,15 @@ The endpoint performs these checks:
     which case the bytes are sniffed) and persisted on the `FileObject`.
     Server-side analysis is best-effort: if the download or analysis fails,
     the upload still succeeds with whatever metadata it has.
-11. Publishes the file metadata update event. A client-assisted upload skips
-    the normal upload-processing event and worker because its metadata and
-    required derivatives are already persisted.
-12. Returns the visible file with status `2` for legacy server-side processing,
+11. Queues a background source reanalysis for client-assisted media uploads.
+    The client metadata is only a first approximation, so the committed object
+    is flagged and a worker later re-runs the full server-side analysis. See
+    [Background Source Reanalysis](#background-source-reanalysis).
+12. Publishes the file metadata update event. A client-assisted upload skips
+    the normal upload-processing event and its derivative pass because the
+    required derivatives are already persisted; the queued reanalysis refreshes
+    source metadata only.
+13. Returns the visible file with status `2` for legacy server-side processing,
     or status `3` for a client-assisted upload.
 
 Example response shape:
@@ -276,6 +281,42 @@ Response:
 
 The `error` field contains the processing error when `status` is `Failed`.
 
+## Background Source Reanalysis
+
+A client-assisted upload persists the analysis the client extracted, and most
+clients cannot read EXIF correctly or probe media as thoroughly as the server.
+The completed object is therefore queued for a server-side reanalysis instead
+of being trusted as final.
+
+The queue is a `needs_reanalysis` flag on the `FileObject`. Completion sets it
+for the media types the server analyzes on its own (any `image/*`, `video/*`,
+or `audio/*`); other objects are never queued, because the server has nothing
+to add for them. Workers drain the queue on the same 30-second maintenance tick
+as the object rehash queue, oldest first, up to 20 objects per pass, ignoring
+anything touched within the last 30 seconds so an in-flight request is not
+raced:
+
+1. Re-download the object from its pool.
+2. Recompute the SHA-256 hash and resolve the MIME type from the actual bytes.
+3. Run the full source analysis — dimensions, EXIF, blurhash, and the media
+   probe — and overwrite the object metadata.
+4. Mark `analysis_source` as `server` and drop the client-only scalar fields
+   (`duration_ms`, `video_codec`, `audio_codec`, `container`, `sample_rate`,
+   `channels`), because the server's media probe supersedes them. Dimensions
+   and `aspect_ratio` are overwritten rather than dropped.
+5. Leave `has_thumbnail` / `has_compression` untouched: the client-assisted
+   completion already computed them from the real derivative children.
+6. Advance the file's `updated_at` and publish the metadata update event, so
+   the fleet applies the corrected metadata instead of discarding it as stale.
+   The event is published before the queue entry is cleared, so a crash in
+   between republishes the snapshot (consumers tolerate duplicates) rather than
+   losing the update.
+
+A failure leaves the flag set and throttles the next attempt, up to three
+attempts; after that the entry is retired, so a permanently unanalyzable object
+cannot occupy the queue forever. Reanalysis never deletes or regenerates the
+client-produced derivatives.
+
 ## Events
 
 ### Processing event
@@ -320,11 +361,27 @@ envelope plus a file metadata snapshot:
     "size": 5242880,
     "has_compression": true,
     "has_thumbnail": false,
+    "file_meta": {
+      "analysis_source": "server",
+      "width": 4032,
+      "height": 3024,
+      "blurhash": "LKO2?U%2Tw=w]~RBVZRi};RPxuwH",
+      "exif_version": 2,
+      "exif": {
+        "Model": "Pixel 8"
+      }
+    },
     "status": 2,
     "updated_at": "2026-07-31T23:00:00Z"
   }
 }
 ```
+
+`file` carries the analyzed source metadata under `file_meta` — dimensions,
+blurhash, EXIF, and the media probe — so a consumer can apply it without
+re-reading the file. The snapshot is published when a file is created,
+processed, or reanalyzed; a background reanalysis therefore republishes the
+snapshot with the corrected server metadata.
 
 The event is intended for DysonNetwork services such as Sphere. Those
 services can use `file_id` to update denormalized JSONB file-reference
@@ -332,7 +389,9 @@ snapshots when the status or derived metadata changes.
 
 Consumers must tolerate duplicate events and should not assume that events are
 delivered exactly once. They should compare the snapshot's `updated_at` with
-the stored reference before applying an older event.
+the stored reference before applying an older event; a reanalysis advances the
+file's `updated_at` so its snapshot supersedes the earlier client-metadata
+snapshot.
 
 ## Multipart Direct Upload
 
@@ -446,7 +505,9 @@ exactly to the declared `file_size`, then calls S3's complete-multipart
 operation. After completion the object exists under the same `object_key` and
 the normal verification and file-creation steps run unchanged. A client-
 assisted upload also validates and stores its separately uploaded thumbnail;
-it does not download or probe the original source.
+it does not download or probe the original source during completion, but it
+queues the object for [background source
+reanalysis](#background-source-reanalysis).
 
 If parts are missing or sizes do not match, the endpoint returns a 400 error
 and leaves the task `Uploading` so the client can upload the missing parts and

@@ -2546,6 +2546,12 @@ func completeDirectUpload(c *gin.Context, files *service.FileService, tasks *ser
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		// The client cannot be trusted to read EXIF or probe media, so hand the
+		// committed object to the worker for an authoritative server-side
+		// reanalysis. It republishes the corrected metadata when it lands.
+		if err := files.ScheduleSourceReanalysis(file.ID); err != nil {
+			logging.Log.Warn().Err(err).Str("fileId", file.ID).Msg("failed to schedule source reanalysis")
+		}
 		file, err = files.GetFileInWorkspace(file.ID, task.WorkspaceID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2602,6 +2608,7 @@ func publishFileMetadataUpdated(ctx context.Context, bus *eventbus.Bus, dispatch
 		snapshot.MimeType, snapshot.Size, snapshot.HasCompression, snapshot.HasThumbnail = file.Object.MimeType, file.Object.Size, file.Object.HasCompression, file.Object.HasThumbnail
 		snapshot.Hash = file.Object.Hash
 	}
+	snapshot.FileMeta = file.MetaMap()
 	evt := eventbus.FileMetadataUpdatedEvent{Event: eb.Event{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events"}, FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot}
 	if dispatcher != nil {
 		if d, ok := dispatcher.(metadataEventDispatcher); ok {

@@ -74,7 +74,84 @@ func (w *Worker) runMaintenance(ctx context.Context) {
 		case <-rehashTicker.C:
 			w.processRehashQueue(ctx)
 			w.processPoolMigrations(ctx)
+			w.processReanalysisQueue(ctx)
 		}
+	}
+}
+
+// sourceReanalysisMaxAttempts bounds how many times one object is fed back into
+// the background reanalysis queue. Deterministic failures (corrupt or
+// unsupported media) would otherwise re-download the object forever.
+const sourceReanalysisMaxAttempts = 3
+
+// reanalysisQueueDelay keeps the queue from racing an object that a request
+// just created or updated.
+const reanalysisQueueDelay = 30 * time.Second
+
+// processReanalysisQueue re-runs server-side source analysis for objects that
+// client-assisted direct uploads flagged. Most clients cannot read EXIF
+// correctly or probe media as thoroughly as the server, so the metadata is
+// recomputed here and republished to the fleet.
+func (w *Worker) processReanalysisQueue(ctx context.Context) {
+	if w.files == nil || w.db == nil {
+		return
+	}
+	var objects []database.FileObject
+	if err := w.db.Where("needs_reanalysis = true AND deleted_at IS NULL AND updated_at < ?", time.Now().Add(-reanalysisQueueDelay)).Order("updated_at asc").Limit(20).Find(&objects).Error; err != nil {
+		logging.Log.Error().Err(err).Msg("failed to query source reanalysis queue")
+		return
+	}
+	for i := range objects {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		object := &objects[i]
+		file, err := w.files.ReanalyzeStoredObject(ctx, object.ID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// The object no longer backs a live file; retire the entry.
+				_ = w.clearReanalysis(object.ID)
+				continue
+			}
+			w.failReanalysis(object, err)
+			continue
+		}
+		// Publish before clearing the flag: a crash in between republishes the
+		// (idempotent) snapshot instead of losing the update, and consumers
+		// already tolerate duplicates.
+		if err := w.publishMetadata(file, ""); err != nil {
+			w.failReanalysis(object, err)
+			continue
+		}
+		if err := w.clearReanalysis(object.ID); err != nil {
+			logging.Log.Error().Err(err).Str("objectId", object.ID).Msg("failed to clear source reanalysis flag")
+			continue
+		}
+		logging.Log.Info().Str("objectId", object.ID).Str("fileId", file.ID).Msg("source reanalysis completed")
+	}
+}
+
+func (w *Worker) clearReanalysis(objectID string) error {
+	return w.db.Model(&database.FileObject{}).Where("id = ?", objectID).Updates(map[string]any{
+		"needs_reanalysis":    false,
+		"reanalysis_attempts": 0,
+	}).Error
+}
+
+// failReanalysis refreshes updated_at so the queue delay applies again before
+// the next attempt, and gives up after sourceReanalysisMaxAttempts so a
+// permanently unanalyzable object never occupies the queue forever.
+func (w *Worker) failReanalysis(object *database.FileObject, reanalysisErr error) {
+	attempts := object.ReanalysisAttempts + 1
+	updates := map[string]any{"reanalysis_attempts": attempts, "updated_at": time.Now()}
+	if attempts >= sourceReanalysisMaxAttempts {
+		updates["needs_reanalysis"] = false
+		logging.Log.Error().Err(reanalysisErr).Str("objectId", object.ID).Int("attempts", attempts).Msg("source reanalysis abandoned after repeated failures")
+	} else {
+		logging.Log.Warn().Err(reanalysisErr).Str("objectId", object.ID).Int("attempts", attempts).Msg("source reanalysis failed, will retry")
+	}
+	if err := w.db.Model(&database.FileObject{}).Where("id = ?", object.ID).Updates(updates).Error; err != nil {
+		logging.Log.Error().Err(err).Str("objectId", object.ID).Msg("failed to record source reanalysis failure")
 	}
 }
 
@@ -407,7 +484,7 @@ func (w *Worker) markUploadFailed(evt eventbus.FileUploadedEvent, processingErr 
 	// failed snapshot, otherwise a predicted flag would outlive the failure.
 	_ = w.files.TouchCompatibilityFlags(evt.FileID)
 	if file, err := w.files.GetFile(evt.FileID); err == nil {
-		w.publishMetadata(file, evt.TaskID)
+		_ = w.publishMetadata(file, evt.TaskID)
 	}
 }
 
@@ -432,20 +509,23 @@ func (w *Worker) markUploadCompleted(evt eventbus.FileUploadedEvent, parent *dat
 	if err != nil {
 		file = parent
 	}
-	w.publishMetadata(file, evt.TaskID)
+	_ = w.publishMetadata(file, evt.TaskID)
 	return nil
 }
 
-func (w *Worker) publishMetadata(file *database.CloudFile, taskID string) {
+func (w *Worker) publishMetadata(file *database.CloudFile, taskID string) error {
 	if w.bus == nil || file == nil {
-		return
+		return nil
 	}
 	snapshot := eventbus.FileMetadataSnapshot{ID: file.ID, Name: file.Name, Status: int(file.UploadStatus), UpdatedAt: file.UpdatedAt, Usage: file.Usage, ApplicationType: file.ApplicationType}
 	if file.Object != nil {
 		snapshot.MimeType, snapshot.Size, snapshot.Hash = file.Object.MimeType, file.Object.Size, file.Object.Hash
 		snapshot.HasCompression, snapshot.HasThumbnail = file.Object.HasCompression, file.Object.HasThumbnail
 	}
-	_ = w.bus.PublishFileMetadataUpdated(context.Background(), eventbus.FileMetadataUpdatedEvent{Event: eb.Event{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events"}, FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot})
+	// Carrying the analyzed metadata lets the fleet apply the server-derived
+	// EXIF, dimensions, and media probe without re-fetching the file.
+	snapshot.FileMeta = file.MetaMap()
+	return w.bus.PublishFileMetadataUpdated(context.Background(), eventbus.FileMetadataUpdatedEvent{Event: eb.Event{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events"}, FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot})
 }
 
 func (w *Worker) openSourceObject(ctx context.Context, file *database.CloudFile) (io.ReadCloser, error) {

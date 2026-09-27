@@ -2325,6 +2325,10 @@ func (s *FileService) StoreClientSourceMetadata(fileID string, raw map[string]an
 	return s.GetFile(fileID)
 }
 
+// normalizeClientSourceMetadata validates and normalizes the analysis a client
+// extracted. The keys the server cannot reproduce itself are listed in
+// clientOnlySourceMetaKeys, which server reanalysis uses to drop stale client
+// values; keep the two in sync.
 func normalizeClientSourceMetadata(raw map[string]any) (map[string]any, error) {
 	updates := map[string]any{"analysis_source": "client"}
 	for key, value := range raw {
@@ -2385,6 +2389,130 @@ func clientMetadataInt(value any) (int64, error) {
 	default:
 		return 0, fmt.Errorf("not an integer")
 	}
+}
+
+// clientOnlySourceMetaKeys are metadata fields only client-side analysis
+// supplies. The server reports the same facts inside its media probe blob, so
+// a completed server reanalysis drops these scalars instead of leaving
+// possibly-wrong client values next to authoritative server metadata.
+var clientOnlySourceMetaKeys = []string{"duration_ms", "video_codec", "audio_codec", "container", "sample_rate", "channels"}
+
+// NeedsServerReanalysis reports whether the server derives source metadata for
+// a media type on its own. Client-assisted uploads of these types are
+// reanalysis candidates, because most clients cannot read EXIF correctly or
+// probe media as thoroughly as the server. It mirrors the mime branches of
+// AnalyzeSourceFile.
+func NeedsServerReanalysis(mimeType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0]))
+	return strings.HasPrefix(normalized, "image/") ||
+		strings.HasPrefix(normalized, "video/") ||
+		strings.HasPrefix(normalized, "audio/")
+}
+
+// ScheduleSourceReanalysis flags a file's object for a background server-side
+// metadata reanalysis. A client-assisted direct upload persists
+// client-extracted metadata without probing the source, so the worker later
+// re-runs the full analysis and publishes the corrected metadata. Non-media
+// files are ignored: the server has nothing to add for them.
+func (s *FileService) ScheduleSourceReanalysis(fileID string) error {
+	var file database.CloudFile
+	if err := s.db.Preload("Object").First(&file, "id = ?", fileID).Error; err != nil {
+		return err
+	}
+	if file.ObjectID == nil || file.Object == nil || !NeedsServerReanalysis(file.Object.MimeType) {
+		return nil
+	}
+	return s.db.Model(&database.FileObject{}).Where("id = ?", *file.ObjectID).Updates(map[string]any{
+		"needs_reanalysis":    true,
+		"reanalysis_attempts": 0,
+	}).Error
+}
+
+// ReanalyzeStoredObject re-downloads an object written straight to storage and
+// recomputes the server's own source metadata: SHA-256 hash, resolved MIME
+// type, dimensions, EXIF, blurhash, and the media probe. Client-supplied
+// metadata is replaced and the client-only scalar fields are dropped. The
+// returned file is reloaded so the caller can publish the refreshed metadata.
+//
+// A live file must reference the object; when none does, the raw
+// gorm.ErrRecordNotFound is returned so the queue owner can retire its entry.
+func (s *FileService) ReanalyzeStoredObject(ctx context.Context, objectID string) (*database.CloudFile, error) {
+	objectID = strings.TrimSpace(objectID)
+	if objectID == "" {
+		return nil, fmt.Errorf("object id is required")
+	}
+	var object database.FileObject
+	if err := s.db.First(&object, "id = ? AND deleted_at IS NULL", objectID).Error; err != nil {
+		return nil, err
+	}
+	file, err := s.firstFileForObject(objectID)
+	if err != nil {
+		return nil, err
+	}
+	backend, err := s.BackendForFile(file)
+	if err != nil {
+		return nil, err
+	}
+	storageKey := firstNonEmptyString(file.StorageKey, object.StorageKey, file.ObjectID, &objectID)
+	if storageKey == "" {
+		return nil, fmt.Errorf("storage key missing for object %s", objectID)
+	}
+	analysis, _, err := s.RefreshStoredObjectAnalysis(ctx, backend, objectID, storageKey, object.MimeType)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.applyServerSourceAnalysis(file.ID, objectID, analysis); err != nil {
+		return nil, err
+	}
+	return s.GetFile(file.ID)
+}
+
+// applyServerSourceAnalysis overwrites the object's source metadata with the
+// server's own analysis and stamps the file as updated. Unlike
+// StoreSourceAnalysis it leaves the derivative compatibility flags alone,
+// because a client-assisted upload already computed them from the real child
+// files, and it drops the client-only scalar fields the media probe supersedes.
+func (s *FileService) applyServerSourceAnalysis(fileID, objectID string, analysis *SourceAnalysis) error {
+	if analysis == nil {
+		return nil
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var object database.FileObject
+		if err := tx.First(&object, "id = ?", objectID).Error; err != nil {
+			return err
+		}
+		updates := sourceAnalysisUpdates(analysis)
+		if updates == nil {
+			updates = map[string]any{}
+		}
+		updates["analysis_source"] = "server"
+		merged, err := mergeJSONMeta(object.LegacyMeta(), updates)
+		if err != nil {
+			return err
+		}
+		meta := map[string]any{}
+		if err := json.Unmarshal(merged, &meta); err != nil {
+			return err
+		}
+		for _, key := range clientOnlySourceMetaKeys {
+			delete(meta, key)
+		}
+		encoded, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		if err := tx.Model(&database.FileObject{}).Where("id = ?", objectID).Updates(map[string]any{
+			"meta":       datatypes.JSON(encoded),
+			"updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		// The metadata snapshot consumers compare is the file's updated_at, so
+		// it must advance for the reanalysis event to supersede the earlier
+		// client-metadata snapshot instead of being discarded as stale.
+		return tx.Model(&database.CloudFile{}).Where("id = ?", fileID).Updates(map[string]any{"updated_at": now}).Error
+	})
 }
 
 type ReanalysisResult struct {

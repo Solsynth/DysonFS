@@ -1,12 +1,18 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -147,4 +153,105 @@ func seedWorkerDefaultPool(t *testing.T, db *gorm.DB, endpoint string) string {
 		t.Fatalf("create pool: %v", err)
 	}
 	return poolID
+}
+
+func TestProcessReanalysisQueueReanalyzesFlaggedObject(t *testing.T) {
+	tmp := t.TempDir()
+	db := openWorkerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	stor := storage.NewLocalBackend(tmp)
+	svc := service.NewFileService(&database.DB{DB: db}, stor)
+
+	imgPath := filepath.Join(tmp, "source.png")
+	encoded, err := os.Create(imgPath)
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	blank := image.NewRGBA(image.Rect(0, 0, 4, 5))
+	if err := png.Encode(encoded, blank); err != nil {
+		_ = encoded.Close()
+		t.Fatalf("encode image: %v", err)
+	}
+	_ = encoded.Close()
+	payload, err := os.ReadFile(imgPath)
+	if err != nil {
+		t.Fatalf("read image: %v", err)
+	}
+
+	objectID := database.NewID()
+	if err := stor.Put(context.Background(), objectID, bytes.NewReader(payload), int64(len(payload)), "image/png"); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+	clientMeta := datatypes.JSON([]byte(`{"analysis_source":"client","width":1920,"height":1080}`))
+	if err := db.Create(&database.FileObject{
+		ID: objectID, Size: int64(len(payload)), MimeType: "image/png", StorageKey: &objectID,
+		Meta: clientMeta, NeedsReanalysis: true,
+	}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	fileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "photo.png", AccountID: uuid.New(), ObjectID: &objectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	// Age the queue entry past the delay the worker applies before picking it up.
+	if err := db.Model(&database.FileObject{}).Where("id = ?", objectID).Updates(map[string]any{"updated_at": time.Now().Add(-time.Hour)}).Error; err != nil {
+		t.Fatalf("age queue entry: %v", err)
+	}
+
+	w := New(nil, svc, stor, &database.DB{DB: db}, tmp)
+	w.processReanalysisQueue(context.Background())
+
+	var object database.FileObject
+	if err := db.First(&object, "id = ?", objectID).Error; err != nil {
+		t.Fatalf("reload object: %v", err)
+	}
+	if object.NeedsReanalysis {
+		t.Fatal("reanalysis flag was not cleared after a successful pass")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(object.Meta, &meta); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if meta["analysis_source"] != "server" {
+		t.Fatalf("analysis_source = %v, want server", meta["analysis_source"])
+	}
+	if meta["width"] != float64(4) || meta["height"] != float64(5) {
+		t.Fatalf("dimensions = %v x %v, want the server-measured 4 x 5", meta["width"], meta["height"])
+	}
+}
+
+func TestProcessReanalysisQueueRetriesThenGivesUp(t *testing.T) {
+	tmp := t.TempDir()
+	db := openWorkerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	stor := storage.NewLocalBackend(tmp)
+	svc := service.NewFileService(&database.DB{DB: db}, stor)
+
+	// The object is flagged but its bytes were never written, so every pass fails.
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 4, MimeType: "image/png", StorageKey: &objectID, Meta: datatypes.JSON([]byte(`{}`)), NeedsReanalysis: true}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	fileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "missing.png", AccountID: uuid.New(), ObjectID: &objectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	w := New(nil, svc, stor, &database.DB{DB: db}, tmp)
+	for attempt := 1; attempt <= sourceReanalysisMaxAttempts; attempt++ {
+		if err := db.Model(&database.FileObject{}).Where("id = ?", objectID).Updates(map[string]any{"updated_at": time.Now().Add(-time.Hour)}).Error; err != nil {
+			t.Fatalf("age queue entry: %v", err)
+		}
+		w.processReanalysisQueue(context.Background())
+
+		var object database.FileObject
+		if err := db.First(&object, "id = ?", objectID).Error; err != nil {
+			t.Fatalf("reload object: %v", err)
+		}
+		if object.ReanalysisAttempts != attempt {
+			t.Fatalf("attempts after pass %d = %d, want %d", attempt, object.ReanalysisAttempts, attempt)
+		}
+		wantQueued := attempt < sourceReanalysisMaxAttempts
+		if object.NeedsReanalysis != wantQueued {
+			t.Fatalf("queued after pass %d = %v, want %v", attempt, object.NeedsReanalysis, wantQueued)
+		}
+	}
 }

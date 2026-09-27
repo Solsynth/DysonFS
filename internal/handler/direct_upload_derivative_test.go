@@ -467,6 +467,9 @@ func TestDirectUploadClientMediaSkipsSourceAnalysis(t *testing.T) {
 	if meta["analysis_source"] != "client" || meta["width"] != float64(1920) || meta["duration_ms"] != float64(83420) {
 		t.Fatalf("object metadata = %#v, want client analysis", meta)
 	}
+	if !parent.Object.NeedsReanalysis {
+		t.Fatal("client-assisted upload did not queue a background source reanalysis")
+	}
 	var children []database.CloudFile
 	if err := db.Preload("Object").Where("parent_id = ? AND application_type = ?", completed.ID, "system.thumbnail").Find(&children).Error; err != nil {
 		t.Fatalf("query thumbnail children: %v", err)

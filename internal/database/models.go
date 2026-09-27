@@ -46,9 +46,14 @@ type FileObject struct {
 	HasCompression bool           `json:"has_compression"`
 	HasThumbnail   bool           `json:"has_thumbnail"`
 	NeedsRehash    bool           `json:"needs_rehash"`
-	DeletedAt      gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `gorm:"index:idx_file_objects_rehash_queue,where:needs_rehash AND deleted_at IS NULL" json:"updated_at"`
+	// NeedsReanalysis queues a server-side source metadata pass for objects
+	// whose metadata came from client analysis. ReanalysisAttempts throttles
+	// retries and bounds the queue against permanently unanalyzable objects.
+	NeedsReanalysis    bool           `json:"needs_reanalysis"`
+	ReanalysisAttempts int            `json:"reanalysis_attempts"`
+	DeletedAt          gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `gorm:"index:idx_file_objects_rehash_queue,where:needs_rehash AND deleted_at IS NULL;index:idx_file_objects_reanalysis_queue,where:needs_reanalysis AND deleted_at IS NULL" json:"updated_at"`
 }
 
 type CloudFile struct {
@@ -126,6 +131,25 @@ func (f *CloudFile) LegacyFileMeta() datatypes.JSON {
 		return f.FileMeta
 	}
 	return nil
+}
+
+// MetaMap decodes the file's source metadata into a plain map so event
+// snapshots can carry the analyzed metadata (dimensions, EXIF, blurhash, media
+// probe) instead of only the compatibility flags. It returns nil when no
+// metadata is stored.
+func (f *CloudFile) MetaMap() map[string]any {
+	if f == nil {
+		return nil
+	}
+	raw := f.LegacyFileMeta()
+	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
+		return nil
+	}
+	meta := map[string]any{}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return nil
+	}
+	return meta
 }
 
 func (f *CloudFile) LegacySensitiveMarks() []int {
