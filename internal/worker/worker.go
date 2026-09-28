@@ -23,7 +23,6 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
-	eb "src.solsynth.dev/sosys/go/pkg/eventbus"
 )
 
 type Worker struct {
@@ -525,7 +524,7 @@ func (w *Worker) publishMetadata(file *database.CloudFile, taskID string) error 
 	// Carrying the analyzed metadata lets the fleet apply the server-derived
 	// EXIF, dimensions, and media probe without re-fetching the file.
 	snapshot.FileMeta = file.MetaMap()
-	return w.bus.PublishFileMetadataUpdated(context.Background(), eventbus.FileMetadataUpdatedEvent{Event: eb.Event{EventID: database.NewID(), Timestamp: time.Now().UTC(), EventType: "filesystem.file.updated.v1", StreamName: "filesystem_events"}, FileID: file.ID, TaskID: taskID, AccountID: file.AccountID.String(), Status: int(file.UploadStatus), File: snapshot})
+	return w.bus.PublishFileMetadataUpdated(context.Background(), eventbus.NewFileMetadataUpdatedEvent(file.ID, taskID, file.AccountID.String(), int(file.UploadStatus), snapshot))
 }
 
 func (w *Worker) openSourceObject(ctx context.Context, file *database.CloudFile) (io.ReadCloser, error) {

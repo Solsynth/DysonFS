@@ -131,6 +131,9 @@ func TestReanalyzedMetadataPublishedToFleet(t *testing.T) {
 	select {
 	case evt := <-received:
 		t.Logf("event: file_id=%s status=%d file_meta=%v", evt.FileID, evt.Status, evt.File.FileMeta)
+		if _, err := uuid.Parse(evt.EventID); err != nil {
+			t.Fatalf("wire event_id %q is not a UUID, .NET consumers abort on it: %v", evt.EventID, err)
+		}
 		if evt.FileID != fileID {
 			t.Fatalf("event file_id = %q, want %q", evt.FileID, fileID)
 		}

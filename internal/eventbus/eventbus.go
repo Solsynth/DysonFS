@@ -10,9 +10,9 @@ package eventbus
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	shared "src.solsynth.dev/sosys/go/pkg/eventbus"
@@ -37,22 +37,30 @@ func New(conn *nats.Conn) *Bus {
 	return &Bus{Bus: b}
 }
 
-func (b *Bus) PublishFileUploaded(ctx context.Context, evt FileUploadedEvent) error {
-	if b == nil || b.Bus == nil {
-		return nil
-	}
+// uploadEnvelope fills the fleet envelope fields an upload event needs before
+// it hits the wire. event_id must be a UUID: every .NET consumer binds it to
+// EventBase.EventId (System.Guid) and aborts the whole event otherwise.
+func uploadEnvelope(evt shared.Event, subject string) shared.Event {
 	if evt.EventID == "" {
-		evt.EventID = fmt.Sprintf("%d", time.Now().UnixNano())
+		evt.EventID = uuid.NewString()
 	}
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now().UTC()
 	}
 	if evt.EventType == "" {
-		evt.EventType = "filesystem.file.uploaded.v1"
+		evt.EventType = subject
 	}
 	if evt.StreamName == "" {
 		evt.StreamName = "filesystem_events"
 	}
+	return evt
+}
+
+func (b *Bus) PublishFileUploaded(ctx context.Context, evt FileUploadedEvent) error {
+	if b == nil || b.Bus == nil {
+		return nil
+	}
+	evt.Event = uploadEnvelope(evt.Event, "filesystem.file.uploaded.v1")
 	return b.PublishJetStream(ctx, evt.EventType, evt.StreamName, evt)
 }
 

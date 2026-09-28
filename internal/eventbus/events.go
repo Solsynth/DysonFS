@@ -47,3 +47,19 @@ type FileMetadataUpdatedEvent struct {
 	Status    int                  `json:"status"`
 	File      FileMetadataSnapshot `json:"file"`
 }
+
+// NewFileMetadataUpdatedEvent builds a metadata update carrying the fleet
+// envelope. EventID is a UUID (shared.NewEvent) because every .NET consumer
+// deserializes the envelope with DysonNetwork.Shared.EventBus.EventBase, whose
+// EventId is a System.Guid — a ULID or any other id shape aborts the whole
+// event with a JsonException. Domain ids (file_id, task_id) stay ULIDs.
+func NewFileMetadataUpdatedEvent(fileID, taskID, accountID string, status int, file FileMetadataSnapshot) FileMetadataUpdatedEvent {
+	return FileMetadataUpdatedEvent{
+		Event:     shared.NewEvent("filesystem_events", "filesystem.file.updated.v1"),
+		FileID:    fileID,
+		TaskID:    taskID,
+		AccountID: accountID,
+		Status:    status,
+		File:      file,
+	}
+}

@@ -346,7 +346,7 @@ envelope plus a file metadata snapshot:
 
 ```json
 {
-  "event_id": "01J...",
+  "event_id": "9f1c4b3a-2d5e-4f60-8a71-0c2b3d4e5f60",
   "timestamp": "2026-07-31T23:00:00Z",
   "event_type": "filesystem.file.updated.v1",
   "stream_name": "filesystem_events",
@@ -376,6 +376,11 @@ envelope plus a file metadata snapshot:
   }
 }
 ```
+
+`event_id` is the envelope id and is always a UUID, because .NET consumers
+bind it to `DysonNetwork.Shared.EventBus.EventBase.EventId` (`System.Guid`)
+and reject the whole event when it does not parse. Domain ids (`file_id`,
+`task_id`, `file.id`) are DysonFS ULIDs.
 
 `file` carries the analyzed source metadata under `file_meta` — dimensions,
 blurhash, EXIF, and the media probe — so a consumer can apply it without
