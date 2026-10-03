@@ -46,6 +46,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.GET("/meta", func(c *gin.Context) { listFilesMetadata(c, files) })
 		f.GET("/:id", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/info", func(c *gin.Context) { fileInfo(c, files) })
+		f.GET("/:id/url", func(c *gin.Context) { fileDownloadURL(c, files) })
 		f.GET("/:id/breadcrumb", func(c *gin.Context) { fileBreadcrumb(c, files) })
 		f.GET("/:id/open", func(c *gin.Context) { openFile(c, cfg, files) })
 		f.GET("/:id/references", func(c *gin.Context) { c.JSON(http.StatusOK, []any{}) })
@@ -495,23 +496,10 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	if variant := c.Query("thumbnail"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
-		if thumb, err := resolveOpenVariant(c.Request.Context(), files, file, "system.thumbnail"); err == nil {
-			file = thumb
-		} else {
-			c.JSON(http.StatusNotFound, gin.H{"error": "thumbnail not available"})
-			return
-		}
-	} else if variant := c.Query("original"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
-		if isDerivedVariant(file) && file.ParentID != nil {
-			if parent, err := getRequestedFile(c, files, *file.ParentID); err == nil {
-				file = parent
-			}
-		}
-	} else if file.Object != nil && strings.HasPrefix(file.Object.MimeType, "image/") {
-		if compressed, err := resolveOpenVariant(c.Request.Context(), files, file, "system.compression.low"); err == nil {
-			file = compressed
-		}
+	file, err = resolveOpenFileVariant(c, files, file)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
 	}
 	result, _, ok := auth.GetAuth(c)
 	if ok && !files.CanAccessFile(result.Account, result.Session, file, "read") {
@@ -540,6 +528,95 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		return
 	}
 	c.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+// @Summary Mint a signed download URL
+// @Tags files
+// @Produce json
+// @Param id path string true "File ID"
+// @Param download query bool false "Download"
+// @Param original query bool false "Prefer original source object"
+// @Param thumbnail query bool false "Prefer thumbnail variant"
+// @Success 200 {object} map[string]any
+// @Failure 403 {object} map[string]any
+// @Failure 404 {object} map[string]any
+// @Failure 500 {object} map[string]any
+// @Router /api/files/{id}/url [get]
+func fileDownloadURL(c *gin.Context, files *service.FileService) {
+	file, err := getRequestedFile(c, files, c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	file, err = resolveOpenFileVariant(c, files, file)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	result, _, ok := auth.GetAuth(c)
+	if ok && !files.CanAccessFile(result.Account, result.Session, file, "read") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	download := c.Query("download") == "1" || strings.EqualFold(c.Query("download"), "true")
+	if file.StorageKey == nil && file.Object != nil && file.Object.StorageKey != nil {
+		file.StorageKey = file.Object.StorageKey
+	}
+	if file.StorageKey == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file storage key missing"})
+		return
+	}
+	mimeType := ""
+	var size int64
+	if file.Object != nil {
+		mimeType = file.Object.MimeType
+		size = file.Object.Size
+	}
+	expiresAt := time.Now().UTC().Add(15 * time.Minute)
+	url, err := files.Storage().SignedURL(c.Request.Context(), *file.StorageKey, 15*time.Minute, file.Name, download)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"id":         file.ID,
+		"url":        url,
+		"expires_at": expiresAt.Format(time.RFC3339),
+		"mime_type":  mimeType,
+		"size":       size,
+		"name":       file.Name,
+	})
+}
+
+// errThumbnailUnavailable reports a requested thumbnail variant that could not
+// be resolved. Callers translate it into their existing 404 body.
+var errThumbnailUnavailable = errors.New("thumbnail not available")
+
+// resolveOpenFileVariant applies the thumbnail/original/image-compression
+// preference chain shared by openFile and fileDownloadURL, so the two handlers
+// cannot drift. The returned file is the variant that should be served.
+func resolveOpenFileVariant(c *gin.Context, files *service.FileService, file *database.CloudFile) (*database.CloudFile, error) {
+	if variant := c.Query("thumbnail"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
+		thumb, err := resolveOpenVariant(c.Request.Context(), files, file, "system.thumbnail")
+		if err != nil {
+			return nil, errThumbnailUnavailable
+		}
+		return thumb, nil
+	}
+	if variant := c.Query("original"); strings.EqualFold(variant, "1") || strings.EqualFold(variant, "true") {
+		if isDerivedVariant(file) && file.ParentID != nil {
+			if parent, err := getRequestedFile(c, files, *file.ParentID); err == nil {
+				return parent, nil
+			}
+		}
+		return file, nil
+	}
+	if file.Object != nil && strings.HasPrefix(file.Object.MimeType, "image/") {
+		if compressed, err := resolveOpenVariant(c.Request.Context(), files, file, "system.compression.low"); err == nil {
+			return compressed, nil
+		}
+	}
+	return file, nil
 }
 
 func isDerivedVariant(file *database.CloudFile) bool {
