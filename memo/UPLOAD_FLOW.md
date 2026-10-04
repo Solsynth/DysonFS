@@ -122,13 +122,19 @@ other immutable file metadata.
 
 For client-assisted media uploads, `client_analysis` may contain positive
 `width`, `height`, `duration_ms`, `rotation`, `aspect_ratio`, `sample_rate`,
-and `channels`, depending on the content type. Set `want_thumbnail: true` when
+and `channels`, depending on the content type. It may also carry client-read
+EXIF as `exif_version: 2` plus `exif`: a flat map of tag name to string value
+(`{"Model": "Pixel 8", "FNumber": "28/10"}`) — the same shape the server's own
+extraction produces. A client that declares any other `exif_version` has its
+`exif` ignored rather than persisted in an unreadable shape. Set
+`want_thumbnail: true` when
 the client will upload a generated JPEG thumbnail for video or another media
 type. Set `want_compression: true` when the client will upload a generated
 WebP image derivative. The server persists this metadata as client-provided
 and validates each uploaded derivative before creating its child. Client
 metadata never replaces source-size, storage, MIME, quota, or authorization
-checks.
+checks. A background server reanalysis later supersedes it, but only per key:
+EXIF tags the server cannot extract itself stay as the client read them.
 
 `file_name` is optional: when omitted (or blank), the server derives a
 default name — `upload.<ext>` — from `content_type` (`image/jpeg` →

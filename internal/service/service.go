@@ -2325,14 +2325,51 @@ func (s *FileService) StoreClientSourceMetadata(fileID string, raw map[string]an
 	return s.GetFile(fileID)
 }
 
+// clientExifVersion is the shape client-extracted EXIF arrives in: a flat map
+// of tag name to string value, the same shape sourceAnalysisUpdates writes, and
+// the one the clients render. The server only stores this shape, so a client
+// declaring another version has its EXIF ignored (not rejected) rather than
+// persisted in a form consumers cannot read.
+const clientExifVersion = 2
+
+const (
+	maxClientExifKeys     = 64
+	maxClientExifKeyBytes = 64
+	maxClientExifValBytes = 512
+)
+
 // normalizeClientSourceMetadata validates and normalizes the analysis a client
 // extracted. The keys the server cannot reproduce itself are listed in
 // clientOnlySourceMetaKeys, which server reanalysis uses to drop stale client
 // values; keep the two in sync.
 func normalizeClientSourceMetadata(raw map[string]any) (map[string]any, error) {
 	updates := map[string]any{"analysis_source": "client"}
+	// EXIF is the one thing many clients read better than the server: the
+	// server only decodes JPEG/TIFF EXIF, while a client can read whatever it
+	// captured natively. Keep it when it is already in the server's shape.
+	acceptClientExif := true
+	if declared, ok := raw["exif_version"]; ok {
+		version, err := clientMetadataInt(declared)
+		acceptClientExif = err == nil && version == clientExifVersion
+	}
 	for key, value := range raw {
 		switch key {
+		case "exif":
+			if !acceptClientExif {
+				break
+			}
+			exif, err := normalizeClientExif(value)
+			if err != nil {
+				return nil, err
+			}
+			if exif == nil {
+				break
+			}
+			updates["exif"] = exif
+			updates["exif_version"] = clientExifVersion
+		case "exif_version":
+			// Only gates the "exif" key above; the version itself carries no
+			// metadata of its own.
 		case "width", "height":
 			number, err := clientMetadataInt(value)
 			if err != nil || number <= 0 || number > 100000 {
@@ -2371,6 +2408,37 @@ func normalizeClientSourceMetadata(raw map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("client media metadata is empty")
 	}
 	return updates, nil
+}
+
+// normalizeClientExif validates the client-extracted EXIF against the v2 flat
+// shape: one non-empty string per tag name, bounded so upload metadata cannot
+// become unbounded storage. An empty map carries no metadata and is dropped.
+func normalizeClientExif(value any) (map[string]any, error) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("exif must be an object")
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > maxClientExifKeys {
+		return nil, fmt.Errorf("exif must have at most %d entries", maxClientExifKeys)
+	}
+	exif := make(map[string]any, len(raw))
+	for key, item := range raw {
+		if len(key) == 0 || len(key) > maxClientExifKeyBytes {
+			return nil, fmt.Errorf("exif keys must be 1 to %d characters", maxClientExifKeyBytes)
+		}
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("exif values must be strings")
+		}
+		if len(text) == 0 || len(text) > maxClientExifValBytes {
+			return nil, fmt.Errorf("exif values must be 1 to %d characters", maxClientExifValBytes)
+		}
+		exif[key] = text
+	}
+	return exif, nil
 }
 
 func clientMetadataInt(value any) (int64, error) {
@@ -2486,6 +2554,14 @@ func (s *FileService) applyServerSourceAnalysis(fileID, objectID string, analysi
 			updates = map[string]any{}
 		}
 		updates["analysis_source"] = "server"
+		// The server only extracts EXIF from JPEG/TIFF, and only for the tags
+		// its field map knows, so its values win per tag but never discard a
+		// tag the client already extracted. Replacing the whole map would leave
+		// the file with fewer EXIF fields after a reanalysis than it had at
+		// upload time.
+		if serverExif, ok := updates["exif"].(map[string]any); ok {
+			updates["exif"] = mergeSourceExif(storedSourceExif(object.LegacyMeta()), serverExif)
+		}
 		merged, err := mergeJSONMeta(object.LegacyMeta(), updates)
 		if err != nil {
 			return err
@@ -2513,6 +2589,37 @@ func (s *FileService) applyServerSourceAnalysis(fileID, objectID string, analysi
 		// client-metadata snapshot instead of being discarded as stale.
 		return tx.Model(&database.CloudFile{}).Where("id = ?", fileID).Updates(map[string]any{"updated_at": now}).Error
 	})
+}
+
+// storedSourceExif reads the v2 EXIF map already persisted on an object's
+// metadata. Returns nil when the object carries none.
+func storedSourceExif(raw datatypes.JSON) map[string]any {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return nil
+	}
+	exif, _ := meta["exif"].(map[string]any)
+	return exif
+}
+
+// mergeSourceExif extends the stored EXIF with a freshly extracted one, with
+// the extracted tags winning, so a rename or a narrower extraction never
+// shrinks what the file reports.
+func mergeSourceExif(stored, extracted map[string]any) map[string]any {
+	if len(stored) == 0 {
+		return extracted
+	}
+	merged := make(map[string]any, len(stored)+len(extracted))
+	for key, value := range stored {
+		merged[key] = value
+	}
+	for key, value := range extracted {
+		merged[key] = value
+	}
+	return merged
 }
 
 type ReanalysisResult struct {
