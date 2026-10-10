@@ -1008,6 +1008,64 @@ func TestOpenFileRequiresAuthUnlessFileIsPublic(t *testing.T) {
 	}
 }
 
+// A shared (account-less) pool exposes its files to everyone, including
+// callers without a token.
+func TestOpenFileServesSharedPoolFilesToAnonymousCallers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	ownerID := uuid.New()
+
+	poolID := database.NewID()
+	if err := db.Create(&database.FilePool{
+		ID:            poolID,
+		Name:          "Solar Network Shared",
+		AccountID:     uuid.Nil,
+		StorageConfig: datatypes.JSON([]byte(`{"endpoint":"/tmp/shared","bucket":"shared"}`)),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "image/png", Hash: "hash", StorageKey: &objectID, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	fileID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "shared.png", AccountID: ownerID, PoolID: &poolID, ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	anon := gin.New()
+	RegisterRoutes(anon, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	openRec := httptest.NewRecorder()
+	anon.ServeHTTP(openRec, httptest.NewRequest(http.MethodGet, "/api/files/"+fileID, nil))
+	if openRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("anonymous shared-pool file status = %d, want %d; body = %s", openRec.Code, http.StatusTemporaryRedirect, openRec.Body.String())
+	}
+	if location := openRec.Header().Get("Location"); !strings.HasPrefix(location, "file://") {
+		t.Fatalf("anonymous shared-pool file Location = %q, want a signed storage URL", location)
+	}
+
+	infoRec := httptest.NewRecorder()
+	anon.ServeHTTP(infoRec, httptest.NewRequest(http.MethodGet, "/api/files/"+fileID+"/info", nil))
+	if infoRec.Code != http.StatusOK {
+		t.Fatalf("anonymous shared-pool /info status = %d, want %d; body = %s", infoRec.Code, http.StatusOK, infoRec.Body.String())
+	}
+	if !strings.Contains(infoRec.Body.String(), `"visibility":"public"`) {
+		t.Fatalf("anonymous shared-pool /info body = %s, want a public permission status", infoRec.Body.String())
+	}
+
+	metaRec := httptest.NewRecorder()
+	anon.ServeHTTP(metaRec, httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+fileID, nil))
+	if metaRec.Code != http.StatusOK || metaRec.Header().Get("X-Total") != "1" {
+		t.Fatalf("anonymous shared-pool /meta status = %d, X-Total = %q; body = %s", metaRec.Code, metaRec.Header().Get("X-Total"), metaRec.Body.String())
+	}
+}
+
 func TestListChildrenFiltersPermissionlessChildOfOtherAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})

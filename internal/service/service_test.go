@@ -2465,7 +2465,8 @@ func TestCanAccessFileInheritsPermissionsFromAncestors(t *testing.T) {
 }
 
 // Files with no permission row used to be world-readable; access is now
-// default-deny, so only the owner (and superusers) may read them.
+// default-deny, except for files stored in a shared (account-less) pool, which
+// stay readable by everyone the pool serves.
 func TestCanAccessFileDeniesFilesWithoutPermissions(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -2497,6 +2498,213 @@ func TestCanAccessFileDeniesFilesWithoutPermissions(t *testing.T) {
 	if !svc.CanAccessFile(&gen.DyAccount{Id: ownerID.String()}, nil, loaded, "read") {
 		t.Fatal("expected the owner to retain access to their own file")
 	}
+}
+
+// A pool with no owning account is fleet-wide shared storage: everything inside
+// it is readable by the whole instance, logged in or not.
+func TestCanAccessFileAllowsFilesInSharedPool(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePool{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.New()
+	poolID := seedPool(t, db, "shared", uuid.Nil)
+
+	file := &database.CloudFile{ID: database.NewID(), Name: "public.txt", AccountID: ownerID, PoolID: &poolID, Indexed: true}
+	if err := db.Create(file).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	if !svc.CanAccessFile(nil, nil, file, "read") {
+		t.Fatal("anonymous read of a file in a shared pool must be allowed")
+	}
+	if !svc.CanAccessFile(&gen.DyAccount{Id: uuid.New().String()}, nil, file, "read") {
+		t.Fatal("another account must read a file in a shared pool")
+	}
+	if svc.CanAccessFile(nil, nil, file, "write") {
+		t.Fatal("a shared pool must not grant write access")
+	}
+	if svc.CanAccessFile(&gen.DyAccount{Id: uuid.New().String()}, nil, file, "manage") {
+		t.Fatal("a shared pool must not grant manage access")
+	}
+	if status := svc.permissionStatus(file); !status.Readable || status.Visibility != "public" {
+		t.Fatalf("permission status = %+v, want readable public", status)
+	}
+}
+
+func TestCanAccessFileKeepsOwnedPoolFilesPrivate(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePool{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.New()
+	poolID := seedPool(t, db, "personal", ownerID)
+
+	file := &database.CloudFile{ID: database.NewID(), Name: "private.txt", AccountID: ownerID, PoolID: &poolID, Indexed: true}
+	if err := db.Create(file).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	if svc.CanAccessFile(nil, nil, file, "read") {
+		t.Fatal("anonymous read of a file in an owned pool must be denied")
+	}
+	if svc.CanAccessFile(&gen.DyAccount{Id: uuid.New().String()}, nil, file, "read") {
+		t.Fatal("another account must not read a file in an owned pool")
+	}
+	if !svc.CanAccessFile(&gen.DyAccount{Id: ownerID.String()}, nil, file, "read") {
+		t.Fatal("the owner must keep access to their own file")
+	}
+	if status := svc.permissionStatus(file); status.Readable || status.Visibility != "private" {
+		t.Fatalf("permission status = %+v, want private", status)
+	}
+}
+
+// An explicit ACL row wins over the pool default: unpublishing a file in a
+// shared pool (a private read row) must hide it again.
+func TestCanAccessFileHonoursPrivateRowInSharedPool(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePool{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.New()
+	poolID := seedPool(t, db, "shared", uuid.Nil)
+
+	file := &database.CloudFile{ID: database.NewID(), Name: "retracted.txt", AccountID: ownerID, PoolID: &poolID, Indexed: true}
+	if err := db.Create(file).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: file.ID, SubjectType: "private", SubjectID: "", Permission: "read"}).Error; err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+
+	if svc.CanAccessFile(nil, nil, file, "read") {
+		t.Fatal("a private row must retract a shared-pool file from anonymous readers")
+	}
+	if svc.CanAccessFile(&gen.DyAccount{Id: uuid.New().String()}, nil, file, "read") {
+		t.Fatal("a private row must retract a shared-pool file from other accounts")
+	}
+	if !svc.CanAccessFile(&gen.DyAccount{Id: ownerID.String()}, nil, file, "read") {
+		t.Fatal("the owner must keep access to a retracted file")
+	}
+}
+
+// Rows written before pool attribution carry no pool_id; they live in the
+// configured default pool, so a shared default keeps them readable.
+func TestCanAccessFileFallsBackToDefaultPoolForLegacyRows(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePool{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	sharedPoolID := seedPool(t, db, "shared", uuid.Nil)
+	ownedPoolID := seedPool(t, db, "personal", uuid.New())
+
+	legacy := &database.CloudFile{ID: database.NewID(), Name: "legacy.txt", AccountID: uuid.New(), Indexed: true}
+	if err := db.Create(legacy).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+
+	svc.defaultPoolID = sharedPoolID
+	if !svc.CanAccessFile(nil, nil, legacy, "read") {
+		t.Fatal("a legacy row in the shared default pool must stay public")
+	}
+
+	svc.defaultPoolID = ownedPoolID
+	if svc.CanAccessFile(nil, nil, legacy, "read") {
+		t.Fatal("a legacy row in an owned default pool must stay private")
+	}
+}
+
+func TestPopulateFilesMetadataMarksSharedPoolFilesPublic(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePool{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	sharedPoolID := seedPool(t, db, "shared", uuid.Nil)
+	ownedPoolID := seedPool(t, db, "personal", uuid.New())
+
+	public := database.CloudFile{ID: database.NewID(), Name: "public.txt", AccountID: uuid.New(), PoolID: &sharedPoolID, Indexed: true}
+	private := database.CloudFile{ID: database.NewID(), Name: "private.txt", AccountID: uuid.New(), PoolID: &ownedPoolID, Indexed: true}
+	for _, file := range []database.CloudFile{public, private} {
+		if err := db.Create(&file).Error; err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+	}
+
+	files, err := svc.GetFiles([]string{public.ID, private.ID})
+	if err != nil {
+		t.Fatalf("GetFiles() error = %v", err)
+	}
+	statuses := make(map[string]database.PermissionStatus, len(files))
+	for _, file := range files {
+		statuses[file.ID] = file.PermissionStatus
+	}
+	if got := statuses[public.ID]; !got.Readable || got.Visibility != "public" {
+		t.Fatalf("shared-pool file status = %+v, want readable public", got)
+	}
+	if got := statuses[private.ID]; got.Readable || got.Visibility != "private" {
+		t.Fatalf("owned-pool file status = %+v, want private", got)
+	}
+}
+
+// Root uploads into a shared pool stay public through the pool default, so
+// nothing seeds an owner-only row that would hide them again.
+func TestCreateRootUploadedFileInSharedPoolSeedsNoPermission(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	poolID := seedPool(t, db, "shared", uuid.Nil)
+	ownerID := uuid.New()
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+
+	storageKey := objectID
+	file, err := svc.CreateUploadedFile(ownerID, "fresh.txt", nil, nil, nil, nil, nil, objectID, &poolID, nil, &storageKey, true)
+	if err != nil {
+		t.Fatalf("CreateUploadedFile() error = %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&database.FilePermission{}).Where("file_id = ?", file.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count permissions: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("permission rows = %d, want 0 (the shared pool already exposes the file)", count)
+	}
+	if !svc.CanAccessFile(nil, nil, file, "read") {
+		t.Fatal("a fresh upload into a shared pool must stay world-readable")
+	}
+}
+
+// Folders keep their owner-only row even in a shared pool: putting files into a
+// tree is what makes a drive private, and only root uploads inherit the pool
+// default.
+func TestCreateRootFolderInSharedPoolStaysPrivate(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FilePool{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	svc.defaultPoolID = seedPool(t, db, "shared", uuid.Nil)
+
+	folder, err := svc.CreateWorkspaceFolder(uuid.New(), nil, "Documents", nil)
+	if err != nil {
+		t.Fatalf("CreateWorkspaceFolder() error = %v", err)
+	}
+	var count int64
+	if err := db.Model(&database.FilePermission{}).Where("file_id = ? AND permission = ?", folder.ID, "read").Count(&count).Error; err != nil {
+		t.Fatalf("count permissions: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("folder permission rows = %d, want a single owner-only row", count)
+	}
+	if svc.CanAccessFile(nil, nil, folder, "read") {
+		t.Fatal("a shared pool must not publish a folder tree")
+	}
+}
+
+func seedPool(t *testing.T, db *gorm.DB, name string, owner uuid.UUID) string {
+	t.Helper()
+	poolID := database.NewID()
+	pool := database.FilePool{
+		ID:            poolID,
+		Name:          name,
+		AccountID:     owner,
+		StorageConfig: datatypes.JSON([]byte(`{"endpoint":"/tmp/pool","bucket":"pool"}`)),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool %q: %v", name, err)
+	}
+	return poolID
 }
 
 func blankImage(w, h int) *image.RGBA {

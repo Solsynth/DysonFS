@@ -1089,6 +1089,93 @@ func (s *FileService) resolveInheritedFilePermissions(ctx context.Context, fileI
 	return lookup, nil
 }
 
+// effectivePoolID resolves the pool a file's bytes live in, falling back to the
+// configured default pool for rows written before pool attribution existed.
+func (s *FileService) effectivePoolID(file *database.CloudFile) string {
+	if file == nil {
+		return ""
+	}
+	poolID := s.resolvedPoolID(file.PoolID)
+	if poolID == nil {
+		return ""
+	}
+	return strings.TrimSpace(*poolID)
+}
+
+// sharedPoolIDs reports which of the given pools are shared. A pool carries no
+// owning account when it is seeded from configuration, which makes it
+// fleet-wide storage: everything inside it belongs to the whole instance rather
+// than to one account. Hidden pools are internal-only (e.g. the media transform
+// cache) and never shared.
+func (s *FileService) sharedPoolIDs(poolIDs []string) (map[string]bool, error) {
+	shared := make(map[string]bool)
+	if s == nil || s.db == nil || s.db.DB == nil {
+		return shared, nil
+	}
+	unique := make([]string, 0, len(poolIDs))
+	seen := make(map[string]struct{}, len(poolIDs))
+	for _, poolID := range poolIDs {
+		poolID = strings.TrimSpace(poolID)
+		if poolID == "" {
+			continue
+		}
+		if _, ok := seen[poolID]; ok {
+			continue
+		}
+		seen[poolID] = struct{}{}
+		unique = append(unique, poolID)
+	}
+	if len(unique) == 0 {
+		return shared, nil
+	}
+	var ids []string
+	if err := s.db.Model(&database.FilePool{}).
+		Where("id IN ? AND is_hidden = ? AND (account_id IS NULL OR account_id = ?)", unique, false, uuid.Nil).
+		Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		shared[id] = true
+	}
+	return shared, nil
+}
+
+// isSharedPoolFile reports whether the file lives in a shared (account-less)
+// pool, where the pool default makes every file readable by everyone.
+func (s *FileService) isSharedPoolFile(file *database.CloudFile) bool {
+	poolID := s.effectivePoolID(file)
+	if poolID == "" {
+		return false
+	}
+	shared, err := s.sharedPoolIDs([]string{poolID})
+	return err == nil && shared[poolID]
+}
+
+// sharedPoolFiles resolves the same question for a whole listing in one query.
+func (s *FileService) sharedPoolFiles(files []database.CloudFile) (map[string]bool, error) {
+	poolIDs := make([]string, 0, len(files))
+	perFile := make(map[string]string, len(files))
+	for i := range files {
+		poolID := s.effectivePoolID(&files[i])
+		if poolID == "" {
+			continue
+		}
+		perFile[files[i].ID] = poolID
+		poolIDs = append(poolIDs, poolID)
+	}
+	shared, err := s.sharedPoolIDs(poolIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(perFile))
+	for fileID, poolID := range perFile {
+		if shared[poolID] {
+			out[fileID] = true
+		}
+	}
+	return out, nil
+}
+
 func (s *FileService) CanAccessFile(account *gen.DyAccount, session *gen.DyAuthSession, file *database.CloudFile, permission string) bool {
 	if file == nil {
 		return false
@@ -1103,11 +1190,12 @@ func (s *FileService) CanAccessFile(account *gen.DyAccount, session *gen.DyAuthS
 	if err != nil {
 		return false
 	}
-	// No permission row anywhere in the ancestor chain means nobody but the
-	// owner (checked above) ever reaches the file. Sharing is always an
-	// explicit grant: a file that was never shared stays private.
+	// No permission row anywhere in the ancestor chain: the file falls back to
+	// the default of the pool holding it. A shared (account-less) pool is
+	// fleet-wide storage whose contents stay readable by everyone; any other
+	// pool keeps the file owner-only.
 	if !lookup.HasSource {
-		return false
+		return permission == "read" && s.isSharedPoolFile(file)
 	}
 	for _, perm := range lookup.Perms {
 		switch perm.SubjectType {
@@ -1490,11 +1578,20 @@ func (s *FileService) populateFilesMetadata(files []database.CloudFile) error {
 		return err
 	}
 
+	sharedPools, err := s.sharedPoolFiles(files)
+	if err != nil {
+		return err
+	}
+
 	for i := range files {
 		files[i].ChildrenCount = childCounts[files[i].ID]
 		lookup, ok := permissionLookups[files[i].ID]
 		if !ok {
 			lookup = cachedFilePermissionLookup{HasSource: false}
+		}
+		if !lookup.HasSource && sharedPools[files[i].ID] {
+			files[i].PermissionStatus = database.PermissionStatus{Readable: true, Visibility: "public"}
+			continue
 		}
 		files[i].PermissionStatus = permissionStatusFromLookup(lookup)
 	}
@@ -1509,6 +1606,11 @@ func (s *FileService) permissionStatus(file *database.CloudFile) database.Permis
 	lookup, err := s.resolveInheritedFilePermissions(context.Background(), file.ID, "read")
 	if err != nil {
 		return database.PermissionStatus{Readable: false, Visibility: "private"}
+	}
+	// Same shared-pool default as populateFilesMetadata: without an explicit
+	// ACL row the pool decides, and a shared pool means world-readable.
+	if !lookup.HasSource && s.isSharedPoolFile(file) {
+		return database.PermissionStatus{Readable: true, Visibility: "public"}
 	}
 	return permissionStatusFromLookup(lookup)
 }
@@ -3195,7 +3297,12 @@ func (s *FileService) CreateWorkspaceUploadedFile(accountID uuid.UUID, workspace
 		// CreateWorkspaceFolder: without one the file's access state is
 		// implicit and the file is owner-only. Children inherit this private
 		// grant through the ancestor chain instead of carrying their own row.
+		// Files in a shared (account-less) pool need no row: the pool default
+		// already keeps them readable by everyone.
 		if parentID != nil && strings.TrimSpace(*parentID) != "" {
+			return nil
+		}
+		if s.isSharedPoolFile(file) {
 			return nil
 		}
 		perm := database.FilePermission{ID: database.NewID(), FileID: file.ID, SubjectType: "private", SubjectID: "", Permission: "read"}

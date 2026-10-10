@@ -447,20 +447,24 @@ Request body:
 - A folder is stored as a `cloud_files` row with `is_folder = true` and `indexed = true`
 - `parent_id` is optional
 - The current implementation does not yet validate that the parent exists or is a folder
-- Root folders automatically get a private read permission record; root-level
-  uploads seed the same record so a freshly uploaded file is never
-  world-readable, and children inherit it
+- Root folders automatically get a private read permission record, and
+  children inherit it, so a folder tree is owner-only even inside a shared pool
+- Root-level uploads into an owned pool seed the same record; uploads into a
+  shared (account-less) pool seed nothing, because the pool already exposes
+  them
 
 ### Permission Management
 
 Files expose read/write/manage permissions through `GET /files/:id/permissions` and `PUT /files/:id/permissions`.
 
-- Access is deny-by-default: a file with no permission row in its ancestor chain is readable only by its owner (and superusers)
+- Access is deny-by-default: a file with no permission row in its ancestor chain is readable only by its owner (and superusers), unless it lives in a shared pool
+- A pool with no owning account (`account_id` unset) is shared fleet-wide storage: every file inside it is readable by everyone, anonymous callers included, and hidden pools are never shared
 - A `public` permission row publishes a file (and its descendants) to anonymous callers
-- A `private` permission row with `read` keeps a file owner-only
+- A `private` permission row with `read` keeps a file owner-only and overrides the shared pool default, so unpublishing a file in a shared pool still works
+- File rows written before pool attribution carry no `pool_id` and are attributed to the configured default pool
 - Permission checks inherit from ancestor folders
 - `PUT /files/:id/permissions` replaces the full permission set in one batch
-- Anonymous requests to `GET /api/files/:id`, `GET /api/files/:id/open`, `GET /api/files/:id/info` and `GET /api/files/meta` are refused with `401` unless the file is public by policy; authenticated callers get `403` instead
+- Anonymous requests to `GET /api/files/:id`, `GET /api/files/:id/open`, `GET /api/files/:id/info` and `GET /api/files/meta` are refused with `401` unless the file is public; authenticated callers get `403` instead
 - `GET /api/pools` and `GET /api/pools/:id` require an authenticated account, and pool responses never carry storage credentials (`secret_id`/`secret_key` are stripped and omitted from the JSON)
 
 Request body:
@@ -679,8 +683,9 @@ secretKey = "minio123"
 
 ## Notes
 
-- Public read is the default.
-- Explicit ACL rows restrict access when present.
+- Files are private by default; files in a shared (account-less) pool are the
+  exception and stay publicly readable.
+- Explicit ACL rows win over that pool default.
 - `master` resolves storage from pool config stored in the database.
 - `worker` listens for file upload events and builds thumbnails, blurhash, and other derived artifacts.
 - `master` can use S3 directly; local storage is still supported.
