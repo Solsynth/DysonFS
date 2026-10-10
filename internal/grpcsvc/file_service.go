@@ -258,6 +258,13 @@ func (s *fileServiceServer) SetFilePublic(_ context.Context, req *gen.DySetFileP
 	if err := s.files.DB().Where("file_id = ? AND permission = ?", req.GetFileId(), "read").Delete(&database.FilePermission{}).Error; err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	// Public access is an explicit grant: CanAccessFile denies files with no
+	// permission row, so publishing has to write one instead of relying on the
+	// absence of read rows.
+	perm := database.FilePermission{ID: database.NewID(), FileID: req.GetFileId(), SubjectType: "public", SubjectID: "", Permission: "read"}
+	if err := s.files.DB().Create(&perm).Error; err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 	s.files.InvalidateFilePermissionCache(context.Background(), req.GetFileId())
 	return &emptypb.Empty{}, nil
 }

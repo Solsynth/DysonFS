@@ -116,7 +116,7 @@ func (s *stubAccountClient) GetAccountStatusBatch(context.Context, *gen.DyGetAcc
 }
 
 func TestCreateUploadedFileCreatesReplica(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
@@ -238,7 +238,7 @@ func TestDeleteDerivedFileUpdatesParentCompatibilityFlags(t *testing.T) {
 }
 
 func TestCreateUploadedFilePersistsDescription(t *testing.T) {
-	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{})
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
 	tmp := t.TempDir()
 	poolID := seedDefaultPool(t, db, tmp)
 	svc := NewFileService(&database.DB{DB: db}, storage.NewLocalBackend(tmp))
@@ -255,6 +255,64 @@ func TestCreateUploadedFilePersistsDescription(t *testing.T) {
 	}
 	if file.Description == nil || *file.Description != description {
 		t.Fatalf("file.Description = %v, want %q", file.Description, description)
+	}
+}
+
+func TestCreateRootUploadedFileSeedsPrivatePermission(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	otherID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+
+	storageKey := objectID
+	file, err := svc.CreateUploadedFile(ownerID, "fresh.txt", nil, nil, nil, nil, nil, objectID, nil, nil, &storageKey, true)
+	if err != nil {
+		t.Fatalf("CreateUploadedFile() error = %v", err)
+	}
+
+	var perms []database.FilePermission
+	if err := db.Where("file_id = ? AND permission = ?", file.ID, "read").Find(&perms).Error; err != nil {
+		t.Fatalf("load permissions: %v", err)
+	}
+	if len(perms) != 1 || perms[0].SubjectType != "private" {
+		t.Fatalf("permissions = %+v, want a single private read row", perms)
+	}
+	if svc.CanAccessFile(&gen.DyAccount{Id: otherID.String()}, nil, file, "read") {
+		t.Fatal("a freshly uploaded root file must not be readable by another account")
+	}
+	if !svc.CanAccessFile(&gen.DyAccount{Id: ownerID.String()}, nil, file, "read") {
+		t.Fatal("the uploader must keep read access to their own root upload")
+	}
+}
+
+func TestCreateChildUploadedFileDoesNotSeedPermission(t *testing.T) {
+	db := openTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePermission{})
+	svc := NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	parentID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: parentID, Name: "folder", AccountID: ownerID, IsFolder: true, Indexed: true}).Error; err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+
+	storageKey := objectID
+	file, err := svc.CreateUploadedFile(ownerID, "nested.txt", nil, nil, nil, nil, &parentID, objectID, nil, nil, &storageKey, true)
+	if err != nil {
+		t.Fatalf("CreateUploadedFile() error = %v", err)
+	}
+	var count int64
+	if err := db.Model(&database.FilePermission{}).Where("file_id = ?", file.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count permissions: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("child permission rows = %d, want 0 (inherited from the folder chain)", count)
 	}
 }
 
@@ -2406,7 +2464,9 @@ func TestCanAccessFileInheritsPermissionsFromAncestors(t *testing.T) {
 	}
 }
 
-func TestCanAccessFileDefaultsToPublicWithoutPermissions(t *testing.T) {
+// Files with no permission row used to be world-readable; access is now
+// default-deny, so only the owner (and superusers) may read them.
+func TestCanAccessFileDeniesFilesWithoutPermissions(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("gorm.Open() error = %v", err)
@@ -2419,7 +2479,8 @@ func TestCanAccessFileDefaultsToPublicWithoutPermissions(t *testing.T) {
 	}
 
 	svc := NewFileService(&database.DB{DB: db}, nil)
-	file := &database.CloudFile{ID: database.NewID(), Name: "file", AccountID: uuid.New(), Indexed: true}
+	ownerID := uuid.New()
+	file := &database.CloudFile{ID: database.NewID(), Name: "file", AccountID: ownerID, Indexed: true}
 	if err := db.Create(file).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
@@ -2427,8 +2488,14 @@ func TestCanAccessFileDefaultsToPublicWithoutPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFile() error = %v", err)
 	}
-	if !svc.CanAccessFile(nil, nil, loaded, "read") {
-		t.Fatal("expected files without permissions to remain public")
+	if svc.CanAccessFile(nil, nil, loaded, "read") {
+		t.Fatal("expected anonymous access to a file without permissions to be denied")
+	}
+	if svc.CanAccessFile(&gen.DyAccount{Id: uuid.New().String()}, nil, loaded, "read") {
+		t.Fatal("expected another account to be denied a file without permissions")
+	}
+	if !svc.CanAccessFile(&gen.DyAccount{Id: ownerID.String()}, nil, loaded, "read") {
+		t.Fatal("expected the owner to retain access to their own file")
 	}
 }
 

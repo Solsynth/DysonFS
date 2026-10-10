@@ -59,6 +59,9 @@ func seedMediaTestFile(t *testing.T, db *gorm.DB, stor storage.Backend, data []b
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "photo.jpg", AccountID: uuid.New(), ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
+	// These tests exercise media transforms over anonymous requests, so the
+	// fixture is published explicitly: an unpublished file is owner-only.
+	publishFile(t, db, fileID)
 	if err := stor.Put(context.Background(), objectID, bytes.NewReader(data), int64(len(data)), mimeType); err != nil {
 		t.Fatalf("put object: %v", err)
 	}

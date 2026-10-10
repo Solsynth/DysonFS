@@ -58,6 +58,7 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		f.PATCH("/:id", func(c *gin.Context) { patchFile(c, files) })
 		f.PUT("/:id/sensitive", func(c *gin.Context) { setSensitiveMarks(c, files) })
 		f.PATCH("/:id/content", func(c *gin.Context) { patchFileContent(c, files, bus, dispatcher) })
+		f.PUT("/:id/content", func(c *gin.Context) { putFileContent(c, files, bus, dispatcher) })
 		f.POST("/recycle/batch", func(c *gin.Context) { batchRecycleFiles(c, files, bus, dispatcher) })
 		f.POST("/restore/batch", func(c *gin.Context) { batchRestoreFiles(c, files, bus, dispatcher) })
 		f.POST("/delete/batch", func(c *gin.Context) { batchDeleteFiles(c, files, bus, dispatcher) })
@@ -215,7 +216,14 @@ func fileInfo(c *gin.Context, files *service.FileService) {
 		return
 	}
 	result, _, ok := auth.GetAuth(c)
-	if ok && !files.CanAccessFile(result.Account, result.Session, file, "read") {
+	if !ok {
+		// Same policy as openFile: anonymous metadata reads are limited to
+		// files that carry a public grant.
+		if !files.CanAccessFile(nil, nil, file, "read") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+	} else if !files.CanAccessFile(result.Account, result.Session, file, "read") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
@@ -514,7 +522,14 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 		}
 	}
 	result, _, ok := auth.GetAuth(c)
-	if ok && !files.CanAccessFile(result.Account, result.Session, file, "read") {
+	if !ok {
+		// Anonymous callers may only open files that policy marks public;
+		// anything else needs a bearer token.
+		if !files.CanAccessFile(nil, nil, file, "read") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+	} else if !files.CanAccessFile(result.Account, result.Session, file, "read") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
@@ -695,6 +710,10 @@ func listChildren(c *gin.Context, files *service.FileService, quota *service.Quo
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+	// Workspace-scoped reads already proved membership through
+	// selectedWorkspaceID; personal-namespace reads need read access to the
+	// parent. Either way every returned child is checked individually below
+	// instead of trusting the namespace.
 	if workspaceID == nil && !files.CanAccessFile(result.Account, result.Session, parent, "read") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
@@ -710,7 +729,7 @@ func listChildren(c *gin.Context, files *service.FileService, quota *service.Quo
 	items = paginateFiles(items, filters.Offset, filters.Take)
 	filtered := make([]database.CloudFile, 0, len(items))
 	for _, item := range items {
-		if workspaceID != nil || files.CanAccessFile(result.Account, result.Session, &item, "read") {
+		if files.CanAccessFile(result.Account, result.Session, &item, "read") {
 			filtered = append(filtered, item)
 		}
 	}
@@ -720,16 +739,17 @@ func listChildren(c *gin.Context, files *service.FileService, quota *service.Quo
 
 func listPools(c *gin.Context, files *service.FileService) {
 	result, _, ok := auth.GetAuth(c)
-	ctx := service.AccessContext{}
-	if ok {
-		ctx.Account = result.Account
-		ctx.Session = result.Session
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
 	}
+	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 	items, err := files.ListPools(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	items = redactPoolsSecrets(items)
 	c.Header("X-Total", strconv.Itoa(len(items)))
 	c.JSON(http.StatusOK, items)
 }
@@ -745,6 +765,7 @@ func listOwnedPools(c *gin.Context, files *service.FileService) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	items = redactPoolsSecrets(items)
 	c.Header("X-Total", strconv.Itoa(len(items)))
 	c.JSON(http.StatusOK, items)
 }
@@ -1486,6 +1507,59 @@ func patchFileContent(c *gin.Context, files *service.FileService, bus *eventbus.
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
+		return
+	}
+
+	publishFileUploaded(c.Request.Context(), bus, dispatcher, eventbus.FileUploadedEvent{
+		FileID: updated.ID,
+	})
+
+	c.JSON(http.StatusOK, updated)
+}
+
+// putFileContent replaces a file's bytes with the raw request body. It is the
+// REST counterpart of the WebDAV PUT / WOPI save paths: the existing backing
+// object is overwritten in place (no new FileObject) and flagged for deferred
+// rehash, so hash, MIME type and derived content are refreshed by the worker.
+//
+// A file held by another editor's lock is refused with 423 unless the caller
+// presents the matching X-Lock-Token, so a blind overwrite cannot discard a
+// Collabora/WebDAV buffer.
+func putFileContent(c *gin.Context, files *service.FileService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	file, err := getRequestedFile(c, files, c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if !files.CanAccessFile(result.Account, result.Session, file, "write") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if file.IsFolder {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot overwrite a folder"})
+		return
+	}
+
+	lock, err := files.GetLock(c.Request.Context(), file.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if lock != nil && lock.LockToken != strings.TrimSpace(c.GetHeader("X-Lock-Token")) {
+		c.Header("X-Lock-Token", lock.LockToken)
+		c.JSON(http.StatusLocked, gin.H{"error": "file is locked by another editor"})
+		return
+	}
+
+	updated, err := files.OverwriteInPlace(c.Request.Context(), file.ID, c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 

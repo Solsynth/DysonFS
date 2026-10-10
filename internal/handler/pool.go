@@ -29,6 +29,23 @@ type updatePoolRequest struct {
 	IsHidden      *bool                      `json:"is_hidden"`
 }
 
+// redactPoolSecrets returns a copy of the pool with its storage credentials
+// cleared. Storage secrets are server-side configuration: no API response may
+// echo them back to a client.
+func redactPoolSecrets(pool service.Pool) service.Pool {
+	pool.StorageConfig.SecretId = ""
+	pool.StorageConfig.SecretKey = ""
+	return pool
+}
+
+func redactPoolsSecrets(pools []service.Pool) []service.Pool {
+	out := make([]service.Pool, 0, len(pools))
+	for _, pool := range pools {
+		out = append(out, redactPoolSecrets(pool))
+	}
+	return out
+}
+
 func createPool(c *gin.Context, files *service.FileService) {
 	result, _, ok := auth.GetAuth(c)
 	if !ok {
@@ -61,16 +78,16 @@ func createPool(c *gin.Context, files *service.FileService) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, pool)
+	c.JSON(http.StatusCreated, redactPoolSecrets(*pool))
 }
 
 func getPool(c *gin.Context, files *service.FileService) {
 	result, _, ok := auth.GetAuth(c)
-	ctx := service.AccessContext{}
-	if ok {
-		ctx.Account = result.Account
-		ctx.Session = result.Session
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
 	}
+	ctx := service.AccessContext{Account: result.Account, Session: result.Session}
 
 	pool, err := files.GetPool(c.Param("id"))
 	if err != nil {
@@ -83,7 +100,7 @@ func getPool(c *gin.Context, files *service.FileService) {
 		return
 	}
 
-	c.JSON(http.StatusOK, pool)
+	c.JSON(http.StatusOK, redactPoolSecrets(*pool))
 }
 
 func updatePool(c *gin.Context, files *service.FileService) {
@@ -124,7 +141,7 @@ func updatePool(c *gin.Context, files *service.FileService) {
 		return
 	}
 
-	c.JSON(http.StatusOK, updated)
+	c.JSON(http.StatusOK, redactPoolSecrets(*updated))
 }
 
 func deletePool(c *gin.Context, files *service.FileService) {

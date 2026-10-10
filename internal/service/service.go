@@ -67,8 +67,8 @@ type PoolStorageConfig struct {
 	Bucket         string  `json:"bucket"`
 	ImageProxy     *string `json:"image_proxy"`
 	AccessProxy    *string `json:"access_proxy"`
-	SecretId       string  `json:"secret_id"`
-	SecretKey      string  `json:"secret_key"`
+	SecretId       string  `json:"secret_id,omitempty"`
+	SecretKey      string  `json:"secret_key,omitempty"`
 }
 
 type Pool struct {
@@ -702,10 +702,6 @@ func (s *FileService) CanUsePool(ctx AccessContext, pool *Pool, permission strin
 	return false
 }
 
-func (s *FileService) IsResourcePublic(perms []database.FilePermission) bool {
-	return len(perms) == 0
-}
-
 func (s *FileService) CreatePool(accountID uuid.UUID, name, description string, storageCfg PoolStorageConfig, billingCfg PoolBillingConfig, policyCfg PoolConfig, isHidden bool) (*Pool, error) {
 	pool := database.FilePool{
 		ID:            database.NewID(),
@@ -1107,8 +1103,11 @@ func (s *FileService) CanAccessFile(account *gen.DyAccount, session *gen.DyAuthS
 	if err != nil {
 		return false
 	}
+	// No permission row anywhere in the ancestor chain means nobody but the
+	// owner (checked above) ever reaches the file. Sharing is always an
+	// explicit grant: a file that was never shared stays private.
 	if !lookup.HasSource {
-		return true
+		return false
 	}
 	for _, perm := range lookup.Perms {
 		switch perm.SubjectType {
@@ -1441,7 +1440,9 @@ func (s *FileService) countChildrenBatch(parentIDs []string) (map[string]int, er
 
 func permissionStatusFromLookup(lookup cachedFilePermissionLookup) database.PermissionStatus {
 	if !lookup.HasSource {
-		return database.PermissionStatus{Readable: true, Visibility: "public"}
+		// Without a permission row the file is owner-only, matching
+		// CanAccessFile's default-deny.
+		return database.PermissionStatus{Readable: false, Visibility: "private"}
 	}
 	visibility := "restricted"
 	readable := false
@@ -1503,11 +1504,11 @@ func (s *FileService) populateFilesMetadata(files []database.CloudFile) error {
 
 func (s *FileService) permissionStatus(file *database.CloudFile) database.PermissionStatus {
 	if file == nil {
-		return database.PermissionStatus{Readable: true, Visibility: "public"}
+		return database.PermissionStatus{Readable: false, Visibility: "private"}
 	}
 	lookup, err := s.resolveInheritedFilePermissions(context.Background(), file.ID, "read")
-	if err != nil || !lookup.HasSource {
-		return database.PermissionStatus{Readable: true, Visibility: "public"}
+	if err != nil {
+		return database.PermissionStatus{Readable: false, Visibility: "private"}
 	}
 	return permissionStatusFromLookup(lookup)
 }
@@ -3187,7 +3188,18 @@ func (s *FileService) CreateWorkspaceUploadedFile(accountID uuid.UUID, workspace
 		file.FileMeta = datatypes.JSON([]byte(fmt.Sprintf(`{"hash":%q}`, strings.TrimSpace(*hash))))
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		return tx.Create(file).Error
+		if err := tx.Create(file).Error; err != nil {
+			return err
+		}
+		// Root-level uploads seed their own access-control row, mirroring
+		// CreateWorkspaceFolder: without one the file's access state is
+		// implicit and the file is owner-only. Children inherit this private
+		// grant through the ancestor chain instead of carrying their own row.
+		if parentID != nil && strings.TrimSpace(*parentID) != "" {
+			return nil
+		}
+		perm := database.FilePermission{ID: database.NewID(), FileID: file.ID, SubjectType: "private", SubjectID: "", Permission: "read"}
+		return tx.Create(&perm).Error
 	}); err != nil {
 		return nil, err
 	}

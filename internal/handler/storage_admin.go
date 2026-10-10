@@ -289,18 +289,17 @@ func redactAdminStorageConfig(pool *service.Pool) adminStorageConfigResponse {
 	storageConfig := pool.StorageConfig
 	secretIDConfigured := strings.TrimSpace(storageConfig.SecretId) != ""
 	secretKeyConfigured := strings.TrimSpace(storageConfig.SecretKey) != ""
-	storageConfig.SecretId = ""
-	storageConfig.SecretKey = ""
+	redacted := redactPoolSecrets(*pool)
 	return adminStorageConfigResponse{
-		ID:                  pool.ID,
-		Name:                pool.Name,
-		Description:         pool.Description,
-		StorageConfig:       storageConfig,
+		ID:                  redacted.ID,
+		Name:                redacted.Name,
+		Description:         redacted.Description,
+		StorageConfig:       redacted.StorageConfig,
 		SecretIDConfigured:  secretIDConfigured,
 		SecretKeyConfigured: secretKeyConfigured,
-		BillingConfig:       pool.BillingConfig,
-		PolicyConfig:        pool.PolicyConfig,
-		IsHidden:            pool.IsHidden,
+		BillingConfig:       redacted.BillingConfig,
+		PolicyConfig:        redacted.PolicyConfig,
+		IsHidden:            redacted.IsHidden,
 	}
 }
 

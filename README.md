@@ -447,16 +447,21 @@ Request body:
 - A folder is stored as a `cloud_files` row with `is_folder = true` and `indexed = true`
 - `parent_id` is optional
 - The current implementation does not yet validate that the parent exists or is a folder
-- Root folders automatically get a private read permission record
+- Root folders automatically get a private read permission record; root-level
+  uploads seed the same record so a freshly uploaded file is never
+  world-readable, and children inherit it
 
 ### Permission Management
 
 Files expose read/write/manage permissions through `GET /files/:id/permissions` and `PUT /files/:id/permissions`.
 
-- No file permission rows means the file is public
-- A `private` permission row with `read` makes a file private by default
+- Access is deny-by-default: a file with no permission row in its ancestor chain is readable only by its owner (and superusers)
+- A `public` permission row publishes a file (and its descendants) to anonymous callers
+- A `private` permission row with `read` keeps a file owner-only
 - Permission checks inherit from ancestor folders
 - `PUT /files/:id/permissions` replaces the full permission set in one batch
+- Anonymous requests to `GET /api/files/:id`, `GET /api/files/:id/open`, `GET /api/files/:id/info` and `GET /api/files/meta` are refused with `401` unless the file is public by policy; authenticated callers get `403` instead
+- `GET /api/pools` and `GET /api/pools/:id` require an authenticated account, and pool responses never carry storage credentials (`secret_id`/`secret_key` are stripped and omitted from the JSON)
 
 Request body:
 
@@ -497,6 +502,28 @@ Rename a file with `PATCH /api/files/:id`:
 
 - rename updates only the file name
 - rename currently requires the file owner or a superuser
+
+Replace a file's contents with `PUT /api/files/:id/content`:
+
+```bash
+curl -X PUT 'https://files.example.com/api/files/FILE_ID/content' \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: text/plain' \
+  --data-binary @./notes.md
+```
+
+- the request body is the raw new content; a String/binary body is stored as-is
+- the backing object is overwritten in place, so the file keeps its id, name,
+  parent and permissions, and no new `FileObject` is created
+- the object is flagged `needs_rehash`, so hash, MIME type and derived content
+  (thumbnails, compression) are refreshed by the worker afterwards
+- writes need `write` access (`CanAccessFile`); a folder target is a `400`
+- a file locked by another editor (`WOPI`/`WebDAV` lock) is refused with `423`
+  and the current lock echoed in the `X-Lock-Token` response header; send the
+  matching `X-Lock-Token` request header to overwrite through your own lock
+- for binary diffs of an already locked file, use `PATCH /api/files/:id/content`
+  (bsdiff body) instead
+- success returns the refreshed file record, the same shape as `GET /api/files/:id/info`
 
 ### Batch File Operations
 

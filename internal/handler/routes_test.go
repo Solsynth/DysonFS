@@ -287,6 +287,7 @@ func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.png", AccountID: uuid.New(), ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
+	publishFile(t, db, fileID)
 	if err := stor.Put(context.Background(), legacyKey, strings.NewReader("thumb"), int64(len("thumb")), "image/jpeg"); err != nil {
 		t.Fatalf("put legacy thumbnail: %v", err)
 	}
@@ -322,6 +323,7 @@ func TestOpenFileFallsBackToLegacyCompressionStorageKey(t *testing.T) {
 	if err := db.Create(&database.CloudFile{ID: fileID, Name: "sample.png", AccountID: uuid.New(), ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
 		t.Fatalf("create file: %v", err)
 	}
+	publishFile(t, db, fileID)
 	if err := stor.Put(context.Background(), legacyKey, strings.NewReader("compressed"), int64(len("compressed")), "image/webp"); err != nil {
 		t.Fatalf("put legacy compressed: %v", err)
 	}
@@ -361,6 +363,7 @@ func TestOpenFileNormalizesDerivedCompressionStorageKeyFromObjectID(t *testing.T
 	if err := db.Create(&database.CloudFile{ID: parentFileID, Name: "sample.png", AccountID: uuid.New(), ObjectID: &parentObjectID, StorageKey: &parentObjectID, Indexed: true}).Error; err != nil {
 		t.Fatalf("create parent file: %v", err)
 	}
+	publishFile(t, db, parentFileID)
 	if err := db.Create(&database.FileObject{ID: derivedObjectID, Size: 8, MimeType: "image/webp", Hash: "derived-hash", StorageKey: &wrongKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
 		t.Fatalf("create derived object: %v", err)
 	}
@@ -410,6 +413,7 @@ func TestOpenFileFallsBackToOriginalWhenDerivedCompressionIsMissing(t *testing.T
 	if err := db.Create(&database.CloudFile{ID: parentFileID, Name: "sample.png", AccountID: uuid.New(), ObjectID: &parentObjectID, StorageKey: &parentKey, Indexed: true}).Error; err != nil {
 		t.Fatalf("create parent file: %v", err)
 	}
+	publishFile(t, db, parentFileID)
 	if err := db.Create(&database.FileObject{ID: derivedObjectID, Size: 8, MimeType: "image/webp", Hash: "derived-hash", StorageKey: &missingDerivedKey, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
 		t.Fatalf("create derived object: %v", err)
 	}
@@ -767,6 +771,7 @@ func TestListFilesMetadataPreservesRequestedOrder(t *testing.T) {
 	}
 
 	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
 	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+second.ID+","+first.ID+"&ids=missing", nil)
@@ -796,7 +801,9 @@ func TestListFilesMetadataRequiresIDsAndFiltersUnreadableFiles(t *testing.T) {
 	viewerID := uuid.New()
 	public := database.CloudFile{ID: database.NewID(), Name: "public.txt", AccountID: ownerID, Indexed: true}
 	private := database.CloudFile{ID: database.NewID(), Name: "private.txt", AccountID: ownerID, Indexed: true}
-	for _, file := range []database.CloudFile{public, private} {
+	// No permission row anywhere: owner-only under the default-deny policy.
+	unshared := database.CloudFile{ID: database.NewID(), Name: "unshared.txt", AccountID: ownerID, Indexed: true}
+	for _, file := range []database.CloudFile{public, private, unshared} {
 		if err := db.Create(&file).Error; err != nil {
 			t.Fatalf("create file: %v", err)
 		}
@@ -804,6 +811,7 @@ func TestListFilesMetadataRequiresIDsAndFiltersUnreadableFiles(t *testing.T) {
 	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: private.ID, SubjectType: "account", SubjectID: ownerID.String(), Permission: "read"}).Error; err != nil {
 		t.Fatalf("create permission: %v", err)
 	}
+	publishFile(t, db, public.ID)
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(viewerID))
@@ -816,7 +824,7 @@ func TestListFilesMetadataRequiresIDsAndFiltersUnreadableFiles(t *testing.T) {
 		t.Fatalf("missing ids status = %d, want %d", missingRes.Code, http.StatusBadRequest)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+private.ID+"&ids="+public.ID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+private.ID+"&ids="+public.ID+"&ids="+unshared.ID, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -838,6 +846,255 @@ func testAuthMiddleware(accountID uuid.UUID) gin.HandlerFunc {
 			Session: &gen.DyAuthSession{Id: "session-1", AccountId: accountID.String()},
 		}, dyauth.TokenInfo{Token: "test-token"})
 		c.Next()
+	}
+}
+
+func TestListPoolsRequiresAuthAndRedactsStorageSecrets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.FilePool{}, &database.PoolPermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+
+	pool := database.FilePool{
+		ID:            database.NewID(),
+		Name:          "primary",
+		AccountID:     accountID,
+		StorageConfig: datatypes.JSON([]byte(`{"endpoint":"127.0.0.1:9000","bucket":"test","secret_id":"test-access-key","secret_key":"test-secret-key"}`)),
+		BillingConfig: datatypes.JSON([]byte(`{}`)),
+		PolicyConfig:  datatypes.JSON([]byte(`{"public_usable":true}`)),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	anon := gin.New()
+	RegisterRoutes(anon, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	for _, path := range []string{"/api/pools", "/api/pools/" + pool.ID} {
+		rec := httptest.NewRecorder()
+		anon.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("anonymous GET %s status = %d, want %d", path, rec.Code, http.StatusUnauthorized)
+		}
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	for _, path := range []string{"/api/pools", "/api/pools/me", "/api/pools/" + pool.ID} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d; body = %s", path, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), pool.ID) {
+			t.Fatalf("GET %s body = %s, want pool %s", path, rec.Body.String(), pool.ID)
+		}
+		assertNoPoolSecrets(t, "GET "+path, rec.Body.String())
+	}
+}
+
+func TestCreatePoolAndUpdatePoolRedactStorageSecrets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.FilePool{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	accountID := uuid.New()
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	body := `{"name":"primary","storage_config":{"enable_signed":true,"enable_ssl":false,"endpoint":"127.0.0.1:9000","bucket":"test","secret_id":"test-access-key","secret_key":"test-secret-key"}}`
+	createRec := httptest.NewRecorder()
+	r.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/pools", strings.NewReader(body)))
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/pools status = %d, want %d; body = %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+	assertNoPoolSecrets(t, "POST /api/pools", createRec.Body.String())
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created pool: %v", err)
+	}
+	var stored database.FilePool
+	if err := db.First(&stored, "id = ?", created.ID).Error; err != nil {
+		t.Fatalf("load pool: %v", err)
+	}
+	if !strings.Contains(string(stored.StorageConfig), "test-secret-key") {
+		t.Fatalf("stored storage config = %s, want the secret persisted server-side", stored.StorageConfig)
+	}
+
+	updateRec := httptest.NewRecorder()
+	r.ServeHTTP(updateRec, httptest.NewRequest(http.MethodPatch, "/api/pools/"+created.ID, strings.NewReader(`{"description":"renamed"}`)))
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("PATCH /api/pools/{id} status = %d, want %d; body = %s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+	assertNoPoolSecrets(t, "PATCH /api/pools/{id}", updateRec.Body.String())
+}
+
+func assertNoPoolSecrets(t *testing.T, label, body string) {
+	t.Helper()
+	for _, forbidden := range []string{"secret_id", "secret_key", "test-access-key", "test-secret-key"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("%s leaked %q: %s", label, forbidden, body)
+		}
+	}
+}
+
+func TestOpenFileRequiresAuthUnlessFileIsPublic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	ownerID := uuid.New()
+
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "image/png", Hash: "hash", StorageKey: &objectID, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	privateID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: privateID, Name: "private.png", AccountID: ownerID, ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create private file: %v", err)
+	}
+	publicID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: publicID, Name: "public.png", AccountID: ownerID, ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create public file: %v", err)
+	}
+	publishFile(t, db, publicID)
+
+	anon := gin.New()
+	RegisterRoutes(anon, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	privateRec := httptest.NewRecorder()
+	anon.ServeHTTP(privateRec, httptest.NewRequest(http.MethodGet, "/api/files/"+privateID, nil))
+	if privateRec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous private file status = %d, want %d", privateRec.Code, http.StatusUnauthorized)
+	}
+
+	publicRec := httptest.NewRecorder()
+	anon.ServeHTTP(publicRec, httptest.NewRequest(http.MethodGet, "/api/files/"+publicID, nil))
+	if publicRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("anonymous public file status = %d, want %d; body = %s", publicRec.Code, http.StatusTemporaryRedirect, publicRec.Body.String())
+	}
+
+	infoPrivateRec := httptest.NewRecorder()
+	anon.ServeHTTP(infoPrivateRec, httptest.NewRequest(http.MethodGet, "/api/files/"+privateID+"/info", nil))
+	if infoPrivateRec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous private /info status = %d, want %d", infoPrivateRec.Code, http.StatusUnauthorized)
+	}
+	infoPublicRec := httptest.NewRecorder()
+	anon.ServeHTTP(infoPublicRec, httptest.NewRequest(http.MethodGet, "/api/files/"+publicID+"/info", nil))
+	if infoPublicRec.Code != http.StatusOK {
+		t.Fatalf("anonymous public /info status = %d, want %d; body = %s", infoPublicRec.Code, http.StatusOK, infoPublicRec.Body.String())
+	}
+
+	other := gin.New()
+	other.Use(testAuthMiddleware(uuid.New()))
+	RegisterRoutes(other, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	otherRec := httptest.NewRecorder()
+	other.ServeHTTP(otherRec, httptest.NewRequest(http.MethodGet, "/api/files/"+privateID, nil))
+	if otherRec.Code != http.StatusForbidden {
+		t.Fatalf("other account private file status = %d, want %d", otherRec.Code, http.StatusForbidden)
+	}
+
+	owner := gin.New()
+	owner.Use(testAuthMiddleware(ownerID))
+	RegisterRoutes(owner, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	ownerRec := httptest.NewRecorder()
+	owner.ServeHTTP(ownerRec, httptest.NewRequest(http.MethodGet, "/api/files/"+privateID, nil))
+	if ownerRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("owner status = %d, want %d; body = %s", ownerRec.Code, http.StatusTemporaryRedirect, ownerRec.Body.String())
+	}
+}
+
+func TestListChildrenFiltersPermissionlessChildOfOtherAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	viewerID := uuid.New()
+	otherID := uuid.New()
+
+	folderID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: folderID, Name: "shared", AccountID: viewerID, IsFolder: true, Indexed: true}).Error; err != nil {
+		t.Fatalf("create folder: %v", err)
+	}
+	// Owned by another account with no permission row: default-deny.
+	unsharedID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: unsharedID, Name: "unshared.txt", AccountID: otherID, ParentID: &folderID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create unshared child: %v", err)
+	}
+	sharedID := database.NewID()
+	if err := db.Create(&database.CloudFile{ID: sharedID, Name: "shared.txt", AccountID: otherID, ParentID: &folderID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create shared child: %v", err)
+	}
+	publishFile(t, db, sharedID)
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(viewerID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/files/"+folderID+"/children", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got []database.CloudFile
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode children: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != sharedID {
+		t.Fatalf("children = %+v, want only the published child", got)
+	}
+}
+
+func TestListFilesMetadataHidesFreshlyUploadedFileFromOtherAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{})
+	files := service.NewFileService(&database.DB{DB: db}, nil)
+	ownerID := uuid.New()
+	objectID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: 12, MimeType: "text/plain", Hash: "hash", Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	storageKey := objectID
+	uploaded, err := files.CreateUploadedFile(ownerID, "fresh.txt", nil, nil, nil, nil, nil, objectID, nil, nil, &storageKey, true)
+	if err != nil {
+		t.Fatalf("CreateUploadedFile() error = %v", err)
+	}
+
+	metadata := func(accountID uuid.UUID) *httptest.ResponseRecorder {
+		r := gin.New()
+		r.Use(testAuthMiddleware(accountID))
+		RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+uploaded.ID, nil))
+		return rec
+	}
+
+	otherRec := metadata(uuid.New())
+	if otherRec.Code != http.StatusOK {
+		t.Fatalf("other account status = %d, want %d", otherRec.Code, http.StatusOK)
+	}
+	if total := otherRec.Header().Get("X-Total"); total != "0" {
+		t.Fatalf("other account X-Total = %q, want 0; body = %s", total, otherRec.Body.String())
+	}
+	if strings.Contains(otherRec.Body.String(), uploaded.ID) {
+		t.Fatalf("other account saw the fresh upload: %s", otherRec.Body.String())
+	}
+
+	ownerRec := metadata(ownerID)
+	if total := ownerRec.Header().Get("X-Total"); total != "1" {
+		t.Fatalf("owner X-Total = %q, want 1; body = %s", total, ownerRec.Body.String())
+	}
+}
+
+// publishFile grants anonymous read access to a file, the explicit grant
+// CanAccessFile requires for callers that are not the owner.
+func publishFile(t *testing.T, db *gorm.DB, fileID string) {
+	t.Helper()
+	if err := db.Create(&database.FilePermission{ID: database.NewID(), FileID: fileID, SubjectType: "public", SubjectID: "", Permission: "read"}).Error; err != nil {
+		t.Fatalf("create public permission: %v", err)
 	}
 }
 
@@ -1312,8 +1569,8 @@ func TestPrepareDirectUploadMultipartFallsBackToProxied(t *testing.T) {
 		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Error         string `json:"error"`
-		UseProxied    bool   `json:"use_proxied_upload"`
+		Error      string `json:"error"`
+		UseProxied bool   `json:"use_proxied_upload"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode prepare response: %v", err)
@@ -1734,5 +1991,153 @@ func TestPresignUploadPartRejectsOutOfRangeAndUnknownTask(t *testing.T) {
 	r.ServeHTTP(partRes, partReq)
 	if partRes.Code != http.StatusNotFound {
 		t.Fatalf("unknown task status = %d, want 404, body = %s", partRes.Code, partRes.Body.String())
+	}
+}
+
+func newPutFileContentFixture(t *testing.T, db *gorm.DB, backend storage.Backend, accountID uuid.UUID, content string) (string, string) {
+	t.Helper()
+	objectID := database.NewID()
+	fileID := database.NewID()
+	if err := db.Create(&database.FileObject{ID: objectID, Size: int64(len(content)), MimeType: "text/markdown", Hash: "hash-1", StorageKey: &objectID, Meta: datatypes.JSON([]byte(`{}`))}).Error; err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+	if err := db.Create(&database.CloudFile{ID: fileID, Name: "notes.md", AccountID: accountID, ObjectID: &objectID, StorageKey: &objectID, Indexed: true}).Error; err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if err := backend.Put(context.Background(), objectID, strings.NewReader(content), int64(len(content)), "text/markdown"); err != nil {
+		t.Fatalf("put object content: %v", err)
+	}
+	return fileID, objectID
+}
+
+func TestPutFileContentOverwritesInPlace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.FileLock{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	accountID := uuid.New()
+	fileID, objectID := newPutFileContentFixture(t, db, stor, accountID, "draft")
+	dispatcher := &recordingDispatcher{}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, dispatcher)
+
+	const edited = "# notes\n\nedited body"
+	req := httptest.NewRequest(http.MethodPut, "/api/files/"+fileID+"/content", strings.NewReader(edited))
+	req.Header.Set("Content-Type", "text/markdown")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var response struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != fileID || response.Name != "notes.md" || response.Size != int64(len(edited)) {
+		t.Fatalf("response = %+v, want id %s, name notes.md, size %d", response, fileID, len(edited))
+	}
+
+	reader, _, err := stor.Get(context.Background(), objectID)
+	if err != nil {
+		t.Fatalf("read overwritten object: %v", err)
+	}
+	stored, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		t.Fatalf("read object body: %v", err)
+	}
+	if string(stored) != edited {
+		t.Fatalf("stored content = %q, want %q", stored, edited)
+	}
+
+	var object database.FileObject
+	if err := db.First(&object, "id = ?", objectID).Error; err != nil {
+		t.Fatalf("reload object: %v", err)
+	}
+	if object.Size != int64(len(edited)) || !object.NeedsRehash {
+		t.Fatalf("object size/rehash = %d/%v, want %d/true", object.Size, object.NeedsRehash, len(edited))
+	}
+
+	var objectCount int64
+	if err := db.Model(&database.FileObject{}).Count(&objectCount).Error; err != nil {
+		t.Fatalf("count objects: %v", err)
+	}
+	if objectCount != 1 {
+		t.Fatalf("object count = %d, want 1 (overwrite must not create a new object)", objectCount)
+	}
+
+	if len(dispatcher.uploaded) != 1 || dispatcher.uploaded[0].FileID != fileID {
+		t.Fatalf("uploaded events = %+v, want one event for %s", dispatcher.uploaded, fileID)
+	}
+}
+
+func TestPutFileContentRequiresWritePermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.FileLock{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	ownerID := uuid.New()
+	callerID := uuid.New()
+	fileID, _ := newPutFileContentFixture(t, db, stor, ownerID, "draft")
+	// A write-permission row naming somebody else makes the file governable:
+	// with a permission source present, non-listed accounts are refused.
+	if err := db.Create(&database.FilePermission{
+		ID:          database.NewID(),
+		FileID:      fileID,
+		SubjectType: "account",
+		SubjectID:   uuid.New().String(),
+		Permission:  "write",
+	}).Error; err != nil {
+		t.Fatalf("create permission row: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(callerID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/files/"+fileID+"/content", strings.NewReader("hijacked")))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+}
+
+func TestPutFileContentRejectsFilesLockedByAnotherEditor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t, &database.CloudFile{}, &database.FileObject{}, &database.FilePool{}, &database.FilePermission{}, &database.FileLock{})
+	stor := storage.NewLocalBackend(t.TempDir())
+	files := service.NewFileService(&database.DB{DB: db}, stor)
+	accountID := uuid.New()
+	fileID, _ := newPutFileContentFixture(t, db, stor, accountID, "draft")
+	if err := db.Create(&database.FileLock{ID: database.NewID(), FileID: fileID, LockToken: "lock-a", Protocol: "wopi", ExpiresAt: time.Now().Add(5 * time.Minute)}).Error; err != nil {
+		t.Fatalf("create lock: %v", err)
+	}
+
+	r := gin.New()
+	r.Use(testAuthMiddleware(accountID))
+	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+
+	blocked := httptest.NewRecorder()
+	r.ServeHTTP(blocked, httptest.NewRequest(http.MethodPut, "/api/files/"+fileID+"/content", strings.NewReader("stale")))
+	if blocked.Code != http.StatusLocked {
+		t.Fatalf("status = %d, want %d, body = %s", blocked.Code, http.StatusLocked, blocked.Body.String())
+	}
+	if got := blocked.Header().Get("X-Lock-Token"); got != "lock-a" {
+		t.Fatalf("X-Lock-Token = %q, want %q", got, "lock-a")
+	}
+
+	holderReq := httptest.NewRequest(http.MethodPut, "/api/files/"+fileID+"/content", strings.NewReader("from lock holder"))
+	holderReq.Header.Set("X-Lock-Token", "lock-a")
+	held := httptest.NewRecorder()
+	r.ServeHTTP(held, holderReq)
+	if held.Code != http.StatusOK {
+		t.Fatalf("lock holder status = %d, want %d, body = %s", held.Code, http.StatusOK, held.Body.String())
 	}
 }
