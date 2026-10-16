@@ -213,7 +213,7 @@ func (f *webdavFile) closeNewFile() error {
 		return fmt.Errorf("seek temp file: %w", err)
 	}
 
-	object, err := f.files.StreamToStorage(context.Background(), f.tempFile, "")
+	object, err := f.files.StreamToStorage(context.Background(), nil, f.tempFile, "")
 	if err != nil {
 		return fmt.Errorf("stream to storage: %w", err)
 	}

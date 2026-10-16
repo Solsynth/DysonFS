@@ -57,7 +57,7 @@ func TestDirectUploadImageGeneratesCompressionDerivative(t *testing.T) {
 	// Generate a small but real JPEG with libvips.
 	jpeg := generateTestJPEG(t)
 
-	w := worker.New(nil, files, defaultStor, &database.DB{DB: db}, t.TempDir())
+	w := worker.New(nil, files, &database.DB{DB: db}, t.TempDir())
 	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
 
 	r := gin.New()
@@ -137,15 +137,26 @@ func TestDirectUploadImageGeneratesCompressionDerivative(t *testing.T) {
 		t.Fatalf("parent object has_compression = %+v, want true after derivative creation", parent.Object)
 	}
 
-	// The compressed bytes must be retrievable from the storage the worker
-	// writes derivatives to.
-	rc, info, err := defaultStor.Get(context.Background(), *derived.Object.StorageKey)
+	// The compressed bytes must be retrievable from the storage the parent
+	// file's pool resolves to — not the default backend, which is a different
+	// bucket from the pool this upload targeted.
+	derivedBackend, err := files.BackendForFile(&parent)
+	if err != nil {
+		t.Fatalf("resolve derived backend: %v", err)
+	}
+	rc, info, err := derivedBackend.Get(context.Background(), *derived.Object.StorageKey)
 	if err != nil {
 		t.Fatalf("read derived object %q: %v", *derived.Object.StorageKey, err)
 	}
 	rc.Close()
 	if info.Size <= 0 {
 		t.Fatalf("derived object %q has empty content", *derived.Object.StorageKey)
+	}
+	if parent.PoolID == nil || *parent.PoolID != poolID {
+		t.Fatalf("parent pool = %v, want %q", parent.PoolID, poolID)
+	}
+	if _, err := defaultStor.Stat(context.Background(), *derived.Object.StorageKey); err == nil {
+		t.Fatalf("derivative leaked into the default backend, which is not the upload's pool")
 	}
 
 	var task database.PersistentTask
@@ -198,7 +209,7 @@ func TestDirectUploadVideoGeneratesThumbnailDerivative(t *testing.T) {
 		t.Fatalf("read sample mp4: %v", err)
 	}
 
-	w := worker.New(nil, files, defaultStor, &database.DB{DB: db}, t.TempDir())
+	w := worker.New(nil, files, &database.DB{DB: db}, t.TempDir())
 	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
 
 	r := gin.New()
@@ -291,7 +302,7 @@ func TestDirectUploadMultipartImageGeneratesCompressionDerivative(t *testing.T) 
 
 	jpeg := generateTestJPEG(t)
 
-	w := worker.New(nil, files, defaultStor, &database.DB{DB: db}, t.TempDir())
+	w := worker.New(nil, files, &database.DB{DB: db}, t.TempDir())
 	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
 
 	r := gin.New()
@@ -394,7 +405,7 @@ func TestDirectUploadClientMediaSkipsSourceAnalysis(t *testing.T) {
 
 	source := generateTestJPEG(t)
 	thumbnail := generateTestJPEG(t)
-	w := worker.New(nil, files, defaultStor, &database.DB{DB: db}, t.TempDir())
+	w := worker.New(nil, files, &database.DB{DB: db}, t.TempDir())
 	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))

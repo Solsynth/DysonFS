@@ -169,7 +169,7 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	if natsConn != nil {
 		app.bus = eventbus.New(natsConn)
 	}
-	app.worker = worker.New(app.bus, app.files, app.stor, app.db, app.cfg.Storage.TempDir)
+	app.worker = worker.New(app.bus, app.files, app.db, app.cfg.Storage.TempDir)
 	if cfg.Bundled.Enable {
 		count := cfg.Bundled.WorkerNum
 		if count < 1 {
@@ -177,7 +177,7 @@ func New(cfg *config.Config, mode string) (*App, error) {
 		}
 		workers := make([]*worker.Worker, 0, count)
 		for i := 0; i < count; i++ {
-			workers = append(workers, worker.New(nil, app.files, app.stor, app.db, app.cfg.Storage.TempDir))
+			workers = append(workers, worker.New(nil, app.files, app.db, app.cfg.Storage.TempDir))
 		}
 		app.dispatcher = dispatch.NewBundled(workers)
 	}

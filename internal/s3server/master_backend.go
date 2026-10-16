@@ -256,7 +256,7 @@ func (b *MasterBackend) PutObject(ctx context.Context, bucket, key string, reade
 	_ = f.Close()
 	defer os.Remove(tempPath)
 	_ = size
-	object, err := b.files.StreamFileToStorage(ctx, tempPath, contentType)
+	object, err := b.files.StreamFileToStorage(ctx, poolID, tempPath, contentType)
 	if err != nil {
 		return err
 	}

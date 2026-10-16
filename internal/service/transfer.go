@@ -97,9 +97,13 @@ func NewStagedFileInfo(path, contentType string, size int64, hash string) *Stage
 // never collides, and so cache cleanup can never touch user files.
 const uploadKeyPrefix = "uploads/"
 
-func (s *FileService) UploadStagedFile(ctx context.Context, path string, info *StagedFileInfo) (string, error) {
+func (s *FileService) UploadStagedFile(ctx context.Context, poolID *string, path string, info *StagedFileInfo) (string, error) {
 	if info == nil {
 		return "", fmt.Errorf("staged file info is required")
+	}
+	backend, err := s.backendForPoolOrDefault(poolID)
+	if err != nil {
+		return "", err
 	}
 	stage, err := os.Open(path)
 	if err != nil {
@@ -108,7 +112,7 @@ func (s *FileService) UploadStagedFile(ctx context.Context, path string, info *S
 	defer stage.Close()
 
 	storageKey := uploadKeyPrefix + database.NewID()
-	if err := s.Storage().Put(ctx, storageKey, stage, info.Size, info.ContentType); err != nil {
+	if err := backend.Put(ctx, storageKey, stage, info.Size, info.ContentType); err != nil {
 		return "", fmt.Errorf("upload to storage: %w", err)
 	}
 	return storageKey, nil
@@ -380,12 +384,12 @@ func (s *FileService) createFileObject(storageKey string, info *stagedFileInfo) 
 	return object, nil
 }
 
-func (s *FileService) StreamFileToStorage(ctx context.Context, path, contentType string) (*database.FileObject, error) {
+func (s *FileService) StreamFileToStorage(ctx context.Context, poolID *string, path, contentType string) (*database.FileObject, error) {
 	info, err := InspectStagedFile(path, contentType)
 	if err != nil {
 		return nil, err
 	}
-	storageKey, err := s.UploadStagedFile(ctx, path, info)
+	storageKey, err := s.UploadStagedFile(ctx, poolID, path, info)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +402,7 @@ func (s *FileService) StreamFileToStorage(ctx context.Context, path, contentType
 //
 // If contentType is empty, MIME type is auto-detected.
 // The caller is responsible for creating the CloudFile record and cleaning up temp files.
-func (s *FileService) StreamToStorage(ctx context.Context, r io.Reader, contentType string) (*database.FileObject, error) {
+func (s *FileService) StreamToStorage(ctx context.Context, poolID *string, r io.Reader, contentType string) (*database.FileObject, error) {
 	tempFile, err := os.CreateTemp("", "dysonfs-stream-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp file: %w", err)
@@ -420,13 +424,17 @@ func (s *FileService) StreamToStorage(ctx context.Context, r io.Reader, contentT
 
 	contentType = detectSourceMime(tempPath, contentType)
 
+	backend, err := s.backendForPoolOrDefault(poolID)
+	if err != nil {
+		return nil, err
+	}
 	storageKey := database.NewID()
 	stage, err := os.Open(tempPath)
 	if err != nil {
 		return nil, fmt.Errorf("open temp for upload: %w", err)
 	}
 	defer stage.Close()
-	if err := s.Storage().Put(ctx, storageKey, stage, size, contentType); err != nil {
+	if err := backend.Put(ctx, storageKey, stage, size, contentType); err != nil {
 		return nil, fmt.Errorf("upload to storage: %w", err)
 	}
 

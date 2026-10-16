@@ -443,6 +443,9 @@ func (s *fileServiceServer) prepareUpload(ctx context.Context, input *gen.DyFile
 		options.applicationType = target.ApplicationType
 		options.indexed = target.Indexed
 		options.workspaceID = target.WorkspaceID
+		// OverwriteFile keeps the file row's pool, so the replacement object
+		// must be written to that pool rather than any requested one.
+		options.poolID = target.PoolID
 	}
 
 	resolvedPoolID := s.files.ResolvedPoolID(options.poolID)
@@ -510,7 +513,7 @@ func (s *fileServiceServer) persistStagedUpload(ctx context.Context, options *no
 			analysisCh <- analysisResult{value: value, err: err}
 		}()
 		go func() {
-			key, err := s.files.UploadStagedFile(ctx, stagedPath, info)
+			key, err := s.files.UploadStagedFile(ctx, options.poolID, stagedPath, info)
 			storageCh <- storageResult{key: key, err: err}
 		}()
 		analyzed := <-analysisCh
@@ -521,7 +524,9 @@ func (s *fileServiceServer) persistStagedUpload(ctx context.Context, options *no
 		}
 		object, err = s.files.CreateUploadedObject(stored.key, info, analysis)
 		if err != nil {
-			_ = s.files.Storage().Delete(context.Background(), stored.key)
+			if backend, backendErr := s.files.BackendForPoolID(options.poolID); backendErr == nil {
+				_ = backend.Delete(context.Background(), stored.key)
+			}
 			return nil, uploadStatus(err)
 		}
 		storageKey := object.StorageKey

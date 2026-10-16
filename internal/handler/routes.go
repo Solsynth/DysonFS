@@ -549,7 +549,12 @@ func openFile(c *gin.Context, cfg *config.Config, files *service.FileService) {
 	if file.Object != nil && file.Object.MimeType != "" {
 		_ = file.Object.MimeType
 	}
-	url, err := files.Storage().SignedURL(c.Request.Context(), *file.StorageKey, 15*time.Minute, name, download)
+	backend, err := files.BackendForFile(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	url, err := backend.SignedURL(c.Request.Context(), *file.StorageKey, 15*time.Minute, name, download)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1981,6 +1986,9 @@ func createUploadTask(c *gin.Context, cfg *config.Config, files *service.FileSer
 			return
 		}
 		req.WorkspaceID = target.WorkspaceID
+		// OverwriteFile keeps the file row's pool, so the staged object must be
+		// written to that same pool.
+		req.PoolID = target.PoolID
 	}
 	if strings.TrimSpace(req.FileName) == "" {
 		req.FileName = service.DefaultUploadFileName(req.ContentType)
@@ -2240,6 +2248,11 @@ func prepareDirectUpload(c *gin.Context, files *service.FileService, tasks *serv
 		req.FileName, req.Description, req.ParentID = target.Name, target.Description, target.ParentID
 		req.Usage, req.ApplicationType, req.Index, expiredAt = target.Usage, target.ApplicationType, target.Indexed, target.ExpiredAt
 		req.WorkspaceID = target.WorkspaceID
+		// The replacement object must live in the pool the overwritten file
+		// already belongs to: OverwriteFile keeps the file row's pool, so
+		// writing to any other pool would leave the row and the bytes pointing
+		// at different buckets.
+		req.PoolID = target.PoolID
 	}
 	if req.WorkspaceID != nil {
 		if err := quota.CheckWorkspaceUploadQuota(c.Request.Context(), *req.WorkspaceID, result.Account.GetId(), req.FileSize); err != nil {
@@ -2836,7 +2849,14 @@ func directUpload(c *gin.Context, cfg *config.Config, files *service.FileService
 	}
 	if createdFile == nil {
 		uploadStartedAt := time.Now()
-		object, analysis, analysisErr, err = storeUploadedSource(c.Request.Context(), files, tempPath, stagedInfo)
+		// This endpoint always targets the default pool, so the bytes must be
+		// written through the default backend. An overwrite keeps the target
+		// file's own pool, so the replacement bytes go to that pool instead.
+		var uploadPoolID *string
+		if overwriteTarget != nil {
+			uploadPoolID = overwriteTarget.PoolID
+		}
+		object, analysis, analysisErr, err = storeUploadedSource(c.Request.Context(), files, uploadPoolID, tempPath, stagedInfo)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -3085,7 +3105,7 @@ func completeUpload(c *gin.Context, cfg *config.Config, files *service.FileServi
 	}
 	if created == nil {
 		uploadStartedAt := time.Now()
-		object, analysis, analysisErr, err = storeUploadedSource(c.Request.Context(), files, mergedPath, nil)
+		object, analysis, analysisErr, err = storeUploadedSource(c.Request.Context(), files, task.PoolID, mergedPath, nil)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -3276,7 +3296,7 @@ type sourceStorageResult struct {
 // storeUploadedSource keeps source analysis synchronous for the response, but
 // runs it beside the independent storage transfer. The object row is created
 // only after both complete so its first persisted metadata is already final.
-func storeUploadedSource(ctx context.Context, files *service.FileService, path string, info *service.StagedFileInfo) (*database.FileObject, *service.SourceAnalysis, error, error) {
+func storeUploadedSource(ctx context.Context, files *service.FileService, poolID *string, path string, info *service.StagedFileInfo) (*database.FileObject, *service.SourceAnalysis, error, error) {
 	if info == nil {
 		var err error
 		info, err = service.InspectStagedFile(path, "")
@@ -3292,7 +3312,7 @@ func storeUploadedSource(ctx context.Context, files *service.FileService, path s
 		analysisCh <- sourceAnalysisResult{analysis: analysis, err: err}
 	}()
 	go func() {
-		storageKey, err := files.UploadStagedFile(ctx, path, info)
+		storageKey, err := files.UploadStagedFile(ctx, poolID, path, info)
 		storageCh <- sourceStorageResult{storageKey: storageKey, err: err}
 	}()
 
@@ -3303,7 +3323,9 @@ func storeUploadedSource(ctx context.Context, files *service.FileService, path s
 	}
 	object, err := files.CreateUploadedObject(storageResult.storageKey, info, analysisResult.analysis)
 	if err != nil {
-		_ = files.Storage().Delete(context.Background(), storageResult.storageKey)
+		if backend, backendErr := files.BackendForPoolID(poolID); backendErr == nil {
+			_ = backend.Delete(context.Background(), storageResult.storageKey)
+		}
 		return nil, analysisResult.analysis, analysisResult.err, err
 	}
 	return object, analysisResult.analysis, analysisResult.err, nil

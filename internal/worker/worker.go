@@ -22,21 +22,23 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
-	"src.solsynth.dev/sosys/filesystem/internal/storage"
 )
 
 type Worker struct {
 	bus     *eventbus.Bus
 	files   *service.FileService
-	stor    storage.Backend
 	db      *database.DB
 	tempDir string
 }
 
 const compressedImageTargetBytes = 100 * 1024
 
-func New(bus *eventbus.Bus, files *service.FileService, stor storage.Backend, db *database.DB, tempDir string) *Worker {
-	return &Worker{bus: bus, files: files, stor: stor, db: db, tempDir: tempDir}
+// New builds a worker. It deliberately holds no storage backend of its own:
+// every object a worker touches is read and written through the pool of the
+// file that owns it, so a stray ambient backend can never place bytes in the
+// wrong pool.
+func New(bus *eventbus.Bus, files *service.FileService, db *database.DB, tempDir string) *Worker {
+	return &Worker{bus: bus, files: files, db: db, tempDir: tempDir}
 }
 
 func (w *Worker) Start(ctx context.Context) error {
@@ -310,7 +312,7 @@ func (w *Worker) cleanupStaleTasks() {
 }
 
 func (w *Worker) processRehashQueue(ctx context.Context) {
-	if w.files == nil || w.stor == nil {
+	if w.files == nil {
 		return
 	}
 	cutoff := time.Now().Add(-30 * time.Second)
@@ -336,7 +338,18 @@ func (w *Worker) rehashObject(ctx context.Context, obj *database.FileObject) err
 		storageKey = obj.ID
 	}
 
-	rc, _, err := w.stor.Get(ctx, storageKey)
+	var file database.CloudFile
+	if err := w.db.Where("object_id = ? AND deleted_at IS NULL", obj.ID).First(&file).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	backend, err := w.files.BackendForFile(&file)
+	if err != nil {
+		return err
+	}
+	rc, _, err := backend.Get(ctx, storageKey)
 	if err != nil {
 		return fmt.Errorf("read from storage: %w", err)
 	}
@@ -368,13 +381,6 @@ func (w *Worker) rehashObject(ctx context.Context, obj *database.FileObject) err
 		return fmt.Errorf("update object: %w", err)
 	}
 
-	var file database.CloudFile
-	if err := w.db.Where("object_id = ? AND deleted_at IS NULL", obj.ID).First(&file).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
-		return err
-	}
 	evt := eventbus.FileUploadedEvent{
 		FileID:             file.ID,
 		ContentType:        mimeType,
@@ -584,7 +590,7 @@ func (w *Worker) processDerived(path string, evt eventbus.FileUploadedEvent, par
 }
 
 func (w *Worker) processImage(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {
-	if w.stor == nil {
+	if w.files == nil {
 		return nil
 	}
 
@@ -618,7 +624,11 @@ func (w *Worker) processImageStill(path string, evt eventbus.FileUploadedEvent, 
 	}
 	if len(compBuf) > 0 {
 		compKey := storageKey(parent.ID, ".compressed")
-		if err := w.stor.Put(context.Background(), compKey, bytes.NewReader(compBuf), int64(len(compBuf)), "image/webp"); err != nil {
+		backend, err := w.files.BackendForFile(parent)
+		if err != nil {
+			return err
+		}
+		if err := backend.Put(context.Background(), compKey, bytes.NewReader(compBuf), int64(len(compBuf)), "image/webp"); err != nil {
 			return err
 		}
 		if err := w.upsertChild(parent, evt, "system.compression.low", compKey, "image/webp", compBuf); err != nil {
@@ -689,7 +699,7 @@ func exportCompressedWebp(img *vips.ImageRef, original []byte, targetBytes int) 
 }
 
 func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {
-	if w.stor == nil {
+	if w.files == nil {
 		return nil
 	}
 
@@ -707,7 +717,11 @@ func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, paren
 	if err != nil {
 		return err
 	}
-	if err := w.stor.Put(context.Background(), thumbKey, bytes.NewReader(thumbBytes), int64(len(thumbBytes)), "image/jpeg"); err != nil {
+	backend, err := w.files.BackendForFile(parent)
+	if err != nil {
+		return err
+	}
+	if err := backend.Put(context.Background(), thumbKey, bytes.NewReader(thumbBytes), int64(len(thumbBytes)), "image/jpeg"); err != nil {
 		return err
 	}
 	if err := w.upsertChild(parent, evt, "system.thumbnail", thumbKey, "image/jpeg", thumbBytes); err != nil {

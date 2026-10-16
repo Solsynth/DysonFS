@@ -2840,7 +2840,7 @@ func TestUploadStagedFileUsesUploadsPrefix(t *testing.T) {
 		t.Fatalf("write staged file: %v", err)
 	}
 	info := &StagedFileInfo{Size: 5, ContentType: "text/plain", Hash: "hash"}
-	key, err := svc.UploadStagedFile(context.Background(), stagedPath, info)
+	key, err := svc.UploadStagedFile(context.Background(), nil, stagedPath, info)
 	if err != nil {
 		t.Fatalf("UploadStagedFile() error = %v", err)
 	}

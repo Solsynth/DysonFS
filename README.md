@@ -352,9 +352,10 @@ Bucket namespaces (safe to share one bucket between uploads and the cache):
   add bucket lifecycle rules, **scope them to the `media-cache/` prefix only**
   so source files are never deleted
 - the cache pool should be `hidden = true` and **must not be `default = true`**:
-  uploads without an explicit `pool_id` route to the default pool, and
-  server-staged uploads write to the default pool's backend regardless of
-  `pool_id` metadata
+  uploads without an explicit `pool_id` route to the default pool, and the pool
+  that is named is the pool the bytes are written to — an upload, a staged
+  gRPC upload, an S3-API object, or a derivative always resolves its backend
+  from the target file's pool, never from whatever backend happens to be ambient
 - hidden pools are internal-only: never listed to users and never usable as an
   upload destination (refused by the upload flows and `CanUsePool`)
 - cache entries never expire by time (`media.cache.ttl = "0s"`, the default);

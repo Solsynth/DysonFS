@@ -56,6 +56,26 @@ The direct path supports two shapes: a single presigned `PUT` for the whole
 object (default), and multipart presigning for large files that want resumable,
 parallel part uploads (see [Multipart Direct Upload](#multipart-direct-upload)).
 
+## Pool Placement
+
+A pool owns a storage backend, and a file row's `pool_id` decides which
+backend holds its bytes. Every path that reads, writes, or signs an object
+resolves that backend from the file's pool:
+
+- an upload's `pool_id` (or the configured default when omitted) selects the
+  backend for the source bytes — direct and proxied uploads alike;
+- server-side derivatives (`system.thumbnail`, `system.compression.low`) are
+  written to the same pool as the file they belong to;
+- overwriting a file writes the replacement into the pool the file already
+  belongs to, because `OverwriteFile` leaves the row's pool untouched;
+- the master S3 API maps its buckets to pools, so an object `PUT` into a pool
+  bucket is stored in that pool.
+
+Mismatched placement is not recoverable by metadata alone: a row whose
+`pool_id` names one pool while its bytes sit in another reads as an unreadable
+file. Any new write path must therefore resolve its backend from the target
+pool instead of the process-wide default backend.
+
 ## Flow
 
 ### 1. Prepare

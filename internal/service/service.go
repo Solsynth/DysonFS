@@ -282,6 +282,21 @@ func (s *FileService) BackendForFile(file *database.CloudFile) (storage.Backend,
 	return s.BackendForPoolID(file.PoolID)
 }
 
+// backendForPoolOrDefault resolves the storage backend a write targets. A
+// named pool resolves to its own backend; otherwise the upload lands in the
+// configured default pool, whose backend is s.stor. Write paths must go
+// through this instead of s.stor directly, or bytes for a non-default pool end
+// up in the default pool's bucket while the file row claims the other pool.
+func (s *FileService) backendForPoolOrDefault(poolID *string) (storage.Backend, error) {
+	if poolID == nil || strings.TrimSpace(*poolID) == "" {
+		if s.stor == nil {
+			return nil, fmt.Errorf("storage backend not configured")
+		}
+		return s.stor, nil
+	}
+	return s.BackendForPoolID(poolID)
+}
+
 func backendFromPoolStorage(cfg PoolStorageConfig, fallback storage.Backend) (storage.Backend, error) {
 	if strings.TrimSpace(cfg.Endpoint) == "" {
 		return nil, fmt.Errorf("storage backend not configured")
@@ -2862,10 +2877,14 @@ func (s *FileService) getDerivedChild(parentID, kind string) (*database.CloudFil
 }
 
 func (s *FileService) rebuildImageVariants(ctx context.Context, file *database.CloudFile, storageKey string) error {
-	if s == nil || s.stor == nil || file == nil || file.Object == nil {
+	if s == nil || file == nil || file.Object == nil {
 		return nil
 	}
-	rc, _, err := s.stor.Get(ctx, storageKey)
+	backend, err := s.BackendForFile(file)
+	if err != nil {
+		return err
+	}
+	rc, _, err := backend.Get(ctx, storageKey)
 	if err != nil {
 		return err
 	}
@@ -2947,7 +2966,7 @@ func (s *FileService) rebuildSourceVariants(ctx context.Context, file *database.
 }
 
 func (s *FileService) rebuildImageVariantsFromPath(ctx context.Context, file *database.CloudFile, path string) error {
-	if s == nil || s.stor == nil || file == nil || file.Object == nil {
+	if s == nil || file == nil || file.Object == nil {
 		return nil
 	}
 	img, err := vips.NewImageFromFile(path)
@@ -3037,7 +3056,7 @@ func exportCompressedWebp(img *vips.ImageRef, original []byte, targetBytes int) 
 }
 
 func (s *FileService) rebuildVideoThumbnailFromPath(ctx context.Context, file *database.CloudFile, path string) error {
-	if s == nil || s.stor == nil || file == nil || file.Object == nil {
+	if s == nil || file == nil || file.Object == nil {
 		return nil
 	}
 	thumbPath := filepath.Join(os.TempDir(), file.ID+".thumb.jpg")

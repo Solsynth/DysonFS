@@ -125,7 +125,7 @@ func TestReanalyzedMetadataPublishedToFleet(t *testing.T) {
 		t.Fatalf("age entry: %v", err)
 	}
 
-	w := New(bus, svc, stor, &database.DB{DB: db}, tmp)
+	w := New(bus, svc, &database.DB{DB: db}, tmp)
 	w.processReanalysisQueue(context.Background())
 
 	select {
