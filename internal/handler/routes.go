@@ -121,6 +121,11 @@ func RegisterRoutes(r *gin.Engine, cfg *config.Config, files *service.FileServic
 		b.GET("workspaces/:workspaceId/quota", func(c *gin.Context) { getWorkspaceQuota(c, quota) })
 	}
 
+	a := r.Group("/api/account")
+	{
+		a.GET("/me", getAccountIdentity)
+	}
+
 	if cfg.WebDAV.Enabled {
 		prefix := cfg.WebDAV.Prefix
 		if prefix == "" {
@@ -773,6 +778,39 @@ func listOwnedPools(c *gin.Context, files *service.FileService) {
 	items = redactPoolsSecrets(items)
 	c.Header("X-Total", strconv.Itoa(len(items)))
 	c.JSON(http.StatusOK, items)
+}
+
+// AccountIdentity is the authenticated account exposed to the drive client.
+type AccountIdentity struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Nick        string `json:"nick"`
+	IsSuperuser bool   `json:"is_superuser"`
+	SessionID   string `json:"session_id,omitempty"`
+}
+
+// @Summary Get current account
+// @Tags account
+// @Produce json
+// @Success 200 {object} AccountIdentity
+// @Failure 401 {object} map[string]string
+// @Router /api/account/me [get]
+func getAccountIdentity(c *gin.Context) {
+	result, _, ok := auth.GetAuth(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	identity := AccountIdentity{
+		ID:          result.Account.GetId(),
+		Name:        result.Account.GetName(),
+		Nick:        result.Account.GetNick(),
+		IsSuperuser: result.Account.GetIsSuperuser(),
+	}
+	if result.Session != nil {
+		identity.SessionID = result.Session.GetId()
+	}
+	c.JSON(http.StatusOK, identity)
 }
 
 // @Summary Get quota summary
