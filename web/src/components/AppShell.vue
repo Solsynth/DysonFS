@@ -69,7 +69,7 @@ function onKeydown(event: KeyboardEvent) {
 
   if ((event.key === 'u' || event.key === 'U') && onDrive) {
     event.preventDefault()
-    window.dispatchEvent(new Event('dyson:upload'))
+    window.dispatchEvent(new Event('snfs:upload'))
     return
   }
 
@@ -114,9 +114,9 @@ onBeforeUnmount(() => {
         <RouterView v-slot="{ Component }">
           <Transition
             mode="out-in"
-            enter-active-class="transition duration-[160ms] ease-out"
-            enter-from-class="opacity-0 translate-y-[2px]"
-            leave-active-class="transition duration-[160ms] ease-in"
+            enter-active-class="transition duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+            enter-from-class="opacity-0 translate-y-[6px]"
+            leave-active-class="transition duration-[120ms] ease-in"
             leave-to-class="opacity-0"
           >
             <component :is="Component" />

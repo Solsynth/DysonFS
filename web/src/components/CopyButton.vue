@@ -25,7 +25,7 @@ async function copy() {
 <template>
   <button
     type="button"
-    class="chip justify-center"
+    class="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-base-300 px-2 text-dim transition-colors hover:text-base-content"
     :title="`Copy ${label ?? 'value'}`"
     :aria-label="`Copy ${label ?? 'value'}`"
     @click="copy"

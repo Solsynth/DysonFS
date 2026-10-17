@@ -33,7 +33,6 @@ const poolTotal = computed(() => vault.poolRows.reduce((sum, row) => sum + row.b
 const maxPool = computed(() => Math.max(1, ...vault.poolRows.map((row) => row.bytes)))
 const operator = computed(() => session.identity?.nick || session.identity?.name || 'account')
 
-const poolColors = ['#c7b08a', '#7577ba', '#8fa6c9', '#8db39a', '#c08579']
 
 function poolWidth(bytes: number): string {
   return `${Math.max(1.5, (bytes / maxPool.value) * 100)}%`
@@ -54,15 +53,15 @@ function quotaWidth(mb: number): string {
     <div class="px-5 py-6 sm:px-7 sm:py-8">
       <PageHeader
         title="Storage"
-        description="One volume, split across object pools. Brass marks the quota actually consumed; every other reading is a proportion of that same budget."
+        description="How the volume is split across object pools and plan allocations."
       >
         <template #actions>
           <span
             v-if="vault.sample"
-            class="flex items-center gap-1.5 border border-brass/30 bg-brass/10 px-2 py-1 text-2xs uppercase tracking-[0.12em] text-brass"
+            class="flex items-center gap-1.5 text-[11px] text-faint"
           >
-            <span class="dot bg-brass" aria-hidden="true" />
-            sample data
+            <span class="dot bg-primary" aria-hidden="true" />
+            Sample data
           </span>
           <button
             class="btn btn-outline btn-sm"
@@ -79,7 +78,7 @@ function quotaWidth(mb: number): string {
 
       <div
         v-if="vault.volumeError"
-        class="mb-4 flex items-start gap-2 border border-error/30 bg-error/5 px-3 py-2.5 text-2xs text-error"
+        class="mb-4 flex items-start gap-2 rounded-lg bg-error/10 px-3 py-2.5 text-[11px] text-error"
       >
         <WarningAlt16 class="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
@@ -88,88 +87,89 @@ function quotaWidth(mb: number): string {
         </div>
       </div>
 
-      <div class="grid gap-4 xl:grid-cols-[400px_1fr]">
-        <ConsolePanel title="Volume platter" note="volume a">
-          <div class="flex flex-col items-center">
-            <VolumePlatter size="lg" :legend="true" caption="volume a" />
-            <div class="mt-5 w-full space-y-1.5">
-              <div class="flex items-center justify-between text-2xs text-faint">
-                <span>total volume</span>
-                <span class="tabular-nums text-dim">{{ formatBytes(vault.quotaBytes) }}</span>
-              </div>
-              <div class="flex items-center justify-between text-2xs text-faint">
-                <span>capacity state</span>
-                <span class="flex items-center gap-1.5">
-                  <Checkmark16 class="h-3 w-3 text-success" />
-                  nominal
-                </span>
-              </div>
+      <div class="grid gap-4 xl:grid-cols-[380px_1fr]">
+        <ConsolePanel title="Volume" :note="`${formatBytes(vault.quotaBytes)} total`">
+          <div class="flex flex-col items-center pt-2">
+            <VolumePlatter size="lg" :legend="false" caption="Used" />
+            <div class="mt-8 flex w-full items-center justify-between text-[11px] text-faint">
+              <span>Capacity state</span>
+              <span class="flex items-center gap-1.5 text-dim">
+                <Checkmark16 class="h-3 w-3 text-success" />
+                Healthy
+              </span>
             </div>
           </div>
         </ConsolePanel>
 
         <div class="flex flex-col gap-4">
-          <div class="grid grid-cols-2 gap-3">
-            <div class="border border-line bg-base-200/30 p-4">
-              <div class="eyebrow">consumed</div>
-              <div class="title mt-1.5 text-lg tabular-nums text-base-content">
-                {{ formatBytes(vault.usedBytes) }}
+          <ConsolePanel title="Readings">
+            <div class="grid grid-cols-2 gap-x-8 gap-y-7">
+              <div>
+                <div class="text-[11px] text-faint">Consumed</div>
+                <div class="title mt-1 text-[22px] tabular-nums text-base-content">
+                  {{ formatBytes(vault.usedBytes) }}
+                </div>
+                <div class="mt-1 text-[11px] text-faint">
+                  {{ formatPercent(vault.usedBytes, vault.quotaBytes, 1) }} of quota
+                </div>
               </div>
-              <div class="mt-0.5 text-2xs text-faint">
-                {{ formatPercent(vault.usedBytes, vault.quotaBytes, 1) }} of quota
+              <div>
+                <div class="text-[11px] text-faint">Remaining</div>
+                <div class="title mt-1 text-[22px] tabular-nums text-base-content">
+                  {{ formatBytes(vault.remainingBytes) }}
+                </div>
+                <div class="mt-1 text-[11px] text-faint">Available before throttle</div>
+              </div>
+              <div>
+                <div class="text-[11px] text-faint">Indexed files</div>
+                <div class="title mt-1 text-[22px] tabular-nums text-base-content">
+                  {{ formatCount(vault.fileCount) }}
+                </div>
+                <div class="mt-1 text-[11px] text-faint">
+                  Across {{ vault.pools.length }} pools
+                </div>
+              </div>
+              <div>
+                <div class="text-[11px] text-faint">Average file</div>
+                <div class="title mt-1 text-[22px] tabular-nums text-base-content">
+                  {{ formatBytes(averageObject) }}
+                </div>
+                <div class="mt-1 text-[11px] text-faint">Mean stored payload</div>
               </div>
             </div>
-            <div class="border border-line bg-base-200/30 p-4">
-              <div class="eyebrow">remaining</div>
-              <div class="title mt-1.5 text-lg tabular-nums text-base-content">
-                {{ formatBytes(vault.remainingBytes) }}
-              </div>
-              <div class="mt-0.5 text-2xs text-faint">available before throttle</div>
-            </div>
-            <div class="border border-line bg-base-200/30 p-4">
-              <div class="eyebrow">indexed objects</div>
-              <div class="title mt-1.5 text-lg tabular-nums text-base-content">
-                {{ formatCount(vault.fileCount) }}
-              </div>
-              <div class="mt-0.5 text-2xs text-faint">across {{ vault.pools.length }} pools</div>
-            </div>
-            <div class="border border-line bg-base-200/30 p-4">
-              <div class="eyebrow">average object</div>
-              <div class="title mt-1.5 text-lg tabular-nums text-base-content">
-                {{ formatBytes(averageObject) }}
-              </div>
-              <div class="mt-0.5 text-2xs text-faint">mean stored payload</div>
-            </div>
-          </div>
+          </ConsolePanel>
 
           <ConsolePanel
             class="flex-1"
             title="Allocation"
             :note="`${formatBytes(totalQuotaMb * MiB)} total`"
           >
-            <div v-if="quotaRows.length === 0" class="text-2xs text-faint">
+            <div v-if="quotaRows.length === 0" class="text-[11px] text-faint">
               Quota breakdown unavailable.
             </div>
-            <div v-else class="space-y-3">
+            <div v-else class="space-y-4">
               <div v-for="row in quotaRows" :key="row.label">
-                <div class="flex items-baseline justify-between gap-3 text-2xs">
+                <div class="flex items-baseline justify-between gap-3 text-[12px]">
                   <span class="text-dim">{{ row.label }}</span>
                   <span class="tabular-nums text-base-content">{{
                     formatBytes(row.mb * MiB)
                   }}</span>
                 </div>
-                <div class="mt-1.5 flex items-center gap-2">
-                  <div class="h-[3px] flex-1 bg-line-soft">
-                    <div class="h-full bg-dim/50" :style="{ width: quotaWidth(row.mb) }" />
+                <div class="mt-2 flex items-center gap-3">
+                  <div class="h-1 flex-1 overflow-hidden rounded-full bg-line-soft">
+                    <div
+                      class="h-full rounded-full bg-primary/70"
+                      :style="{ width: quotaWidth(row.mb) }"
+                    />
                   </div>
-                  <span class="w-10 text-right text-2xs tabular-nums text-faint">
+                  <span class="w-10 text-right text-[11px] tabular-nums text-faint">
                     {{ formatPercent(row.mb, totalQuotaMb, 0) }}
                   </span>
                 </div>
               </div>
 
-              <div class="flex items-baseline justify-between gap-3 pt-1 text-2xs">
-                <span class="uppercase tracking-[0.12em] text-faint">total quota</span>
+              <div class="flex items-baseline justify-between gap-3 border-t border-line-soft pt-3 text-[12px]">
+                <span class="text-faint">Total quota</span>
                 <span class="tabular-nums text-base-content">{{
                   formatBytes(totalQuotaMb * MiB)
                 }}</span>
@@ -197,55 +197,40 @@ function quotaWidth(mb: number): string {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(row, index) in vault.poolRows" :key="row.pool.id">
+              <tr v-for="row in vault.poolRows" :key="row.pool.id">
                 <td>
-                  <div class="flex items-center gap-2">
-                    <span
-                      class="dot"
-                      :style="{ backgroundColor: poolColors[index % poolColors.length] }"
-                      aria-hidden="true"
-                    />
-                    <div>
-                      <div class="text-xs text-base-content">{{ row.pool.name }}</div>
-                      <div class="text-2xs text-faint">
-                        {{ row.pool.description || 'no description' }}
-                      </div>
-                    </div>
+                  <div class="text-[13px] text-base-content">{{ row.pool.name }}</div>
+                  <div class="text-[11px] text-faint">
+                    {{ row.pool.description || 'No description' }}
                   </div>
                 </td>
-                <td class="font-mono text-2xs text-faint">
+                <td class="font-mono text-[11px] text-faint">
                   {{ row.pool.storage_config.bucket || '—' }}
                 </td>
                 <td>
-                  <div class="text-2xs tabular-nums text-dim">{{ formatBytes(row.bytes) }}</div>
-                  <div class="mt-1.5 h-[2px] w-[110px] bg-line-soft">
+                  <div class="text-[12px] tabular-nums text-dim">{{ formatBytes(row.bytes) }}</div>
+                  <div class="mt-2 h-1 w-[110px] overflow-hidden rounded-full bg-line-soft">
                     <div
-                      class="h-full"
-                      :style="{
-                        width: poolWidth(row.bytes),
-                        backgroundColor: poolColors[index % poolColors.length],
-                        opacity: 0.75,
-                      }"
+                      class="h-full rounded-full bg-primary/50"
+                      :style="{ width: poolWidth(row.bytes) }"
                     />
                   </div>
                 </td>
-                <td class="text-2xs tabular-nums text-faint">{{ shareOfDrive(row.bytes) }}</td>
-                <td class="text-2xs tabular-nums text-faint">
+                <td class="text-[11px] tabular-nums text-faint">{{ shareOfDrive(row.bytes) }}</td>
+                <td class="text-[11px] tabular-nums text-faint">
                   ×{{ row.pool.billing_config.cost_multiplier ?? 1 }}
                 </td>
                 <td>
                   <span
-                    class="chip"
-                    :class="
-                      row.pool.policy_config.public_usable ? 'border-brass/30 text-brass' : ''
-                    "
+                    class="text-[11px]"
+                    :class="row.pool.policy_config.public_usable ? 'text-primary' : 'text-faint'"
                   >
-                    {{ row.pool.policy_config.public_usable ? 'public' : 'private' }}
+                    {{ row.pool.policy_config.public_usable ? 'Public' : 'Private' }}
                   </span>
                 </td>
               </tr>
               <tr v-if="vault.poolRows.length === 0">
-                <td colspan="6" class="py-8 text-center text-2xs text-faint">
+                <td colspan="6" class="py-8 text-center text-[11px] text-faint">
                   No visible pools were reported.
                 </td>
               </tr>
@@ -257,51 +242,48 @@ function quotaWidth(mb: number): string {
       <div class="mt-4 grid gap-4 md:grid-cols-2">
         <ConsolePanel title="Reclaim">
           <div class="flex items-start gap-3">
-            <span class="grid size-9 shrink-0 place-items-center border border-line bg-base-200/50">
-              <TrashCan16 class="h-4 w-4 text-brass" />
-            </span>
+            <TrashCan16 class="mt-0.5 h-4 w-4 shrink-0 text-faint" />
             <div class="min-w-0">
-              <h3 class="title text-base text-base-content">
-                Recycled objects still hold capacity.
+              <h3 class="title text-[14px] text-base-content">
+                Recycled files still hold capacity.
               </h3>
-              <p class="voice mt-1 text-2xs">
-                Purge the bin to release storage back to the volume. Restore instead if the payload
-                still matters.
+              <p class="voice mt-1 text-[12px]">
+                Purge the bin to release storage. Restore instead if the file still matters.
               </p>
               <RouterLink
                 to="/recycle"
-                class="mt-2 inline-flex items-center gap-1 text-2xs text-primary hover:text-base-content"
+                class="mt-2 inline-flex items-center gap-1 text-[12px] text-primary hover:text-base-content"
               >
-                Open recycle bin
+                Open Recycle Bin
                 <ArrowRight16 class="h-3 w-3" />
               </RouterLink>
             </div>
           </div>
         </ConsolePanel>
 
-        <ConsolePanel title="Account" :note="session.sample ? 'sample data' : 'live account'">
+        <ConsolePanel title="Account" :note="session.sample ? 'Sample data' : 'Live account'">
           <div class="flex items-center gap-2.5">
             <span
-              class="grid size-8 place-items-center border border-line bg-base-300 text-2xs font-semibold text-dim"
+              class="grid size-8 place-items-center rounded-full bg-base-300 text-[11px] font-semibold text-dim"
             >
               {{ initialOf(operator) }}
             </span>
             <div class="min-w-0">
-              <div class="truncate text-xs text-base-content">{{ operator }}</div>
-              <div class="text-2xs uppercase tracking-[0.12em] text-faint">
-                {{ session.identity?.is_superuser ? 'superuser' : 'authenticated' }}
+              <div class="truncate text-[13px] text-base-content">{{ operator }}</div>
+              <div class="text-[11px] text-faint">
+                {{ session.identity?.is_superuser ? 'Superuser' : 'Authenticated' }}
               </div>
             </div>
             <span class="ml-auto dot bg-success" aria-hidden="true" />
           </div>
-          <div class="mt-3 space-y-2 text-2xs">
+          <div class="mt-4 space-y-2 text-[11px]">
             <div class="flex items-center justify-between text-faint">
-              <span>account</span>
+              <span>Account</span>
               <span class="font-mono text-dim">{{ session.identity?.name || '—' }}</span>
             </div>
             <div class="flex items-center justify-between text-faint">
-              <span>state</span>
-              <span class="text-dim">{{ session.sample ? 'sample data' : 'live account' }}</span>
+              <span>State</span>
+              <span class="text-dim">{{ session.sample ? 'Sample data' : 'Live account' }}</span>
             </div>
           </div>
         </ConsolePanel>

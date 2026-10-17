@@ -1,8 +1,9 @@
-# Dyson Drive (web)
+# SnFS (web)
 
-The built-in web client for DysonFS. A desktop-like file manager built with Vue 3,
-Pinia, Vue Router, Tailwind 4 and daisyUI, styled as an extension of the Solar
-Network console (IBM Plex, ink-blue ground, periwinkle signal, brass instruments).
+The built-in web client for the Solar Network File System. A desktop-like file
+manager built with Vue 3, Pinia, Vue Router, Tailwind 4 and daisyUI, styled as
+the quiet sibling of the Solar Network console (IBM Plex, ink ground,
+periwinkle signal).
 
 ## Requirements
 
@@ -34,7 +35,7 @@ without a backend. Enable it with any of:
 
 - `http://localhost:5173/drive?demo=1`
 - `VITE_DEMO=1 bun run dev`
-- `sessionStorage.setItem('dysonfs:sample', '1')`
+- `sessionStorage.setItem('snfs:sample', '1')`
 
 Sample mode is always labelled in the title bar and never mixes with live data.
 

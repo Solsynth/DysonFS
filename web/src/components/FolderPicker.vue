@@ -78,16 +78,16 @@ function jump(index: number) {
 </script>
 
 <template>
-  <div class="bg-base-200/30">
+  <div class="rounded-lg bg-base-200/60">
     <div
-      class="flex flex-wrap items-center gap-1 border-b border-line px-2.5 py-2 text-2xs"
+      class="flex flex-wrap items-center gap-1 border-b border-line px-3 py-2 text-[11px]"
       aria-label="Destination"
     >
       <template v-for="(crumb, index) in path" :key="crumb.id ?? 'root'">
         <span v-if="index > 0" class="text-line" aria-hidden="true">/</span>
         <button
           type="button"
-          class="max-w-[140px] truncate px-0.5 transition-colors"
+          class="max-w-[140px] truncate rounded px-0.5 transition-colors"
           :class="
             index === path.length - 1 ? 'text-base-content' : 'text-dim hover:text-base-content'
           "
@@ -100,15 +100,15 @@ function jump(index: number) {
 
     <div class="h-[190px] overflow-y-auto scroll-region">
       <div v-if="loading" class="space-y-2 p-3">
-        <div v-for="row in 3" :key="row" class="h-6 bg-base-300/60 pulse-soft" />
+        <div v-for="row in 3" :key="row" class="h-6 rounded bg-base-300/60 pulse-soft" />
       </div>
 
-      <p v-else-if="error" class="px-3 py-5 text-2xs text-error">{{ error }}</p>
+      <p v-else-if="error" class="px-3 py-5 text-[11px] text-error">{{ error }}</p>
 
       <div v-else-if="folders.length === 0" class="px-3 py-8 text-center">
         <Folder16 class="mx-auto h-5 w-5 text-faint" />
-        <p class="mt-2 text-2xs text-faint">No folders under here.</p>
-        <p class="mt-0.5 text-2xs text-faint">You can still move objects to this location.</p>
+        <p class="mt-2 text-[11px] text-faint">No folders under here.</p>
+        <p class="mt-0.5 text-[11px] text-faint">You can still move files to this location.</p>
       </div>
 
       <template v-else>
@@ -116,21 +116,23 @@ function jump(index: number) {
           v-for="folder in folders"
           :key="folder.id"
           type="button"
-          class="flex w-full items-center gap-2 border-b border-line-soft px-3 py-2 text-left text-2xs text-dim transition-colors last:border-0 hover:bg-base-200/60 hover:text-base-content"
+          class="flex w-full items-center gap-2 border-b border-line-soft px-3 py-2 text-left text-[12px] text-dim transition-colors last:border-0 hover:bg-base-300/50 hover:text-base-content"
           @click="enter(folder)"
         >
-          <Folder16 class="h-3.5 w-3.5 shrink-0 text-brass" />
+          <Folder16 class="h-3.5 w-3.5 shrink-0 text-faint" />
           <span class="min-w-0 flex-1 truncate">{{ folder.name }}</span>
-          <span class="text-2xs tabular-nums text-faint">{{ folder.children_count ?? 0 }}</span>
+          <span class="text-[11px] tabular-nums text-faint">{{ folder.children_count ?? 0 }}</span>
           <ChevronRight16 class="h-3.5 w-3.5 shrink-0 text-faint" />
         </button>
       </template>
     </div>
 
-    <div class="flex items-center justify-between gap-2 border-t border-line px-3 py-1.5 text-2xs">
-      <span class="truncate text-faint">destination · {{ pathLabel }}</span>
+    <div
+      class="flex items-center justify-between gap-2 border-t border-line px-3 py-1.5 text-[11px]"
+    >
+      <span class="truncate text-faint">Destination · {{ pathLabel }}</span>
       <span :class="canMoveHere ? 'text-success' : 'text-error'">
-        {{ canMoveHere ? 'writable' : 'unavailable' }}
+        {{ canMoveHere ? 'Writable' : 'Unavailable' }}
       </span>
     </div>
   </div>

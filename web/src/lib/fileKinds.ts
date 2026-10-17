@@ -88,7 +88,7 @@ export function fileKind(file: CloudFile): FileKind {
     return {
       label: 'Folder',
       icon: Folder16,
-      tone: 'text-brass',
+      tone: 'text-dim',
       group: 'folder',
     }
   }
@@ -98,31 +98,31 @@ export function fileKind(file: CloudFile): FileKind {
   const family = mime.split('/')[0]
 
   if (family === 'image' || imageExtensions.has(extension)) {
-    return { label: 'Image', icon: Image16, tone: 'text-info', group: 'image' }
+    return { label: 'Image', icon: Image16, tone: 'text-faint', group: 'image' }
   }
   if (family === 'video' || videoExtensions.has(extension)) {
-    return { label: 'Video', icon: Video16, tone: 'text-primary', group: 'video' }
+    return { label: 'Video', icon: Video16, tone: 'text-faint', group: 'video' }
   }
   if (family === 'audio' || audioExtensions.has(extension)) {
-    return { label: 'Audio', icon: Music16, tone: 'text-success', group: 'audio' }
+    return { label: 'Audio', icon: Music16, tone: 'text-faint', group: 'audio' }
   }
   if (extension === 'pdf') {
-    return { label: 'PDF', icon: DocumentPdf16, tone: 'text-error', group: 'document' }
+    return { label: 'PDF', icon: DocumentPdf16, tone: 'text-faint', group: 'document' }
   }
   if (slideExtensions.has(extension)) {
-    return { label: 'Slides', icon: PresentationFile16, tone: 'text-brass', group: 'document' }
+    return { label: 'Slides', icon: PresentationFile16, tone: 'text-faint', group: 'document' }
   }
   if (sheetExtensions.has(extension)) {
-    return { label: 'Sheet', icon: DataTable16, tone: 'text-success', group: 'data' }
+    return { label: 'Sheet', icon: DataTable16, tone: 'text-faint', group: 'data' }
   }
   if (archiveExtensions.has(extension)) {
-    return { label: 'Archive', icon: Archive16, tone: 'text-brass', group: 'archive' }
+    return { label: 'Archive', icon: Archive16, tone: 'text-faint', group: 'archive' }
   }
   if (codeExtensions.has(extension)) {
-    return { label: 'Source', icon: Code16, tone: 'text-info', group: 'code' }
+    return { label: 'Source', icon: Code16, tone: 'text-faint', group: 'code' }
   }
   if (dataExtensions.has(extension)) {
-    return { label: 'Data', icon: DataBase16, tone: 'text-info', group: 'data' }
+    return { label: 'Data', icon: DataBase16, tone: 'text-faint', group: 'data' }
   }
   if (documentExtensions.has(extension) || family === 'text') {
     return { label: 'Document', icon: Document16, tone: 'text-dim', group: 'document' }

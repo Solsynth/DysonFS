@@ -157,7 +157,7 @@ const commands = computed<Command[]>(() => {
         icon: Upload16,
         run: () => {
           close()
-          window.dispatchEvent(new Event('dyson:upload'))
+          window.dispatchEvent(new Event('snfs:upload'))
         },
       },
       {
@@ -283,23 +283,23 @@ function onKeydown(event: KeyboardEvent) {
     >
       <div
         v-if="ui.paletteOpen"
-        class="fixed inset-0 z-[80] flex justify-center bg-black/60 px-3 pt-[10vh] backdrop-blur-[2px]"
+        class="fixed inset-0 z-[80] flex justify-center bg-black/50 px-3 pt-[10vh] backdrop-blur-sm"
         @mousedown.self="close"
       >
         <div
-          class="palette-in h-fit w-full max-w-[620px] border border-line bg-base-100 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+          class="palette-in h-fit w-full max-w-[600px] rounded-xl bg-base-200 shadow-2xl"
           role="dialog"
           aria-modal="true"
           aria-label="Command palette"
         >
-          <div class="flex items-center gap-2.5 border-b border-line px-3.5">
+          <div class="flex items-center gap-2.5 border-b border-line px-4">
             <Search16 class="shrink-0 text-faint" />
             <input
               ref="input"
               v-model="query"
               type="text"
-              class="h-12 min-w-0 flex-1 bg-transparent text-[13px] text-base-content outline-none placeholder:text-faint"
-              placeholder="Search objects, or type a command…"
+              class="h-[52px] min-w-0 flex-1 bg-transparent text-[13.5px] text-base-content outline-none placeholder:text-faint"
+              placeholder="Search files or run a command…"
               autocomplete="off"
               spellcheck="false"
               aria-label="Search or run a command"
@@ -308,41 +308,37 @@ function onKeydown(event: KeyboardEvent) {
             <span class="kbd">esc</span>
           </div>
 
-          <div class="max-h-[52vh] overflow-y-auto py-1.5">
+          <div class="max-h-[52vh] overflow-y-auto px-2 py-2">
             <div v-if="commands.length === 0" class="px-4 py-8 text-center">
-              <p class="voice">No command or object matches that query.</p>
+              <p class="voice">No file or command matches that search.</p>
             </div>
 
             <template v-for="group in grouped" :key="group.name">
-              <div class="px-3.5 pb-1 pt-2.5">
-                <span class="eyebrow">{{ group.name }}</span>
+              <div class="px-2 pb-1 pt-2">
+                <span class="text-[11px] font-medium text-faint">{{ group.name }}</span>
               </div>
               <button
                 v-for="entry in group.items"
                 :id="`palette-item-${entry.index}`"
                 :key="entry.command.id"
                 type="button"
-                class="flex w-full items-center gap-3 px-3.5 py-2 text-left transition-colors"
+                class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors duration-100"
                 :class="
                   selected === entry.index
-                    ? 'bg-primary/10 text-base-content'
-                    : 'text-dim hover:bg-base-200/60'
+                    ? 'bg-primary/[0.08] text-base-content'
+                    : 'text-dim hover:bg-base-300/60'
                 "
                 @mousemove="selected = entry.index"
                 @click="entry.command.run()"
               >
-                <span
-                  class="grid size-6 shrink-0 place-items-center border border-line-soft bg-base-200/50"
-                >
-                  <FileGlyph v-if="entry.command.file" :file="entry.command.file" />
-                  <component
-                    :is="entry.command.icon"
-                    v-else-if="entry.command.icon"
-                    class="h-3.5 w-3.5 text-faint"
-                  />
-                </span>
-                <span class="min-w-0 flex-1 truncate text-xs">{{ entry.command.label }}</span>
-                <span class="hidden shrink-0 text-2xs text-faint sm:block">{{
+                <FileGlyph v-if="entry.command.file" :file="entry.command.file" />
+                <component
+                  :is="entry.command.icon"
+                  v-else-if="entry.command.icon"
+                  class="h-4 w-4 shrink-0 text-faint"
+                />
+                <span class="min-w-0 flex-1 truncate text-[13px]">{{ entry.command.label }}</span>
+                <span class="hidden shrink-0 text-[11px] text-faint sm:block">{{
                   entry.command.hint
                 }}</span>
                 <span v-if="selected === entry.index" class="kbd shrink-0">↵</span>
@@ -350,7 +346,7 @@ function onKeydown(event: KeyboardEvent) {
             </template>
           </div>
 
-          <div class="flex items-center gap-3 border-t border-line px-3.5 py-2 text-2xs text-faint">
+          <div class="flex items-center gap-3 border-t border-line px-4 py-2 text-[11px] text-faint">
             <span class="flex items-center gap-1"
               ><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span
             >

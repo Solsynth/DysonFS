@@ -156,325 +156,339 @@ async function toggleVisibility() {
 </script>
 
 <template>
-  <aside
-    v-if="file"
-    class="fixed bottom-7 right-0 top-12 z-40 flex w-full flex-col border-l border-line bg-base-100 shadow-[-16px_0_40px_rgba(0,0,0,0.35)] sm:w-[336px] sm:max-w-[92vw] xl:static xl:z-auto xl:h-full xl:shadow-none"
-    aria-label="Object inspector"
+  <Transition
+    enter-active-class="transition duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]"
+    enter-from-class="opacity-0 translate-x-3"
+    leave-active-class="transition duration-150 ease-in"
+    leave-to-class="opacity-0 translate-x-2"
   >
-    <div class="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
-      <span class="eyebrow">inspector</span>
-      <span class="ml-auto text-2xs tabular-nums text-faint">
-        {{ multi ? `${count} objects` : shortId(file.id) }}
-      </span>
-      <IconButton label="Close inspector" @click="close">
-        <Close16 />
-      </IconButton>
-    </div>
+    <aside
+      v-if="file"
+      class="fixed bottom-8 right-0 top-[52px] z-40 flex w-full flex-col bg-base-200/40 sm:w-[336px] sm:max-w-[92vw] xl:static xl:z-auto xl:h-full"
+      aria-label="Object inspector"
+    >
+      <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-soft px-4">
+        <span class="text-[11px] font-medium text-faint">Inspector</span>
+        <span class="ml-auto text-[11px] tabular-nums text-faint">
+          {{ multi ? `${count} objects` : shortId(file.id) }}
+        </span>
+        <IconButton label="Close inspector" @click="close">
+          <Close16 />
+        </IconButton>
+      </div>
 
-    <div class="min-h-0 flex-1 overflow-y-auto scroll-region">
-      <template v-if="multi">
-        <div class="border-b border-line px-4 py-4">
-          <div class="eyebrow">selection</div>
-          <h2 class="title mt-1 text-xl text-base-content">{{ count }} objects</h2>
-          <p class="mt-1 text-2xs text-faint">
-            {{ formatBytes(vault.selectedBytes) }} across
-            {{ vault.selectedItems.filter((item) => item.is_folder).length }} folders
-          </p>
-          <div class="mt-3 space-y-1">
-            <div
-              v-for="item in vault.selectedItems.slice(0, 6)"
-              :key="item.id"
-              class="flex items-center gap-2 text-2xs text-dim"
-            >
-              <FolderDetails16 class="h-3.5 w-3.5 shrink-0 text-faint" />
-              <span class="truncate">{{ displayName(item) }}</span>
-            </div>
-            <div v-if="count > 6" class="text-2xs text-faint">and {{ count - 6 }} more</div>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-3 gap-1 px-3 py-2.5">
-          <button
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="move"
-          >
-            <Move16 class="text-faint" />
-            Move
-          </button>
-          <button
-            v-if="inRecycle"
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="restore"
-          >
-            <Undo16 class="text-faint" />
-            Restore
-          </button>
-          <button
-            v-else
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="recycle"
-          >
-            <TrashCan16 class="text-faint" />
-            Recycle
-          </button>
-          <button
-            v-if="inRecycle"
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-error transition-colors hover:bg-error/10"
-            type="button"
-            @click="purge"
-          >
-            <TrashCan16 />
-            Delete forever
-          </button>
-          <button
-            v-else
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="vault.clearSelection()"
-          >
-            <Close16 class="text-faint" />
-            Clear
-          </button>
-        </div>
-      </template>
-
-      <template v-else>
-        <div class="relative aspect-[4/3] overflow-hidden border-b border-line bg-base-200/50">
-          <img
-            v-if="showPreview && file"
-            :src="previewUrl(file.id)"
-            alt=""
-            class="h-full w-full object-contain"
-            @error="previewFailed = true"
-          />
-          <div v-else class="relative grid h-full place-items-center">
-            <div class="absolute inset-0 opacity-50 ruler" aria-hidden="true" />
-            <div class="relative flex flex-col items-center gap-3">
-              <FileGlyph v-if="file" :file="file" size="lg" class="opacity-80" />
-              <span class="text-2xs uppercase tracking-[0.16em] text-faint">
-                {{ file ? kindLabel(file) : 'object' }}
-              </span>
-            </div>
-          </div>
-          <span
-            v-if="isPublic"
-            class="absolute left-2 top-2 flex items-center gap-1 border border-brass/40 bg-ink/85 px-1.5 py-0.5 text-2xs text-brass"
-          >
-            <Link16 class="h-3 w-3" />
-            public
-          </span>
-        </div>
-
-        <div class="border-b border-line px-4 py-3.5">
-          <h2 class="break-words font-sans text-[15px] font-medium leading-snug text-base-content">
-            {{ file ? displayName(file) : '' }}
-          </h2>
-          <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
-            <span class="chip">{{ file ? kindLabel(file) : '—' }}</span>
-            <span class="chip">{{ poolName }}</span>
-            <span v-if="file?.is_folder" class="chip border-brass/30 text-brass">
-              {{ file.children_count ?? 0 }} objects
-            </span>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-3 gap-1 px-3 py-2.5">
-          <button
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="openFile"
-          >
-            <View16 class="text-faint" />
-            Open
-          </button>
-          <button
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="download"
-          >
-            <Download16 class="text-faint" />
-            Download
-          </button>
-          <button
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="rename"
-          >
-            <Edit16 class="text-faint" />
-            Rename
-          </button>
-          <button
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="move"
-          >
-            <Move16 class="text-faint" />
-            Move
-          </button>
-          <button
-            v-if="inRecycle"
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="restore"
-          >
-            <Undo16 class="text-faint" />
-            Restore
-          </button>
-          <button
-            v-else
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="recycle"
-          >
-            <TrashCan16 class="text-faint" />
-            Recycle
-          </button>
-          <button
-            v-if="inRecycle"
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-error transition-colors hover:bg-error/10"
-            type="button"
-            @click="purge"
-          >
-            <TrashCan16 />
-            Delete forever
-          </button>
-          <button
-            v-else
-            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
-            type="button"
-            @click="linkAction"
-          >
-            <Link16 class="text-faint" />
-            Copy link
-          </button>
-        </div>
-
-        <div class="border-b border-line px-4 py-3.5">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <div class="eyebrow">access</div>
-              <div class="mt-1 text-2xs text-dim">
-                {{ isPublic ? 'Anyone with the link can read.' : 'Private to this account.' }}
+      <div class="min-h-0 flex-1 overflow-y-auto scroll-region">
+        <template v-if="multi">
+          <div class="border-b border-line-soft px-4 py-4">
+            <h2 class="title text-[18px] text-base-content">{{ count }} objects</h2>
+            <p class="mt-1 text-[11px] text-faint">
+              {{ formatBytes(vault.selectedBytes) }} across
+              {{ vault.selectedItems.filter((item) => item.is_folder).length }} folders
+            </p>
+            <div class="mt-3 space-y-1.5">
+              <div
+                v-for="item in vault.selectedItems.slice(0, 6)"
+                :key="item.id"
+                class="flex items-center gap-2 text-[12px] text-dim"
+              >
+                <FolderDetails16 class="h-3.5 w-3.5 shrink-0 text-faint" />
+                <span class="truncate">{{ displayName(item) }}</span>
+              </div>
+              <div v-if="count > 6" class="text-[11px] text-faint">
+                and {{ count - 6 }} more
               </div>
             </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-1 px-3 py-2.5">
             <button
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
               type="button"
-              role="switch"
-              :aria-checked="isPublic"
-              class="relative h-5 w-9 shrink-0 border transition-colors disabled:opacity-50"
-              :class="isPublic ? 'border-brass/60 bg-brass/25' : 'border-line bg-base-300'"
-              :disabled="busy"
-              :aria-label="isPublic ? 'Unpublish file' : 'Publish file by link'"
-              @click="toggleVisibility"
+              @click="move"
             >
-              <span
-                class="absolute top-[2px] size-3.5 transition-[left] duration-150"
-                :class="isPublic ? 'left-[18px] bg-brass' : 'left-[2px] bg-faint'"
-              />
+              <Move16 class="text-faint" />
+              Move
+            </button>
+            <button
+              v-if="inRecycle"
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="restore"
+            >
+              <Undo16 class="text-faint" />
+              Restore
+            </button>
+            <button
+              v-else
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="recycle"
+            >
+              <TrashCan16 class="text-faint" />
+              Recycle
+            </button>
+            <button
+              v-if="inRecycle"
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-error transition-colors hover:bg-error/10"
+              type="button"
+              @click="purge"
+            >
+              <TrashCan16 />
+              Delete forever
+            </button>
+            <button
+              v-else
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="vault.clearSelection()"
+            >
+              <Close16 class="text-faint" />
+              Clear
+            </button>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="relative aspect-[4/3] overflow-hidden border-b border-line-soft bg-base-200/50">
+            <img
+              v-if="showPreview && file"
+              :src="previewUrl(file.id)"
+              alt=""
+              class="h-full w-full object-contain"
+              @error="previewFailed = true"
+            />
+            <div v-else class="grid h-full place-items-center">
+              <div class="flex flex-col items-center gap-2">
+                <FileGlyph v-if="file" :file="file" size="lg" class="opacity-70" />
+                <span class="text-[11px] text-faint">
+                  {{ file ? kindLabel(file) : 'object' }}
+                </span>
+              </div>
+            </div>
+            <span
+              v-if="isPublic"
+              class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink/85 px-2 py-0.5 text-[11px] text-primary"
+            >
+              <Link16 class="h-3 w-3" />
+              Public
+            </span>
+          </div>
+
+          <div class="border-b border-line-soft px-4 py-4">
+            <h2 class="break-words text-[15px] font-medium leading-snug text-base-content">
+              {{ file ? displayName(file) : '' }}
+            </h2>
+            <div class="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-faint">
+              <span>{{ file ? kindLabel(file) : '—' }}</span>
+              <span aria-hidden="true">·</span>
+              <span>{{ poolName }}</span>
+              <template v-if="file?.is_folder">
+                <span aria-hidden="true">·</span>
+                <span>{{ file.children_count ?? 0 }} items</span>
+              </template>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-1 px-3 py-3">
+            <button
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="openFile"
+            >
+              <View16 class="text-faint" />
+              Open
+            </button>
+            <button
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="download"
+            >
+              <Download16 class="text-faint" />
+              Download
+            </button>
+            <button
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="rename"
+            >
+              <Edit16 class="text-faint" />
+              Rename
+            </button>
+            <button
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="move"
+            >
+              <Move16 class="text-faint" />
+              Move
+            </button>
+            <button
+              v-if="inRecycle"
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="restore"
+            >
+              <Undo16 class="text-faint" />
+              Restore
+            </button>
+            <button
+              v-else
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="recycle"
+            >
+              <TrashCan16 class="text-faint" />
+              Recycle
+            </button>
+            <button
+              v-if="inRecycle"
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-error transition-colors hover:bg-error/10"
+              type="button"
+              @click="purge"
+            >
+              <TrashCan16 />
+              Delete forever
+            </button>
+            <button
+              v-else
+              class="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-dim transition-colors hover:bg-base-200 hover:text-base-content"
+              type="button"
+              @click="linkAction"
+            >
+              <Link16 class="text-faint" />
+              Copy link
             </button>
           </div>
 
-          <div v-if="isPublic" class="mt-2.5 flex items-stretch gap-2">
-            <input
-              :value="publicLink"
-              readonly
-              class="input h-7 min-w-0 flex-1 truncate px-2 font-mono text-2xs text-dim"
-              aria-label="Public link"
-              @focus="($event.target as HTMLInputElement).select()"
-            />
-            <CopyButton :value="publicLink" label="public link" />
-          </div>
-        </div>
+          <div class="border-b border-line-soft px-4 py-4">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <div class="text-[12px] text-base-content">Public link</div>
+                <div class="mt-0.5 text-[11px] text-faint">
+                  {{ isPublic ? 'Anyone with the link can read.' : 'Private to this account.' }}
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="isPublic"
+                class="relative mt-0.5 h-5 w-[34px] shrink-0 rounded-full transition-colors duration-150 disabled:opacity-50"
+                :class="isPublic ? 'bg-primary' : 'bg-base-300'"
+                :disabled="busy"
+                :aria-label="isPublic ? 'Unpublish file' : 'Publish file by link'"
+                @click="toggleVisibility"
+              >
+                <span
+                  class="absolute top-[3px] size-3.5 rounded-full transition-[left] duration-150"
+                  :class="isPublic ? 'left-[17px] bg-primary-content' : 'left-[3px] bg-faint'"
+                />
+              </button>
+            </div>
 
-        <dl class="divide-y divide-line-soft text-2xs">
-          <div class="flex items-start justify-between gap-3 px-4 py-2">
-            <dt class="shrink-0 text-faint">Type</dt>
-            <dd class="break-all text-right text-dim">{{ file ? mimeOf(file) : '—' }}</dd>
+            <div v-if="isPublic" class="mt-2.5 flex items-stretch gap-2">
+              <input
+                :value="publicLink"
+                readonly
+                class="input h-8 min-w-0 flex-1 truncate px-2.5 font-mono text-[11px] text-dim"
+                aria-label="Public link"
+                @focus="($event.target as HTMLInputElement).select()"
+              />
+              <CopyButton :value="publicLink" label="public link" />
+            </div>
           </div>
-          <div class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Size</dt>
-            <dd class="tabular-nums text-dim">
-              {{ file?.is_folder ? '—' : formatBytes(file?.object?.size) }}
-            </dd>
-          </div>
-          <div v-if="dimensions" class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Dimensions</dt>
-            <dd class="tabular-nums text-dim">{{ dimensions }}</dd>
-          </div>
-          <div v-if="duration" class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Duration</dt>
-            <dd class="tabular-nums text-dim">{{ duration }}</dd>
-          </div>
-          <div class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Modified</dt>
-            <dd class="tabular-nums text-dim">{{ formatDateTime(file?.updated_at) }}</dd>
-          </div>
-          <div class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Created</dt>
-            <dd class="tabular-nums text-dim">{{ formatDateTime(file?.created_at) }}</dd>
-          </div>
-          <div class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Pool</dt>
-            <dd class="text-dim">{{ poolName }}</dd>
-          </div>
-          <div class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Indexed</dt>
-            <dd class="flex items-center gap-1.5 text-dim">
-              <Checkmark16 v-if="file?.indexed" class="h-3 w-3 text-success" />
-              <Close16 v-else class="h-3 w-3 text-brass" />
-              {{ file?.indexed ? 'yes' : 'no' }}
-            </dd>
-          </div>
-          <div class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Object id</dt>
-            <dd class="font-mono text-dim" :title="file?.object_id ?? undefined">
-              {{ shortId(file?.object_id) }}
-            </dd>
-          </div>
-          <div class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Hash</dt>
-            <dd class="font-mono text-dim" :title="file?.object?.hash ?? undefined">
-              {{ shortHash(file?.object?.hash) }}
-            </dd>
-          </div>
-        </dl>
 
-        <div v-if="permissions" class="border-t border-line px-4 py-3.5">
-          <div class="eyebrow">capabilities</div>
-          <div class="mt-2 flex flex-wrap gap-1.5">
-            <span
-              class="chip"
-              :class="permissions.readable ? 'border-success/30 text-success' : 'text-faint'"
-            >
-              {{ permissions.readable ? 'read' : 'no read' }}
-            </span>
-            <span
-              class="chip"
-              :class="permissions.writable ? 'border-success/30 text-success' : 'text-faint'"
-            >
-              {{ permissions.writable ? 'write' : 'no write' }}
-            </span>
-            <span
-              class="chip"
-              :class="permissions.manageable ? 'border-success/30 text-success' : 'text-faint'"
-            >
-              {{ permissions.manageable ? 'manage' : 'no manage' }}
-            </span>
-          </div>
-        </div>
-      </template>
-    </div>
+          <dl class="divide-y divide-line-soft">
+            <div class="flex items-start justify-between gap-3 px-4 py-2">
+              <dt class="shrink-0 text-[11px] text-faint">Type</dt>
+              <dd class="break-all text-right text-[11px] text-dim">{{ file ? mimeOf(file) : '—' }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Size</dt>
+              <dd class="text-[11px] tabular-nums text-dim">
+                {{ file?.is_folder ? '—' : formatBytes(file?.object?.size) }}
+              </dd>
+            </div>
+            <div v-if="dimensions" class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Dimensions</dt>
+              <dd class="text-[11px] tabular-nums text-dim">{{ dimensions }}</dd>
+            </div>
+            <div v-if="duration" class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Duration</dt>
+              <dd class="text-[11px] tabular-nums text-dim">{{ duration }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Modified</dt>
+              <dd class="text-[11px] tabular-nums text-dim">{{ formatDateTime(file?.updated_at) }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Created</dt>
+              <dd class="text-[11px] tabular-nums text-dim">{{ formatDateTime(file?.created_at) }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Pool</dt>
+              <dd class="text-[11px] text-dim">{{ poolName }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Indexed</dt>
+              <dd class="flex items-center gap-1.5 text-[11px] text-dim">
+                <Checkmark16 v-if="file?.indexed" class="h-3 w-3 text-success" />
+                {{ file?.indexed ? 'Yes' : 'No' }}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Object ID</dt>
+              <dd class="font-mono text-[11px] text-dim" :title="file?.object_id ?? undefined">
+                {{ shortId(file?.object_id) }}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-4 py-2">
+              <dt class="text-[11px] text-faint">Hash</dt>
+              <dd class="font-mono text-[11px] text-dim" :title="file?.object?.hash ?? undefined">
+                {{ shortHash(file?.object?.hash) }}
+              </dd>
+            </div>
+          </dl>
 
-    <div
-      class="flex h-8 shrink-0 items-center justify-between border-t border-line px-3 text-2xs text-faint"
-    >
-      <span class="uppercase tracking-[0.12em]">{{
-        vault.sample ? 'sample object' : 'live object'
-      }}</span>
-      <span class="font-mono">{{ file ? shortId(file.id) : '—' }}</span>
-    </div>
-  </aside>
+          <div v-if="permissions" class="border-t border-line-soft px-4 py-3.5">
+            <div class="text-[11px] font-medium text-faint">Capabilities</div>
+            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1.5 text-[11px]">
+              <span
+                class="flex items-center gap-1.5"
+                :class="permissions.readable ? 'text-dim' : 'text-faint'"
+              >
+                <span
+                  class="dot"
+                  :class="permissions.readable ? 'bg-success' : 'bg-line'"
+                  aria-hidden="true"
+                />
+                Read
+              </span>
+              <span
+                class="flex items-center gap-1.5"
+                :class="permissions.writable ? 'text-dim' : 'text-faint'"
+              >
+                <span
+                  class="dot"
+                  :class="permissions.writable ? 'bg-success' : 'bg-line'"
+                  aria-hidden="true"
+                />
+                Write
+              </span>
+              <span
+                class="flex items-center gap-1.5"
+                :class="permissions.manageable ? 'text-dim' : 'text-faint'"
+              >
+                <span
+                  class="dot"
+                  :class="permissions.manageable ? 'bg-success' : 'bg-line'"
+                  aria-hidden="true"
+                />
+                Manage
+              </span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </aside>
+  </Transition>
 </template>

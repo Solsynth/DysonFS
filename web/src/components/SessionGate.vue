@@ -24,17 +24,11 @@ const state = computed(() => session.state)
 <template>
   <slot v-if="state === 'ready'" />
 
-  <div v-else class="relative flex h-dvh flex-col overflow-hidden bg-base-100 text-base-content">
-    <header class="relative z-10 flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
-      <BrandMark :size="22" />
-      <span class="flex items-baseline gap-2">
-        <span class="text-[13px] font-semibold tracking-[0.24em]">DYSON</span>
-        <span class="text-2xs font-normal tracking-[0.16em] text-dim">DRIVE</span>
-      </span>
-      <span class="hidden h-4 w-px bg-line sm:block" aria-hidden="true" />
-      <span class="hidden text-2xs uppercase tracking-[0.14em] text-faint sm:block">
-        solar network
-      </span>
+  <div v-else class="relative flex h-dvh flex-col overflow-hidden bg-ink text-base-content">
+    <header class="relative z-10 flex h-[52px] shrink-0 items-center gap-3 border-b border-line px-4">
+      <BrandMark :size="21" />
+      <span class="text-[14px] font-semibold tracking-[-0.01em]">SnFS</span>
+      <span class="hidden text-[11px] text-faint sm:inline">Solar Network File System</span>
       <IconButton
         class="ml-auto"
         :label="ui.isDark ? 'Switch to light theme' : 'Switch to dark theme'"
@@ -45,7 +39,7 @@ const state = computed(() => session.state)
       </IconButton>
     </header>
 
-    <main class="relative z-10 flex flex-1 items-center justify-center overflow-y-auto px-4 py-10">
+    <main class="relative z-10 flex flex-1 items-center justify-center overflow-y-auto px-5 py-10">
       <Transition
         mode="out-in"
         enter-active-class="transition duration-200 ease-out"
@@ -53,88 +47,71 @@ const state = computed(() => session.state)
         leave-active-class="transition duration-100 ease-in"
         leave-to-class="opacity-0"
       >
-        <div v-if="state === 'loading'" key="loading" class="w-full max-w-[520px]">
-          <div class="flex items-center gap-3.5">
-            <BrandMark :size="42" />
-            <div>
-              <div class="eyebrow">solar network</div>
-              <h1 class="title text-2xl text-base-content">Dyson Drive</h1>
-            </div>
-          </div>
-
-          <div class="panel mt-8 p-5">
-            <div class="flex items-center justify-between">
-              <span class="eyebrow">connecting</span>
-              <span class="text-2xs text-faint">this takes a moment</span>
-            </div>
-            <div class="loading-scan mt-3 h-[2px] w-full bg-line" />
-            <p class="voice mt-4">
-              Checking your session with Solar Network, then loading your drive.
-            </p>
-          </div>
+        <div v-if="state === 'loading'" key="loading" class="w-full max-w-[380px]">
+          <BrandMark :size="44" class="text-base-content" />
+          <h1 class="title mt-5 text-[22px]">SnFS</h1>
+          <p class="voice mt-1.5">Solar Network File System</p>
+          <div class="loading-scan mt-8 h-[2px] w-full bg-line-soft" />
+          <p class="mt-4 text-[11px] text-faint">Connecting to Solar Network…</p>
         </div>
 
-        <div v-else-if="state === 'signed-out'" key="signed-out" class="w-full max-w-[560px]">
-          <div class="flex items-center gap-2 text-2xs uppercase tracking-[0.16em] text-brass">
+        <div v-else-if="state === 'signed-out'" key="signed-out" class="w-full max-w-[440px]">
+          <span class="flex items-center gap-2 text-[11px] font-medium text-faint">
             <Login16 aria-hidden="true" />
-            sign in required
-          </div>
-          <h1 class="title mt-4 text-[34px] leading-tight text-base-content">
-            The drive is sealed.
-          </h1>
-          <p class="voice mt-3 max-w-[460px]">
-            Dyson Drive reads your files through your Solar Network account. Sign in to reach the
-            drive, or look around with example files first.
+            Sign in required
+          </span>
+          <h1 class="title mt-3 text-[30px] leading-[1.15]">Your files live here.</h1>
+          <p class="voice mt-3 max-w-[400px]">
+            SnFS reads your files through your Solar Network account. Sign in to open your drive,
+            or look around with sample files first.
           </p>
 
-          <div class="mt-7 flex flex-wrap items-center gap-2.5">
+          <div class="mt-7 flex flex-wrap items-center gap-2">
             <a :href="session.authUrl" class="btn btn-primary h-9">
               Sign in with Solar Network
-              <ArrowRight16 class="ml-1" />
+              <ArrowRight16 class="ml-0.5" />
             </a>
             <button class="btn btn-outline h-9" type="button" @click="session.startSample()">
-              <FolderOpen16 class="mr-1.5" />
-              Explore sample data
+              <FolderOpen16 />
+              Explore sample files
             </button>
           </div>
 
-          <div class="panel mt-8 divide-y divide-line text-2xs">
-            <div class="flex items-center justify-between px-3.5 py-2.5">
-              <span class="text-faint">account</span>
-              <span class="text-dim">your Solar Network account</span>
+          <dl class="mt-9 grid grid-cols-2 gap-5 border-t border-line pt-4 text-[11px]">
+            <div>
+              <dt class="text-faint">Account</dt>
+              <dd class="mt-0.5 text-dim">Your Solar Network account</dd>
             </div>
-            <div class="flex items-center justify-between px-3.5 py-2.5">
-              <span class="text-faint">sample mode</span>
-              <span class="text-dim">example files, nothing is saved</span>
+            <div>
+              <dt class="text-faint">Sample mode</dt>
+              <dd class="mt-0.5 text-dim">Example files; nothing is saved</dd>
             </div>
-          </div>
+          </dl>
         </div>
 
-        <div v-else key="offline" class="w-full max-w-[560px]">
-          <div class="flex items-center gap-2 text-2xs uppercase tracking-[0.16em] text-error">
+        <div v-else key="offline" class="w-full max-w-[440px]">
+          <span class="flex items-center gap-2 text-[11px] font-medium text-error">
             <CloudOffline16 aria-hidden="true" />
-            drive unreachable
-          </div>
-          <h1 class="title mt-4 text-[34px] leading-tight text-base-content">
-            The drive is unreachable.
-          </h1>
-          <p class="voice mt-3 max-w-[460px]">
-            Dyson Drive could not reach your storage. Check your connection, then try again, or look
-            around with example files.
+            Storage unreachable
+          </span>
+          <h1 class="title mt-3 text-[30px] leading-[1.15]">SnFS can’t reach the drive.</h1>
+          <p class="voice mt-3 max-w-[400px]">
+            Check your connection, then try again. You can also look around with sample files while
+            the connection recovers.
           </p>
 
-          <div v-if="session.error" class="panel mt-6 border-error/30 bg-error/5 px-4 py-3">
-            <div class="eyebrow text-error/80">details</div>
-            <p class="mt-1.5 font-mono text-2xs text-error">{{ session.error }}</p>
+          <div v-if="session.error" class="mt-5 rounded-lg bg-error/5 px-3.5 py-3">
+            <div class="text-[11px] font-medium text-error/80">Details</div>
+            <p class="mt-1.5 font-mono text-[11px] text-error">{{ session.error }}</p>
           </div>
 
-          <div class="mt-7 flex flex-wrap items-center gap-2.5">
+          <div class="mt-7 flex flex-wrap items-center gap-2">
             <button class="btn btn-primary h-9" type="button" @click="session.retry()">
-              <Renew16 class="mr-1.5" />
+              <Renew16 />
               Try again
             </button>
             <button class="btn btn-outline h-9" type="button" @click="session.startSample()">
-              <FolderOpen16 class="mr-1.5" />
+              <FolderOpen16 />
               Continue in sample mode
             </button>
           </div>
@@ -143,18 +120,18 @@ const state = computed(() => session.state)
     </main>
 
     <footer
-      class="relative z-10 flex h-7 shrink-0 items-center gap-3 border-t border-line px-3 text-2xs text-faint"
+      class="relative z-10 flex h-8 shrink-0 items-center gap-2 border-t border-line px-4 text-[11px] text-faint"
     >
-      <span class="uppercase tracking-[0.12em]">dyson drive</span>
-      <span class="hidden h-2.5 w-px bg-line sm:block" aria-hidden="true" />
-      <span class="hidden sm:block">solar network</span>
+      <span>SnFS</span>
+      <span class="text-line" aria-hidden="true">/</span>
+      <span>Solar Network</span>
       <span class="ml-auto flex items-center gap-1.5">
         <span
           class="dot"
-          :class="state === 'loading' ? 'bg-brass' : 'bg-error'"
+          :class="state === 'loading' ? 'bg-primary pulse-soft' : 'bg-error'"
           aria-hidden="true"
         />
-        {{ state === 'loading' ? 'connecting' : 'signed out' }}
+        {{ state === 'loading' ? 'Connecting' : 'Signed out' }}
       </span>
     </footer>
   </div>

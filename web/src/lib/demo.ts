@@ -25,7 +25,7 @@ interface DemoContext {
 }
 
 let demoActive = false
-const STORAGE_KEY = 'dysonfs:sample'
+const STORAGE_KEY = 'snfs:sample'
 
 export function enableSampleData(active = true) {
   demoActive = active
@@ -165,7 +165,7 @@ export const samplePools: FilePool[] = [
       enable_signed: true,
       enable_ssl: true,
       endpoint: 's3.internal',
-      bucket: 'dyson-live',
+      bucket: 'snfs-live',
     },
     billing_config: { cost_multiplier: 1 },
     policy_config: { public_usable: false },
@@ -182,7 +182,7 @@ export const samplePools: FilePool[] = [
       enable_signed: true,
       enable_ssl: true,
       endpoint: 's3-archive.internal',
-      bucket: 'dyson-archive',
+      bucket: 'snfs-archive',
     },
     billing_config: { cost_multiplier: 0.6 },
     policy_config: { public_usable: false },
@@ -199,7 +199,7 @@ export const samplePools: FilePool[] = [
       enable_signed: true,
       enable_ssl: true,
       endpoint: 's3-cold.internal',
-      bucket: 'dyson-cold',
+      bucket: 'snfs-cold',
     },
     billing_config: { cost_multiplier: 0.25 },
     policy_config: { public_usable: false },
@@ -255,7 +255,7 @@ const seedFiles: CloudFile[] = [
   ),
   doc(
     'file-swarm',
-    'dyson-swarm-concept.png',
+    'snfs-swarm-concept.png',
     null,
     8_493_120,
     'image/png',

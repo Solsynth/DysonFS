@@ -1,9 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192" fill="none">
-  <rect width="192" height="192" fill="#080b13" />
-  <g stroke="#cfd5e4" stroke-linecap="round" stroke-linejoin="round">
-    <path stroke-width="12" d="M58 40v112" />
-    <path stroke-width="12" d="M58 40h20c30.928 0 56 25.072 56 56s-25.072 56-56 56H58" />
-    <ellipse cx="101" cy="96" rx="73" ry="24" transform="rotate(-24 101 96)" stroke-width="7" opacity="0.92" />
-    <circle cx="157" cy="55" r="5.5" fill="#c9ae83" stroke="#c9ae83" stroke-width="4" />
+  <style>
+    /* Browser chrome decides the favicon backdrop, so follow the OS. */
+    @media (prefers-color-scheme: light) {
+      path,
+      ellipse,
+      circle {
+        stroke: #1c2334;
+      }
+      circle[fill] {
+        fill: #1c2334;
+      }
+    }
+  </style>
+  <g stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="96" cy="118" rx="72" ry="23" transform="rotate(-18 96 118)" stroke-width="7" opacity="0.9" />
+    <path stroke-width="11" d="M74 148h44a12 12 0 0 0 12-12V82l-30-30H74a12 12 0 0 0-12 12v72a12 12 0 0 0 12 12Z" />
+    <path stroke-width="11" d="M100 52v30h30" />
+    <circle cx="166" cy="96" r="6" fill="#fff" stroke="none" />
   </g>
 </svg>

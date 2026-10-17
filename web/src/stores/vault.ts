@@ -43,7 +43,7 @@ export interface Crumb {
   name: string
 }
 
-const VIEW_KEY = 'dysonfs:view'
+const VIEW_KEY = 'snfs:view'
 const MiB = 1024 * 1024
 
 interface SelectionOptions {

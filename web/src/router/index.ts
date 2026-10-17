@@ -48,7 +48,7 @@ const router = createRouter({
 
 router.afterEach((to) => {
   const title = typeof to.meta.title === 'string' ? to.meta.title : null
-  document.title = title ? `${title} · Dyson Drive` : 'Dyson Drive'
+  document.title = title ? `${title} · SnFS` : 'SnFS'
 })
 
 export default router

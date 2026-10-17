@@ -13,7 +13,6 @@ import {
   Search16,
   TrashCan16,
   Undo16,
-  Upload16,
 } from '@carbon/icons-vue'
 
 import type { FileOrder, KindFilter } from '@/lib/api/types'
@@ -89,10 +88,6 @@ function newFolder() {
   ui.openDialog({ kind: 'new-folder' })
 }
 
-function requestUpload() {
-  window.dispatchEvent(new Event('dyson:upload'))
-}
-
 function refresh() {
   void vault.refreshAll()
 }
@@ -115,19 +110,19 @@ function restoreSelection() {
 </script>
 
 <template>
-  <div class="shrink-0 border-b border-line bg-base-100">
-    <div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 md:px-4">
+  <div class="shrink-0 bg-ink">
+    <div class="flex min-h-[44px] flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 md:px-4">
       <IconButton v-if="onDrive && vault.folder" label="Go up" @click="up">
         <ArrowUp16 />
       </IconButton>
 
-      <nav class="flex min-w-0 items-center gap-1 overflow-hidden text-2xs" aria-label="Breadcrumb">
+      <nav class="flex min-w-0 items-center gap-1.5 overflow-hidden text-[12.5px]" aria-label="Breadcrumb">
         <template v-for="(crumb, index) in vault.crumbs" :key="crumb.id ?? 'root'">
           <span v-if="index > 0" class="shrink-0 text-line" aria-hidden="true">/</span>
           <button
             v-if="index < vault.crumbs.length - 1"
             type="button"
-            class="max-w-[160px] shrink-0 truncate px-0.5 py-0.5 text-dim transition-colors hover:text-base-content"
+            class="max-w-[160px] shrink-0 truncate rounded px-0.5 py-0.5 text-dim transition-colors hover:text-base-content"
             @click="goCrumb(crumb.id)"
           >
             {{ crumb.name }}
@@ -144,14 +139,13 @@ function restoreSelection() {
 
       <span
         v-if="vault.activePool"
-        class="chip ml-1 border-brass/30 text-brass"
+        class="ml-1 flex items-center gap-1 rounded-full bg-base-300/60 py-0.5 pl-2.5 pr-1 text-[11px] text-dim"
         :title="`Filtered to ${vault.activePool.name}`"
       >
-        <span class="dot bg-brass" aria-hidden="true" />
         {{ vault.activePool.name }}
         <button
           type="button"
-          class="-my-1 -mr-1 ml-0.5 grid size-6 place-items-center text-brass/70 transition-colors hover:text-brass"
+          class="grid size-4 place-items-center rounded-full text-faint transition-colors hover:bg-base-300 hover:text-base-content"
           aria-label="Clear pool filter"
           title="Clear pool filter"
           @click="vault.setPoolFilter(null)"
@@ -168,34 +162,66 @@ function restoreSelection() {
         >
           <Renew16 :class="vault.loading ? 'animate-spin' : ''" />
         </IconButton>
-        <template v-if="onDrive">
-          <button class="btn btn-outline btn-sm" type="button" @click="newFolder">
-            <FolderAdd16 class="mr-1.5" />
-            <span class="hidden sm:inline">New folder</span>
-          </button>
-          <button class="btn btn-outline btn-sm" type="button" @click="requestUpload">
-            <Upload16 class="mr-1.5" />
-            <span class="hidden sm:inline">Upload</span>
-          </button>
-        </template>
+        <IconButton v-if="onDrive" label="New folder" @click="newFolder">
+          <FolderAdd16 />
+        </IconButton>
         <button
           v-else-if="mode === 'recycle' && vault.total > 0"
-          class="btn btn-outline btn-sm"
+          class="btn btn-ghost btn-xs"
           type="button"
           @click="vault.selectAll()"
         >
-          <Checkmark16 class="mr-1.5" />
           Select all
         </button>
+
+        <div class="ml-1 flex items-center rounded-lg bg-base-200/70 p-0.5" role="group" aria-label="View mode">
+          <button
+            type="button"
+            class="grid h-7 w-7 place-items-center rounded-md transition-colors duration-150"
+            :class="
+              vault.viewMode === 'list'
+                ? 'bg-base-300 text-base-content'
+                : 'text-faint hover:text-dim'
+            "
+            :aria-pressed="vault.viewMode === 'list'"
+            aria-label="List view"
+            title="List view"
+            @click="vault.storeView('list')"
+          >
+            <List16 />
+          </button>
+          <button
+            type="button"
+            class="grid h-7 w-7 place-items-center rounded-md transition-colors duration-150"
+            :class="
+              vault.viewMode === 'grid'
+                ? 'bg-base-300 text-base-content'
+                : 'text-faint hover:text-dim'
+            "
+            :aria-pressed="vault.viewMode === 'grid'"
+            aria-label="Grid view"
+            title="Grid view"
+            @click="vault.storeView('grid')"
+          >
+            <Grid16 />
+          </button>
+        </div>
       </div>
     </div>
 
-    <div
-      class="flex flex-wrap items-center gap-2 border-t border-line-soft px-3 py-2 md:px-4"
-      :class="hasSelection ? 'bg-primary/[0.07]' : ''"
+    <Transition
+      mode="out-in"
+      enter-active-class="transition duration-150 ease-out"
+      enter-from-class="opacity-0"
+      leave-active-class="transition duration-100 ease-in"
+      leave-to-class="opacity-0"
     >
-      <template v-if="hasSelection">
-        <span class="flex items-center gap-1.5 text-2xs text-base-content">
+      <div
+        v-if="hasSelection"
+        key="selection"
+        class="flex min-h-[46px] flex-wrap items-center gap-2 border-t border-line-soft bg-primary/[0.04] px-3 py-1.5 md:px-4"
+      >
+        <span class="flex items-center gap-2 text-[12px] text-base-content">
           <Checkmark16 class="text-primary" aria-hidden="true" />
           {{ formatCount(selectionCount) }} selected
           <span class="text-faint">· {{ formatBytes(vault.selectedBytes) }}</span>
@@ -204,21 +230,21 @@ function restoreSelection() {
         <div class="ml-auto flex flex-wrap items-center gap-1">
           <template v-if="mode === 'recycle'">
             <button class="btn btn-outline btn-sm" type="button" @click="restoreSelection">
-              <Undo16 class="mr-1.5" />
+              <Undo16 />
               Restore
             </button>
             <button class="btn btn-error btn-sm" type="button" @click="purgeSelection">
-              <TrashCan16 class="mr-1.5" />
+              <TrashCan16 />
               Delete forever
             </button>
           </template>
           <template v-else>
             <button class="btn btn-outline btn-sm" type="button" @click="moveSelection">
-              <Move16 class="mr-1.5" />
+              <Move16 />
               Move
             </button>
             <button class="btn btn-outline btn-sm" type="button" @click="recycleSelection">
-              <TrashCan16 class="mr-1.5" />
+              <TrashCan16 />
               Recycle
             </button>
           </template>
@@ -226,16 +252,20 @@ function restoreSelection() {
             <Close16 />
           </IconButton>
         </div>
-      </template>
+      </div>
 
-      <template v-else>
-        <label class="relative flex h-8 w-full max-w-[340px] items-center">
+      <div
+        v-else
+        key="search"
+        class="flex min-h-[48px] flex-wrap items-center gap-2 border-t border-line-soft px-3 py-2 md:px-4"
+      >
+        <label class="relative flex h-8 w-full max-w-[300px] items-center">
           <span class="sr-only">Search this location</span>
           <Search16 class="pointer-events-none absolute left-2.5 text-faint" aria-hidden="true" />
           <input
             v-model="search"
             type="text"
-            class="input h-8 pl-8 pr-8"
+            class="input h-8 bg-base-200/70 pl-8 pr-8"
             :placeholder="mode === 'recycle' ? 'Search recycled objects' : 'Search this location'"
             autocomplete="off"
             spellcheck="false"
@@ -245,7 +275,7 @@ function restoreSelection() {
           <button
             v-if="search"
             type="button"
-            class="absolute right-1.5 grid size-5 place-items-center text-faint transition-colors hover:text-base-content"
+            class="absolute right-1.5 grid size-5 place-items-center rounded-full text-faint transition-colors hover:bg-base-300 hover:text-base-content"
             aria-label="Clear search"
             title="Clear search"
             @click="clearSearch"
@@ -254,16 +284,16 @@ function restoreSelection() {
           </button>
         </label>
 
-        <div class="flex items-center border border-line" role="group" aria-label="Filter by kind">
+        <div class="flex items-center rounded-lg bg-base-200/70 p-0.5" role="group" aria-label="Filter by kind">
           <button
             v-for="entry in kinds"
             :key="entry.key"
             type="button"
-            class="h-8 px-2.5 text-2xs uppercase tracking-[0.08em] transition-colors"
+            class="h-7 rounded-md px-2.5 text-[11.5px] transition-colors duration-150"
             :class="
               vault.kind === entry.key
                 ? 'bg-base-300 text-base-content'
-                : 'text-faint hover:bg-base-200/60 hover:text-dim'
+                : 'text-faint hover:text-dim'
             "
             :aria-pressed="vault.kind === entry.key"
             @click="vault.setKind(entry.key)"
@@ -272,59 +302,24 @@ function restoreSelection() {
           </button>
         </div>
 
-        <div class="ml-auto flex items-center gap-2">
-          <div class="hidden items-center gap-1.5 sm:flex" role="group" aria-label="Sort order">
-            <span class="eyebrow hidden md:inline">sort</span>
-            <button
-              v-for="entry in sorts"
-              :key="entry.key"
-              type="button"
-              class="flex h-8 items-center gap-1 px-2 text-2xs uppercase tracking-[0.08em] transition-colors"
-              :class="vault.order === entry.key ? 'text-base-content' : 'text-faint hover:text-dim'"
-              :aria-pressed="vault.order === entry.key"
-              @click="sortBy(entry.key)"
-            >
-              {{ entry.label }}
-              <span v-if="vault.order === entry.key" class="text-primary" aria-hidden="true">
-                {{ vault.orderDesc ? '↓' : '↑' }}
-              </span>
-            </button>
-          </div>
-
-          <div class="flex items-center border border-line" role="group" aria-label="View mode">
-            <button
-              type="button"
-              class="grid h-8 w-8 place-items-center transition-colors"
-              :class="
-                vault.viewMode === 'list'
-                  ? 'bg-base-300 text-base-content'
-                  : 'text-faint hover:text-dim'
-              "
-              :aria-pressed="vault.viewMode === 'list'"
-              aria-label="List view"
-              title="List view"
-              @click="vault.storeView('list')"
-            >
-              <List16 />
-            </button>
-            <button
-              type="button"
-              class="grid h-8 w-8 place-items-center transition-colors"
-              :class="
-                vault.viewMode === 'grid'
-                  ? 'bg-base-300 text-base-content'
-                  : 'text-faint hover:text-dim'
-              "
-              :aria-pressed="vault.viewMode === 'grid'"
-              aria-label="Grid view"
-              title="Grid view"
-              @click="vault.storeView('grid')"
-            >
-              <Grid16 />
-            </button>
-          </div>
+        <div class="ml-auto flex items-center gap-1" role="group" aria-label="Sort order">
+          <span class="mr-1 hidden text-[11px] text-faint md:inline">Sort</span>
+          <button
+            v-for="entry in sorts"
+            :key="entry.key"
+            type="button"
+            class="flex h-7 items-center gap-0.5 rounded-md px-2 text-[11.5px] transition-colors duration-150"
+            :class="vault.order === entry.key ? 'text-base-content' : 'text-faint hover:text-dim'"
+            :aria-pressed="vault.order === entry.key"
+            @click="sortBy(entry.key)"
+          >
+            {{ entry.label }}
+            <span v-if="vault.order === entry.key" class="text-primary" aria-hidden="true">
+              {{ vault.orderDesc ? '↓' : '↑' }}
+            </span>
+          </button>
         </div>
-      </template>
-    </div>
+      </div>
+    </Transition>
   </div>
 </template>

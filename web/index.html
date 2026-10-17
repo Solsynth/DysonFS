@@ -2,18 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icon-outline.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" href="/favicon.png" type="image/png" sizes="1024x1024" />
     <link rel="apple-touch-icon" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#0a0d16" />
+    <meta name="theme-color" content="#0b0e14" />
     <meta
       name="description"
-      content="Dyson Drive — the file system of Solar Network. Browse, upload, and manage your drive."
+      content="SnFS — the Solar Network File System. Browse, upload, and manage your files."
     />
-    <title>Dyson Drive</title>
+    <title>SnFS</title>
     <script>
       // Apply the stored (or OS) theme before first paint so a light-theme
       // operator never sees a dark flash while the module bundle loads.
@@ -26,7 +26,7 @@
               : window.matchMedia('(prefers-color-scheme: light)').matches
                 ? 'light'
                 : 'dark'
-          document.documentElement.dataset.theme = theme === 'light' ? 'dyson-light' : 'dyson'
+          document.documentElement.dataset.theme = theme === 'light' ? 'snfs-light' : 'snfs'
         } catch (error) {
           /* Leave the default theme in place. */
         }

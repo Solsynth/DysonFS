@@ -1,5 +1,5 @@
 {
-  "name": "@solsynth/dfs-web",
+  "name": "@solsynth/snfs-web",
   "version": "0.0.0",
   "private": true,
   "type": "module",

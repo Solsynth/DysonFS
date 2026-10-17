@@ -6,7 +6,7 @@ import { CopyLink16 } from '@carbon/icons-vue'
 import FileGlyph from './FileGlyph.vue'
 import type { CloudFile } from '@/lib/api/types'
 import { openUrl, previewUrl } from '@/lib/api/drive'
-import { displayName, formatBytes, kindLabel, modifiedLabel } from '@/lib/format'
+import { displayName, formatBytes, kindLabel } from '@/lib/format'
 import { hasPreview } from '@/lib/fileKinds'
 import { useVaultStore } from '@/stores/vault'
 
@@ -67,32 +67,43 @@ function markFailed(id: string) {
 function isPublic(file: CloudFile): boolean {
   return file.permission_status?.visibility === 'public'
 }
+
+function subline(file: CloudFile): string {
+  if (file.is_folder) {
+    const count = file.children_count ?? 0
+    return `${count} ${count === 1 ? 'item' : 'items'}`
+  }
+  return `${kindLabel(file)} · ${formatBytes(file.object?.size)}`
+}
 </script>
 
 <template>
-  <div class="min-h-0 flex-1 overflow-auto scroll-region p-3 md:p-4">
+  <div class="min-h-0 flex-1 overflow-auto scroll-region p-3 md:p-5">
     <div
-      class="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
+      class="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
       role="list"
       aria-label="Objects"
     >
       <article
-        v-for="file in vault.items"
+        v-for="(file, index) in vault.items"
         :key="file.id"
         tabindex="0"
         role="listitem"
-        class="group relative flex cursor-default flex-col border transition-colors focus-visible:outline"
+        class="row-in group relative flex cursor-default flex-col rounded-lg p-1.5 transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         :class="
           vault.selection.includes(file.id)
-            ? 'border-primary/70 bg-primary/[0.08]'
-            : 'border-line bg-base-200/25 hover:border-faint/60 hover:bg-base-200/50'
+            ? 'bg-primary/[0.07]'
+            : 'hover:bg-base-200/60'
         "
+        :style="{ animationDelay: `${Math.min(index, 12) * 18}ms` }"
         :aria-selected="vault.selection.includes(file.id)"
         @click="onClick($event, file)"
         @dblclick="open(file)"
         @keydown="onKeydown($event, file)"
       >
-        <div class="relative aspect-[4/3] overflow-hidden border-b border-line-soft bg-base-200/60">
+        <div
+          class="relative aspect-[4/3] overflow-hidden rounded-lg bg-base-200/60"
+        >
           <img
             v-if="showPreview(file)"
             :src="previewUrl(file.id)"
@@ -102,47 +113,37 @@ function isPublic(file: CloudFile): boolean {
             class="h-full w-full object-cover opacity-90 transition-opacity duration-200 group-hover:opacity-100"
             @error="markFailed(file.id)"
           />
-          <div v-else class="relative grid h-full place-items-center">
-            <div class="absolute inset-0 opacity-40 ruler" aria-hidden="true" />
-            <FileGlyph :file="file" size="lg" class="relative opacity-80" />
+          <div v-else class="grid h-full place-items-center">
+            <FileGlyph :file="file" size="lg" class="opacity-70" />
           </div>
 
           <input
             type="checkbox"
-            class="checkbox checkbox-xs absolute left-2 top-2 rounded-[2px] border-line bg-base-100/80 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-            :class="vault.selection.includes(file.id) ? 'opacity-100' : ''"
+            class="checkbox checkbox-xs absolute left-2 top-2 rounded-[4px] bg-ink/80 transition-opacity duration-150"
+            :class="
+              vault.selection.includes(file.id)
+                ? 'opacity-100'
+                : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+            "
             :checked="vault.selection.includes(file.id)"
             :aria-label="`Select ${file.name}`"
             @change="vault.select(file.id, { toggle: true })"
             @click.stop
           />
 
-          <span
+          <CopyLink16
             v-if="isPublic(file)"
-            class="absolute right-2 top-2 grid size-5 place-items-center border border-brass/40 bg-base-100/85 text-brass"
+            class="absolute right-2 top-2 h-3.5 w-3.5 text-primary/70"
             title="Published by link"
-          >
-            <CopyLink16 class="h-3 w-3" />
-          </span>
-
-          <span
-            v-if="file.is_folder && (file.children_count ?? 0) > 0"
-            class="absolute bottom-2 right-2 border border-line bg-base-100/85 px-1.5 py-0.5 text-2xs tabular-nums text-dim"
-          >
-            {{ file.children_count }}
-          </span>
+          />
         </div>
 
-        <div class="flex min-w-0 flex-col gap-1 p-2.5">
-          <span class="truncate text-xs text-base-content" :title="displayName(file)">
+        <div class="flex min-w-0 flex-col gap-0.5 px-1 pb-0.5 pt-2.5">
+          <span class="truncate text-[12.5px] font-medium text-base-content" :title="displayName(file)">
             {{ displayName(file) }}
           </span>
-          <span class="flex items-center gap-1.5 text-2xs text-faint">
-            <span class="uppercase tracking-[0.06em]">{{ kindLabel(file) }}</span>
-            <span aria-hidden="true">·</span>
-            <span>{{
-              file.is_folder ? modifiedLabel(file.updated_at) : formatBytes(file.object?.size)
-            }}</span>
+          <span class="truncate text-[11px] text-faint">
+            {{ subline(file) }}
           </span>
         </div>
       </article>

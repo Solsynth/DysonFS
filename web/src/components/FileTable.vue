@@ -19,11 +19,6 @@ const someSelected = computed(
   () => vault.selection.length > 0 && vault.selection.length < vault.items.length,
 )
 
-function poolName(file: CloudFile): string {
-  if (!file.pool_id) return 'default'
-  return vault.pools.find((pool) => pool.id === file.pool_id)?.name ?? 'default'
-}
-
 function isPublic(file: CloudFile): boolean {
   return file.permission_status?.visibility === 'public'
 }
@@ -91,13 +86,13 @@ function sortState(key: 'name' | 'size' | 'date') {
 <template>
   <div class="min-h-0 flex-1 overflow-auto scroll-region">
     <table class="w-full table-fixed border-collapse">
-      <thead class="sticky top-0 z-10 bg-base-100">
-        <tr class="border-b border-line text-[10px] uppercase tracking-[0.14em] text-faint">
-          <th scope="col" class="w-9 pl-3 pr-1 text-left">
+      <thead class="sticky top-0 z-10 bg-ink">
+        <tr class="text-[11px] font-medium text-faint">
+          <th scope="col" class="w-10 pl-4 pr-1 text-left">
             <span class="sr-only">Select</span>
             <input
               type="checkbox"
-              class="checkbox checkbox-xs rounded-[2px] border-line"
+              class="checkbox checkbox-xs rounded-[4px]"
               :checked="allSelected"
               :indeterminate.prop="someSelected"
               :disabled="vault.items.length === 0"
@@ -108,7 +103,7 @@ function sortState(key: 'name' | 'size' | 'date') {
           <th scope="col" class="min-w-0 text-left" :aria-sort="sortState('name')">
             <button
               type="button"
-              class="flex h-8 w-full items-center gap-1 uppercase tracking-[0.14em] transition-colors hover:text-dim"
+              class="flex h-10 w-full items-center gap-1 font-medium transition-colors hover:text-dim"
               :class="vault.order === 'name' ? 'text-base-content' : ''"
               @click="sortBy('name')"
             >
@@ -116,15 +111,15 @@ function sortState(key: 'name' | 'size' | 'date') {
               <span v-if="indicator('name')" class="text-primary">{{ indicator('name') }}</span>
             </button>
           </th>
-          <th scope="col" class="hidden w-[92px] text-left md:table-cell">Kind</th>
+          <th scope="col" class="hidden w-[100px] text-left md:table-cell">Kind</th>
           <th
             scope="col"
-            class="hidden w-[86px] pr-3 text-right sm:table-cell"
+            class="hidden w-[92px] pr-3 text-right sm:table-cell"
             :aria-sort="sortState('size')"
           >
             <button
               type="button"
-              class="flex h-8 w-full items-center justify-end gap-1 uppercase tracking-[0.14em] transition-colors hover:text-dim"
+              class="flex h-10 w-full items-center justify-end gap-1 font-medium transition-colors hover:text-dim"
               :class="vault.order === 'size' ? 'text-base-content' : ''"
               @click="sortBy('size')"
             >
@@ -134,12 +129,12 @@ function sortState(key: 'name' | 'size' | 'date') {
           </th>
           <th
             scope="col"
-            class="hidden w-[124px] pr-3 text-right lg:table-cell"
+            class="hidden w-[132px] pr-4 text-right lg:table-cell"
             :aria-sort="sortState('date')"
           >
             <button
               type="button"
-              class="flex h-8 w-full items-center justify-end gap-1 uppercase tracking-[0.14em] transition-colors hover:text-dim"
+              class="flex h-10 w-full items-center justify-end gap-1 font-medium transition-colors hover:text-dim"
               :class="vault.order === 'date' ? 'text-base-content' : ''"
               @click="sortBy('date')"
             >
@@ -152,35 +147,49 @@ function sortState(key: 'name' | 'size' | 'date') {
 
       <tbody v-if="vault.loading && vault.items.length === 0">
         <tr v-for="row in 7" :key="`skeleton-${row}`" class="border-b border-line-soft">
-          <td class="pl-3 py-3"><span class="block h-3 w-3 bg-base-300" /></td>
-          <td class="py-3">
+          <td class="py-3.5 pl-4"><span class="block h-3 w-3 rounded-[3px] bg-base-300" /></td>
+          <td class="py-3.5">
             <div class="flex items-center gap-2.5">
-              <span class="size-6 bg-base-300" />
-              <span class="h-3 w-40 bg-base-300 pulse-soft" />
+              <span class="size-4 rounded bg-base-300 pulse-soft" />
+              <span class="h-3 w-40 rounded bg-base-300 pulse-soft" />
             </div>
           </td>
-          <td class="hidden md:table-cell"><span class="block h-3 w-12 bg-base-300" /></td>
-          <td class="hidden sm:table-cell"><span class="ml-auto block h-3 w-10 bg-base-300" /></td>
-          <td class="hidden lg:table-cell"><span class="ml-auto block h-3 w-14 bg-base-300" /></td>
+          <td class="hidden md:table-cell"><span class="block h-3 w-12 rounded bg-base-300/70" /></td>
+          <td class="hidden sm:table-cell">
+            <span class="ml-auto block h-3 w-10 rounded bg-base-300/70" />
+          </td>
+          <td class="hidden lg:table-cell">
+            <span class="ml-auto block h-3 w-14 rounded bg-base-300/70" />
+          </td>
         </tr>
       </tbody>
 
       <tbody v-else>
         <tr
-          v-for="file in vault.items"
+          v-for="(file, index) in vault.items"
           :key="file.id"
           tabindex="0"
-          class="group h-[46px] cursor-default border-b border-line-soft transition-colors focus-visible:bg-primary/10"
-          :class="vault.selection.includes(file.id) ? 'bg-primary/10' : 'hover:bg-base-200/50'"
+          class="row-in group h-[46px] cursor-default border-b border-line-soft transition-colors duration-150 focus-visible:bg-primary/[0.06]"
+          :class="
+            vault.selection.includes(file.id)
+              ? 'bg-primary/[0.06]'
+              : 'hover:bg-base-200/40'
+          "
+          :style="{ animationDelay: `${Math.min(index, 12) * 16}ms` }"
           :aria-selected="vault.selection.includes(file.id)"
           @click="onClick($event, file)"
           @dblclick="open(file)"
           @keydown="onKeydown($event, file)"
         >
-          <td class="pl-3 pr-1">
+          <td class="pl-4 pr-1">
             <input
               type="checkbox"
-              class="checkbox checkbox-xs rounded-[2px] border-line"
+              class="checkbox checkbox-xs rounded-[4px] transition-opacity duration-150"
+              :class="
+                vault.selection.includes(file.id)
+                  ? 'opacity-100'
+                  : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+              "
               :checked="vault.selection.includes(file.id)"
               :aria-label="`Select ${file.name}`"
               @change="vault.select(file.id, { toggle: true })"
@@ -189,51 +198,25 @@ function sortState(key: 'name' | 'size' | 'date') {
           </td>
           <td class="min-w-0 py-1.5">
             <div class="flex min-w-0 items-center gap-2.5">
-              <span
-                class="grid size-7 shrink-0 place-items-center border border-line-soft bg-base-200/40"
-                aria-hidden="true"
-              >
-                <FileGlyph :file="file" />
-              </span>
-              <div class="min-w-0">
-                <div class="flex items-center gap-1.5">
-                  <span
-                    class="truncate text-xs"
-                    :class="
-                      vault.selection.includes(file.id)
-                        ? 'text-base-content'
-                        : 'text-base-content/90'
-                    "
-                    :title="displayName(file)"
-                  >
-                    {{ displayName(file) }}
-                  </span>
-                  <Link16
-                    v-if="isPublic(file)"
-                    class="h-3 w-3 shrink-0 text-brass"
-                    title="Published by link"
-                  />
-                </div>
-                <div class="flex items-center gap-1.5 text-2xs text-faint">
-                  <span class="truncate">{{ poolName(file) }}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{{ modifiedLabel(file.updated_at) }}</span>
-                  <template v-if="!file.is_folder">
-                    <span class="sm:hidden" aria-hidden="true">·</span>
-                    <span class="sm:hidden">{{ formatBytes(file.object?.size) }}</span>
-                  </template>
-                </div>
+              <FileGlyph :file="file" />
+              <div class="flex min-w-0 items-center gap-1.5">
+                <span class="truncate text-[13px]" :title="displayName(file)">
+                  {{ displayName(file) }}
+                </span>
+                <Link16
+                  v-if="isPublic(file)"
+                  class="h-3 w-3 shrink-0 text-primary/70"
+                  title="Published by link"
+                />
               </div>
             </div>
           </td>
-          <td class="hidden text-2xs uppercase tracking-[0.06em] text-faint md:table-cell">
-            {{ kindLabel(file) }}
-          </td>
-          <td class="hidden pr-3 text-right text-2xs tabular-nums text-dim sm:table-cell">
+          <td class="hidden text-[12px] text-faint md:table-cell">{{ kindLabel(file) }}</td>
+          <td class="hidden pr-3 text-right text-[12px] tabular-nums text-dim sm:table-cell">
             {{ file.is_folder ? '—' : formatBytes(file.object?.size) }}
           </td>
           <td
-            class="hidden whitespace-nowrap pr-3 text-right text-2xs tabular-nums text-faint lg:table-cell"
+            class="hidden whitespace-nowrap pr-4 text-right text-[12px] tabular-nums text-faint lg:table-cell"
           >
             {{ modifiedLabel(file.updated_at) }}
           </td>

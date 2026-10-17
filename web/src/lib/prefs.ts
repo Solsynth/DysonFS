@@ -5,8 +5,8 @@ export type Theme = 'dark' | 'light'
 export const THEME_KEY = 'solarpass.theme'
 
 export const themeNames: Record<Theme, string> = {
-  dark: 'dyson',
-  light: 'dyson-light',
+  dark: 'snfs',
+  light: 'snfs-light',
 }
 
 function storage(): Storage | null {
