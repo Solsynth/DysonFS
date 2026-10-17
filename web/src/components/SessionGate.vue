@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { computed } from 'vue'
 import {
   ArrowRight16,
@@ -17,6 +18,7 @@ import { useUiStore } from '@/stores/ui'
 
 const session = useSessionStore()
 const ui = useUiStore()
+const { t } = useI18n()
 
 const state = computed(() => session.state)
 </script>
@@ -27,11 +29,11 @@ const state = computed(() => session.state)
   <div v-else class="relative flex h-dvh flex-col overflow-hidden bg-ink text-base-content">
     <header class="relative z-10 flex h-[52px] shrink-0 items-center gap-3 border-b border-line px-4">
       <BrandMark :size="21" />
-      <span class="text-[14px] font-semibold tracking-[-0.01em]">SnFS</span>
-      <span class="hidden text-[11px] text-faint sm:inline">Solar Network File System</span>
+      <span class="text-[14px] font-semibold tracking-[-0.01em]">{{ t('app.product') }}</span>
+      <span class="hidden text-[11px] text-faint sm:inline">{{ t('app.fullName') }}</span>
       <IconButton
         class="ml-auto"
-        :label="ui.isDark ? 'Switch to light theme' : 'Switch to dark theme'"
+        :label="ui.isDark ? t('app.switchToLight') : t('app.switchToDark')"
         @click="ui.toggleTheme()"
       >
         <Sun16 v-if="ui.isDark" />
@@ -49,42 +51,41 @@ const state = computed(() => session.state)
       >
         <div v-if="state === 'loading'" key="loading" class="w-full max-w-[380px]">
           <BrandMark :size="44" class="text-base-content" />
-          <h1 class="title mt-5 text-[22px]">SnFS</h1>
-          <p class="voice mt-1.5">Solar Network File System</p>
+          <h1 class="title mt-5 text-[22px]">{{ t('app.product') }}</h1>
+          <p class="voice mt-1.5">{{ t('app.fullName') }}</p>
           <div class="loading-scan mt-8 h-[2px] w-full bg-line-soft" />
-          <p class="mt-4 text-[11px] text-faint">Connecting to Solar Network…</p>
+          <p class="mt-4 text-[11px] text-faint">{{ t('session.connecting') }}</p>
         </div>
 
         <div v-else-if="state === 'signed-out'" key="signed-out" class="w-full max-w-[440px]">
           <span class="flex items-center gap-2 text-[11px] font-medium text-faint">
             <Login16 aria-hidden="true" />
-            Sign in required
+            {{ t('session.signInRequired') }}
           </span>
-          <h1 class="title mt-3 text-[30px] leading-[1.15]">Your files live here.</h1>
+          <h1 class="title mt-3 text-[30px] leading-[1.15]">{{ t('session.signInTitle') }}</h1>
           <p class="voice mt-3 max-w-[400px]">
-            SnFS reads your files through your Solar Network account. Sign in to open your drive,
-            or look around with sample files first.
+            {{ t('session.signInBody') }}
           </p>
 
           <div class="mt-7 flex flex-wrap items-center gap-2">
             <a :href="session.authUrl" class="btn btn-primary h-9">
-              Sign in with Solar Network
+              {{ t('session.signIn') }}
               <ArrowRight16 class="ml-0.5" />
             </a>
             <button class="btn btn-outline h-9" type="button" @click="session.startSample()">
               <FolderOpen16 />
-              Explore sample files
+              {{ t('session.sample') }}
             </button>
           </div>
 
           <dl class="mt-9 grid grid-cols-2 gap-5 border-t border-line pt-4 text-[11px]">
             <div>
-              <dt class="text-faint">Account</dt>
-              <dd class="mt-0.5 text-dim">Your Solar Network account</dd>
+              <dt class="text-faint">{{ t('session.account') }}</dt>
+              <dd class="mt-0.5 text-dim">{{ t('session.accountBody') }}</dd>
             </div>
             <div>
-              <dt class="text-faint">Sample mode</dt>
-              <dd class="mt-0.5 text-dim">Example files; nothing is saved</dd>
+              <dt class="text-faint">{{ t('session.sampleMode') }}</dt>
+              <dd class="mt-0.5 text-dim">{{ t('session.sampleModeBody') }}</dd>
             </div>
           </dl>
         </div>
@@ -94,25 +95,22 @@ const state = computed(() => session.state)
             <CloudOffline16 aria-hidden="true" />
             Storage unreachable
           </span>
-          <h1 class="title mt-3 text-[30px] leading-[1.15]">SnFS can’t reach the drive.</h1>
-          <p class="voice mt-3 max-w-[400px]">
-            Check your connection, then try again. You can also look around with sample files while
-            the connection recovers.
-          </p>
+          <h1 class="title mt-3 text-[30px] leading-[1.15]">{{ t('error.storageUnreachable') }}</h1>
+          <p class="voice mt-3 max-w-[400px]">{{ t('error.storageBody') }}</p>
 
           <div v-if="session.error" class="mt-5 rounded-lg bg-error/5 px-3.5 py-3">
-            <div class="text-[11px] font-medium text-error/80">Details</div>
+            <div class="text-[11px] font-medium text-error/80">{{ t('session.details') }}</div>
             <p class="mt-1.5 font-mono text-[11px] text-error">{{ session.error }}</p>
           </div>
 
           <div class="mt-7 flex flex-wrap items-center gap-2">
             <button class="btn btn-primary h-9" type="button" @click="session.retry()">
               <Renew16 />
-              Try again
+              {{ t('session.tryAgain') }}
             </button>
             <button class="btn btn-outline h-9" type="button" @click="session.startSample()">
               <FolderOpen16 />
-              Continue in sample mode
+              {{ t('session.continueSample') }}
             </button>
           </div>
         </div>
@@ -122,16 +120,16 @@ const state = computed(() => session.state)
     <footer
       class="relative z-10 flex h-8 shrink-0 items-center gap-2 border-t border-line px-4 text-[11px] text-faint"
     >
-      <span>SnFS</span>
+      <span>{{ t('app.product') }}</span>
       <span class="text-line" aria-hidden="true">/</span>
-      <span>Solar Network</span>
+      <span>{{ t('app.network') }}</span>
       <span class="ml-auto flex items-center gap-1.5">
         <span
           class="dot"
           :class="state === 'loading' ? 'bg-primary pulse-soft' : 'bg-error'"
           aria-hidden="true"
         />
-        {{ state === 'loading' ? 'Connecting' : 'Signed out' }}
+        {{ state === 'loading' ? t('session.connectingIndicator') : t('session.signedOut') }}
       </span>
     </footer>
   </div>

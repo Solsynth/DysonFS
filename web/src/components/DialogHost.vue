@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Close16, WarningAlt16 } from '@carbon/icons-vue'
 
 import CopyButton from './CopyButton.vue'
@@ -14,10 +15,11 @@ const ui = useUiStore()
 const vault = useVaultStore()
 
 const dialog = computed(() => ui.dialog)
+
+const { t } = useI18n()
 const folderName = ref('')
 const renameName = ref('')
 const destination = ref<string | null>(null)
-const destinationLabel = ref('My Drive')
 const folderInput = ref<HTMLInputElement | null>(null)
 const renameInput = ref<HTMLInputElement | null>(null)
 
@@ -37,24 +39,36 @@ const totalBytes = computed(() =>
 )
 const selectionLabel = computed(() => {
   const files = moveFiles.value
-  if (files.length === 1) return files[0]?.name ?? 'object'
-  return `${formatCount(files.length)} objects`
+  if (files.length === 1) return files[0]?.name ?? t('dialog.object')
+  return t('drive.manyItems', { n: formatCount(files.length) })
 })
 const confirmLabel = computed(() => {
   const files = confirmFiles.value
-  if (files.length === 1) return files[0]?.name ?? 'object'
-  return `${formatCount(files.length)} objects`
+  if (files.length === 1) return files[0]?.name ?? t('dialog.object')
+  return t('drive.manyItems', { n: formatCount(files.length) })
 })
 const confirmNoun = computed(() => {
   const files = confirmFiles.value
-  if (files.length === 1) return files[0]?.is_folder ? '1 folder' : '1 object'
-  const folders = files.filter((file) => file.is_folder).length
-  if (folders === files.length) return `${formatCount(files.length)} folders`
-  return `${formatCount(files.length)} objects`
+  const count = files.length
+  const key = files.every((file) => file.is_folder) ? 'dialog.nounFolder' : 'dialog.nounObject'
+  return t(key, { n: formatCount(count) }, count)
 })
-const confirmSize = computed(() =>
-  totalBytes.value > 0 ? ` totalling ${formatBytes(totalBytes.value)}` : '',
+const sizeClause = computed(() =>
+  totalBytes.value > 0
+    ? t('dialog.sizeClause', { size: formatBytes(totalBytes.value) })
+    : '',
 )
+const shortcutRows = computed<[string, string][]>(() => [
+  [t('shortcuts.palette'), '⌘ K'],
+  [t('shortcuts.dismiss'), 'Esc'],
+  [t('shortcuts.newFolder'), 'N'],
+  [t('shortcuts.upload'), 'U'],
+  [t('shortcuts.recycle'), 'Del'],
+  [t('shortcuts.open'), '↵'],
+  [t('shortcuts.rangeSelect'), 'Shift click'],
+  [t('shortcuts.toggleSelect'), '⌘ click'],
+  [t('shortcuts.moveCursor'), '↑ ↓'],
+])
 
 watch(
   dialog,
@@ -70,7 +84,6 @@ watch(
       renameInput.value?.select()
     } else if (value.kind === 'move') {
       destination.value = vault.folderId
-      destinationLabel.value = vault.crumbs.map((crumb) => crumb.name).join(' / ')
     }
   },
   { immediate: true },
@@ -83,7 +96,6 @@ function close() {
 
 function onDestination(payload: { id: string | null; path: string }) {
   destination.value = payload.id
-  destinationLabel.value = payload.path
 }
 
 async function submitFolder() {
@@ -169,34 +181,34 @@ async function toggleShare() {
           aria-modal="true"
           aria-labelledby="dialog-title"
         >
-          <IconButton class="absolute right-2 top-2 z-10" label="Close dialog" @click="close">
+          <IconButton class="absolute right-2 top-2 z-10" :label="t('dialog.close')" @click="close">
             <Close16 />
           </IconButton>
 
           <template v-if="dialog.kind === 'new-folder'">
             <form @submit.prevent="submitFolder">
               <div class="px-5 pb-4 pt-5">
-                <h2 id="dialog-title" class="title text-[18px] text-base-content">New folder</h2>
-                <p class="voice mt-1">It will appear in the current location.</p>
-                <label class="field-label mt-4">Folder name</label>
+                <h2 id="dialog-title" class="title text-[18px] text-base-content">{{ t('dialog.newFolder') }}</h2>
+                <p class="voice mt-1">{{ t('dialog.newFolderNote') }}</p>
+                <label class="field-label mt-4">{{ t('dialog.folderName') }}</label>
                 <input
                   ref="folderInput"
                   v-model="folderName"
                   class="input"
                   type="text"
-                  placeholder="e.g. orbital-8"
+                  :placeholder="t('dialog.folderPlaceholder')"
                   autocomplete="off"
                   maxlength="160"
                 />
               </div>
               <div class="flex justify-end gap-2 border-t border-line px-5 py-3">
-                <button class="btn btn-ghost btn-sm" type="button" @click="close">Cancel</button>
+                <button class="btn btn-ghost btn-sm" type="button" @click="close">{{ t('dialog.cancel') }}</button>
                 <button
                   class="btn btn-primary btn-sm"
                   type="submit"
                   :disabled="!folderName.trim() || busy"
                 >
-                  {{ busy ? 'Creating…' : 'Create folder' }}
+                  {{ busy ? t('dialog.creating') : t('dialog.create') }}
                 </button>
               </div>
             </form>
@@ -205,9 +217,9 @@ async function toggleShare() {
           <template v-else-if="dialog.kind === 'rename'">
             <form @submit.prevent="submitRename">
               <div class="px-5 pb-4 pt-5">
-                <h2 id="dialog-title" class="title text-[18px] text-base-content">Rename file</h2>
-                <p class="voice mt-1">Links and IDs survive the rename; the path changes.</p>
-                <label class="field-label mt-4">Name</label>
+                <h2 id="dialog-title" class="title text-[18px] text-base-content">{{ t('dialog.rename') }}</h2>
+                <p class="voice mt-1">{{ t('dialog.renameNote') }}</p>
+                <label class="field-label mt-4">{{ t('dialog.nameLabel') }}</label>
                 <input
                   ref="renameInput"
                   v-model="renameName"
@@ -218,13 +230,13 @@ async function toggleShare() {
                 />
               </div>
               <div class="flex justify-end gap-2 border-t border-line px-5 py-3">
-                <button class="btn btn-ghost btn-sm" type="button" @click="close">Cancel</button>
+                <button class="btn btn-ghost btn-sm" type="button" @click="close">{{ t('dialog.cancel') }}</button>
                 <button
                   class="btn btn-primary btn-sm"
                   type="submit"
                   :disabled="!renameName.trim() || renameName.trim() === renameFile?.name || busy"
                 >
-                  {{ busy ? 'Renaming…' : 'Rename' }}
+                  {{ busy ? t('dialog.renaming') : t('dialog.renameAction') }}
                 </button>
               </div>
             </form>
@@ -233,9 +245,9 @@ async function toggleShare() {
           <template v-else-if="dialog.kind === 'move'">
             <div class="px-5 pb-3 pt-5">
               <h2 id="dialog-title" class="title text-[18px] text-base-content">
-                Move {{ selectionLabel }}
+                {{ t('dialog.moveTitle', { selection: selectionLabel }) }}
               </h2>
-              <p class="voice mt-1">Choose a destination. The file keeps its identity.</p>
+              <p class="voice mt-1">{{ t('dialog.moveNote') }}</p>
             </div>
             <div class="px-5 pb-4">
               <FolderPicker
@@ -245,14 +257,14 @@ async function toggleShare() {
               />
             </div>
             <div class="flex justify-end gap-2 border-t border-line px-5 py-3">
-              <button class="btn btn-ghost btn-sm" type="button" @click="close">Cancel</button>
+              <button class="btn btn-ghost btn-sm" type="button" @click="close">{{ t('dialog.cancel') }}</button>
               <button
                 class="btn btn-primary btn-sm"
                 type="button"
                 :disabled="busy"
                 @click="submitMove"
               >
-                {{ busy ? 'Moving…' : 'Move here' }}
+                {{ busy ? t('dialog.moving') : t('dialog.moveHere') }}
               </button>
             </div>
           </template>
@@ -260,25 +272,25 @@ async function toggleShare() {
           <template v-else-if="dialog.kind === 'recycle'">
             <div class="px-5 py-5">
               <h2 id="dialog-title" class="title text-[18px] text-base-content">
-                Recycle {{ confirmLabel }}?
+                {{ t('dialog.recycleTitle', { selection: confirmLabel }) }}
               </h2>
               <p class="voice mt-1.5">
-                {{ confirmNoun }}{{ confirmSize }} will leave the drive. You can restore it from
-                the Recycle Bin until it is purged.
+                {{ t('dialog.recycleBody', { noun: confirmNoun, size: sizeClause }) }}
               </p>
               <div class="mt-3 rounded-lg bg-base-300/50 px-3 py-2 text-[11px] text-dim">
-                <span class="text-faint">Recovery</span> · available from the Recycle Bin
+                <span class="text-faint">{{ t('dialog.recoveryLabel') }}</span> ·
+                {{ t('dialog.recoveryNote') }}
               </div>
             </div>
             <div class="flex justify-end gap-2 border-t border-line px-5 py-3">
-              <button class="btn btn-ghost btn-sm" type="button" @click="close">Cancel</button>
+              <button class="btn btn-ghost btn-sm" type="button" @click="close">{{ t('dialog.cancel') }}</button>
               <button
                 class="btn btn-primary btn-sm"
                 type="button"
                 :disabled="busy"
                 @click="submitRecycle"
               >
-                {{ busy ? 'Recycling…' : 'Move to recycle' }}
+                {{ busy ? t('dialog.recycling') : t('dialog.moveToRecycle') }}
               </button>
             </div>
           </template>
@@ -286,27 +298,27 @@ async function toggleShare() {
           <template v-else-if="dialog.kind === 'purge'">
             <div class="px-5 py-5">
               <h2 id="dialog-title" class="title text-[18px] text-error">
-                Delete {{ confirmLabel }} forever?
+                {{ t('dialog.purgeTitle', { selection: confirmLabel }) }}
               </h2>
               <p class="voice mt-1.5">
-                {{ confirmNoun }}{{ confirmSize }} will be erased from storage and the index.
+                {{ t('dialog.purgeBody', { noun: confirmNoun, size: sizeClause }) }}
               </p>
               <div
                 class="mt-3 flex items-center gap-2 rounded-lg bg-error/10 px-3 py-2 text-[11px] text-error"
               >
                 <WarningAlt16 class="h-3.5 w-3.5 shrink-0" />
-                This can’t be undone.
+                {{ t('dialog.purgeWarning') }}
               </div>
             </div>
             <div class="flex justify-end gap-2 border-t border-line px-5 py-3">
-              <button class="btn btn-ghost btn-sm" type="button" @click="close">Cancel</button>
+              <button class="btn btn-ghost btn-sm" type="button" @click="close">{{ t('dialog.cancel') }}</button>
               <button
                 class="btn btn-error btn-sm"
                 type="button"
                 :disabled="busy"
                 @click="submitPurge"
               >
-                {{ busy ? 'Purging…' : 'Delete forever' }}
+                {{ busy ? t('dialog.purging') : t('preview.deleteForever') }}
               </button>
             </div>
           </template>
@@ -317,19 +329,19 @@ async function toggleShare() {
                 {{ shareFile?.name }}
               </h2>
               <p class="voice mt-1">
-                Anyone with the link can read this file. You can revoke the link at any time.
+                {{ t('dialog.shareNote') }}
               </p>
 
               <div
                 class="mt-4 flex items-center justify-between gap-3 rounded-lg bg-base-300/40 px-3.5 py-3"
               >
                 <div>
-                  <div class="text-[12px] text-base-content">Public link</div>
+                  <div class="text-[12px] text-base-content">{{ t('preview.publicLink') }}</div>
                   <div
                     class="mt-0.5 text-[11px]"
                     :class="shareIsPublic ? 'text-primary' : 'text-faint'"
                   >
-                    {{ shareIsPublic ? 'On' : 'Off' }}
+                    {{ shareIsPublic ? t('dialog.shareOn') : t('dialog.shareOff') }}
                   </div>
                 </div>
                 <button
@@ -353,34 +365,24 @@ async function toggleShare() {
                   :value="shareLink"
                   readonly
                   class="input h-8 min-w-0 flex-1 px-2.5 font-mono text-[11px] text-dim"
-                  aria-label="Public link"
+                  :aria-label="t('preview.publicLink')"
                   @focus="($event.target as HTMLInputElement).select()"
                 />
-                <CopyButton :value="shareLink" label="public link" />
+                <CopyButton :value="shareLink" label="publicLink" />
               </div>
             </div>
             <div class="flex justify-end gap-2 border-t border-line px-5 py-3">
-              <button class="btn btn-primary btn-sm" type="button" @click="close">Done</button>
+              <button class="btn btn-primary btn-sm" type="button" @click="close">{{ t('dialog.done') }}</button>
             </div>
           </template>
 
           <template v-else>
             <div class="px-5 py-5 pr-12">
-              <h2 id="dialog-title" class="title text-[18px] text-base-content">Keyboard shortcuts</h2>
-              <p class="voice mt-1">Everything here works without a pointer.</p>
+              <h2 id="dialog-title" class="title text-[18px] text-base-content">{{ t('shortcuts.title') }}</h2>
+              <p class="voice mt-1">{{ t('shortcuts.note') }}</p>
               <dl class="mt-4 divide-y divide-line-soft text-[11px]">
                 <div
-                  v-for="row in [
-                    ['Command palette', '⌘ K'],
-                    ['Close palette, dialog or inspector', 'Esc'],
-                    ['New folder', 'N'],
-                    ['Upload files', 'U'],
-                    ['Recycle selection', 'Del'],
-                    ['Open focused file', '↵'],
-                    ['Range select', 'Shift click'],
-                    ['Toggle selection', '⌘ click'],
-                    ['Move through list', '↑ ↓'],
-                  ]"
+                  v-for="row in shortcutRows"
                   :key="row[0]"
                   class="flex items-center justify-between gap-4 py-2"
                 >
@@ -392,7 +394,7 @@ async function toggleShare() {
               </dl>
             </div>
             <div class="flex justify-end border-t border-line px-5 py-3">
-              <button class="btn btn-primary btn-sm" type="button" @click="close">Close</button>
+              <button class="btn btn-primary btn-sm" type="button" @click="close">{{ t('dialog.close') }}</button>
             </div>
           </template>
         </div>

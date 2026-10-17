@@ -1,4 +1,5 @@
 import type { CloudFile } from './api/types'
+import { currentLocale, translate } from './i18n'
 
 const byteUnits = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 
@@ -24,7 +25,7 @@ export function formatQuotaMb(mb: number | null | undefined): string {
 
 export function formatCount(count: number | null | undefined): string {
   if (count === null || count === undefined) return '—'
-  return new Intl.NumberFormat('en-GB').format(count)
+  return new Intl.NumberFormat(currentLocale()).format(count)
 }
 
 export function percent(value: number, total: number): number {
@@ -53,13 +54,17 @@ export function titleCase(value: string): string {
   return value.replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
 }
 
+/**
+ * A short kind token for dense tables. An extension is a format identifier and
+ * stays as-is in every language; a folder or an unnamed blob is a word, so it
+ * follows the interface language.
+ */
 export function kindLabel(file: CloudFile): string {
-  if (file.is_folder) return 'FOLDER'
+  if (file.is_folder) return translate('label.folder')
   const extension = extensionOf(file.name)
   if (extension) return extension.toUpperCase()
-  const mime = file.object?.mime_type || ''
-  const subtype = mime.split('/')[1]
-  return subtype ? subtype.toUpperCase() : 'FILE'
+  const subtype = file.object?.mime_type.split('/')[1]
+  return subtype ? subtype.toUpperCase() : translate('label.file')
 }
 
 export function mimeOf(file: CloudFile): string {
@@ -108,30 +113,63 @@ export function shortId(id: string | null | undefined): string {
   return id.slice(0, 8)
 }
 
-const relative = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
-const dateStamp = new Intl.DateTimeFormat('en-GB', {
+// Formatters are built per locale and cached, because a `Intl` instance bakes
+// its locale in at construction and the console lets the operator switch
+// language without a reload.
+const formatters = new Map<string, Intl.DateTimeFormat | Intl.RelativeTimeFormat>()
+
+function cache<T extends Intl.DateTimeFormat | Intl.RelativeTimeFormat>(
+  key: string,
+  build: () => T,
+): T {
+  const existing = formatters.get(key)
+  if (existing) return existing as T
+  const made = build()
+  formatters.set(key, made)
+  return made
+}
+
+// English dates keep the console's day-month-year house style (`17 Oct 2026`)
+// rather than the US ordering `en` would give; Chinese takes its own region.
+function formatLocale(): string {
+  return currentLocale() === 'en' ? 'en-GB' : currentLocale()
+}
+
+function relativeFormatter(): Intl.RelativeTimeFormat {
+  return cache(`relative:${formatLocale()}`, () =>
+    new Intl.RelativeTimeFormat(formatLocale(), { numeric: 'auto' }),
+  )
+}
+
+function dateFormatter(key: string, options: Intl.DateTimeFormatOptions) {
+  return cache(`date:${key}:${formatLocale()}`, () =>
+    new Intl.DateTimeFormat(formatLocale(), options),
+  ) as Intl.DateTimeFormat
+}
+
+const STAMP: Intl.DateTimeFormatOptions = {
   day: '2-digit',
   month: 'short',
   year: 'numeric',
-})
-const dateShort = new Intl.DateTimeFormat('en-GB', {
+}
+const SHORT: Intl.DateTimeFormatOptions = {
   day: '2-digit',
   month: 'short',
   year: '2-digit',
-})
-const dateTime = new Intl.DateTimeFormat('en-GB', {
+}
+const DATE_TIME: Intl.DateTimeFormatOptions = {
   day: '2-digit',
   month: 'short',
   year: 'numeric',
   hour: '2-digit',
   minute: '2-digit',
   hour12: false,
-})
-const timeOnly = new Intl.DateTimeFormat('en-GB', {
+}
+const CLOCK: Intl.DateTimeFormatOptions = {
   hour: '2-digit',
   minute: '2-digit',
   hour12: false,
-})
+}
 
 function toDate(value: string | Date | null | undefined): Date | null {
   if (!value) return null
@@ -141,22 +179,22 @@ function toDate(value: string | Date | null | undefined): Date | null {
 
 export function formatDate(value: string | Date | null | undefined): string {
   const date = toDate(value)
-  return date ? dateStamp.format(date) : '—'
+  return date ? dateFormatter('stamp', STAMP).format(date) : '—'
 }
 
 export function formatDateTime(value: string | Date | null | undefined): string {
   const date = toDate(value)
-  return date ? dateTime.format(date).replace(',', '') : '—'
+  return date ? dateFormatter('time', DATE_TIME).format(date).replace(',', '') : '—'
 }
 
 export function formatTime(value: string | Date | null | undefined): string {
   const date = toDate(value)
-  return date ? timeOnly.format(date) : '—'
+  return date ? dateFormatter('clock', CLOCK).format(date) : '—'
 }
 
 export function formatShortDate(value: string | Date | null | undefined): string {
   const date = toDate(value)
-  return date ? dateShort.format(date) : '—'
+  return date ? dateFormatter('short', SHORT).format(date) : '—'
 }
 
 export function relativeTime(value: string | Date | null | undefined): string {
@@ -169,11 +207,11 @@ export function relativeTime(value: string | Date | null | undefined): string {
   const day = 24 * hour
 
   if (absolute < minute * 1.5) return 'just now'
-  if (absolute < hour) return relative.format(Math.round(delta / minute), 'minute')
-  if (absolute < day) return relative.format(Math.round(delta / hour), 'hour')
+  if (absolute < hour) return relativeFormatter().format(Math.round(delta / minute), 'minute')
+  if (absolute < day) return relativeFormatter().format(Math.round(delta / hour), 'hour')
 
   const days = Math.round(delta / day)
-  if (Math.abs(days) < 8) return relative.format(days, 'day')
+  if (Math.abs(days) < 8) return relativeFormatter().format(days, 'day')
   return formatShortDate(date)
 }
 
@@ -188,7 +226,9 @@ export function modifiedLabel(value: string | Date | null | undefined): string {
 export function fileTypeSummary(file: CloudFile): string {
   if (file.is_folder) {
     const count = file.children_count ?? 0
-    return count > 0 ? `${formatCount(count)} objects` : 'Folder'
+    return count > 0
+      ? translate('status.objectsCount', { n: formatCount(count) })
+      : translate('label.folder')
   }
   const mime = mimeOf(file)
   return mime
@@ -199,7 +239,7 @@ export function plural(count: number, singular: string, pluralForm?: string): st
 }
 
 export function displayName(file: CloudFile): string {
-  return file.name.trim() || 'Untitled'
+  return file.name.trim() || translate('label.untitled')
 }
 
 export function initialOf(name: string | null | undefined): string {

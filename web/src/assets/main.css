@@ -4,45 +4,47 @@
   themes: false;
 }
 
-/* SnFS — a quiet console for the Solar Network file system.
-   Ink ground, paper text, one periwinkle signal for anything actionable.
-   Capacity is a reading, not a decoration: it keeps the same signal color. */
+/* SnFS — the Solar Network file system console, drawn with the Solar Network
+   console design system (see Stargate/docs/design-system.md).
+   Ink-blue ground, cool paper text, periwinkle as the one signal color the
+   interface spends by default. Semantic color appears only when state needs
+   it; brass marks privilege and secondary emphasis. */
 @plugin 'daisyui/theme' {
   name: 'snfs';
   default: true;
   color-scheme: dark;
 
-  --color-base-100: #0b0e14;
-  --color-base-200: #12161f;
-  --color-base-300: #181d28;
-  --color-base-content: #e7eaf0;
+  --color-base-100: #0a0d16;
+  --color-base-200: #10141f;
+  --color-base-300: #171c2b;
+  --color-base-content: #ccd2e2;
 
-  --console-line: #242a36;
-  --console-line-soft: #1a1f29;
-  --console-faint: #717a8b;
-  --console-dim: #9ba4b4;
+  --console-line: #232a3c;
+  --console-line-soft: #1a2030;
+  --console-faint: #7d86a0;
+  --console-dim: #9aa3b8;
 
-  --color-primary: #aebaff;
-  --color-primary-content: #0b0e14;
-  --color-secondary: #8e97a8;
-  --color-secondary-content: #0b0e14;
-  --color-accent: #c9b391;
-  --color-accent-content: #0b0e14;
-  --color-neutral: #181d28;
-  --color-neutral-content: #b6bfcd;
+  --color-primary: #7577ba;
+  --color-primary-content: #0a0d16;
+  --color-secondary: #8f97b5;
+  --color-secondary-content: #0a0d16;
+  --color-accent: #c7b08a;
+  --color-accent-content: #0a0d16;
+  --color-neutral: #1c2233;
+  --color-neutral-content: #a8b0c7;
 
-  --color-info: #93a8c8;
-  --color-info-content: #0b0e14;
-  --color-success: #86b79b;
-  --color-success-content: #0b0e14;
-  --color-warning: #d2b17d;
-  --color-warning-content: #0b0e14;
-  --color-error: #d99389;
-  --color-error-content: #0b0e14;
+  --color-info: #8fa6c9;
+  --color-info-content: #0a0d16;
+  --color-success: #8db39a;
+  --color-success-content: #0a0d16;
+  --color-warning: #c7b08a;
+  --color-warning-content: #0a0d16;
+  --color-error: #c08579;
+  --color-error-content: #0a0d16;
 
-  --radius-selector: 0.375rem;
-  --radius-field: 0.5rem;
-  --radius-box: 0.75rem;
+  --radius-selector: 0.125rem;
+  --radius-field: 0.125rem;
+  --radius-box: 0.25rem;
   --size-selector: 0.25rem;
   --size-field: 0.25rem;
   --border: 1px;
@@ -50,43 +52,45 @@
   --noise: 0;
 }
 
-/* Daylight: cool paper, ink text, the same periwinkle signal. */
+/* Daylight console: cool paper, ink-blue text, the same periwinkle signal.
+   The palette is re-derived for a light field rather than inverted, so the
+   brass accent and semantic colors keep their contrast against paper. */
 @plugin 'daisyui/theme' {
   name: 'snfs-light';
   default: false;
   color-scheme: light;
 
-  --color-base-100: #f7f8fb;
-  --color-base-200: #ffffff;
-  --color-base-300: #eef1f6;
-  --color-base-content: #171b24;
+  --color-base-100: #f3f5fa;
+  --color-base-200: #eaeef6;
+  --color-base-300: #dee3ee;
+  --color-base-content: #1c2334;
 
-  --console-line: #dde2eb;
-  --console-line-soft: #e8ecf2;
-  --console-faint: #7b8495;
-  --console-dim: #525b6d;
+  --console-line: #ccd3e1;
+  --console-line-soft: #dee3ed;
+  --console-faint: #646e86;
+  --console-dim: #4d5770;
 
-  --color-primary: #4d5dd6;
-  --color-primary-content: #ffffff;
-  --color-secondary: #5c6577;
-  --color-secondary-content: #ffffff;
+  --color-primary: #54589f;
+  --color-primary-content: #f7f8fd;
+  --color-secondary: #5a6378;
+  --color-secondary-content: #f7f8fd;
   --color-accent: #8a6a3b;
-  --color-accent-content: #ffffff;
-  --color-neutral: #e9edf4;
-  --color-neutral-content: #2a3142;
+  --color-accent-content: #fdfbf6;
+  --color-neutral: #dbe0ea;
+  --color-neutral-content: #2a3145;
 
-  --color-info: #3d6488;
-  --color-info-content: #ffffff;
-  --color-success: #397052;
-  --color-success-content: #ffffff;
-  --color-warning: #8a6430;
-  --color-warning-content: #ffffff;
-  --color-error: #a85147;
-  --color-error-content: #ffffff;
+  --color-info: #3f678c;
+  --color-info-content: #f7fafd;
+  --color-success: #3d6d4f;
+  --color-success-content: #f6fbf7;
+  --color-warning: #8a6a3b;
+  --color-warning-content: #fdfbf6;
+  --color-error: #a4554a;
+  --color-error-content: #fdf8f7;
 
-  --radius-selector: 0.375rem;
-  --radius-field: 0.5rem;
-  --radius-box: 0.75rem;
+  --radius-selector: 0.125rem;
+  --radius-field: 0.125rem;
+  --radius-box: 0.25rem;
   --size-selector: 0.25rem;
   --size-field: 0.25rem;
   --border: 1px;
@@ -98,11 +102,15 @@
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
+  /* Console chrome colors resolve through the active daisyUI theme, so a
+     theme swap repaints borders and secondary text without duplicating
+     utilities. */
   --color-line: var(--console-line);
   --color-line-soft: var(--console-line-soft);
   --color-faint: var(--console-faint);
   --color-dim: var(--console-dim);
   --color-ink: var(--color-base-100);
+  --text-2xs: 0.6875rem;
 }
 
 @layer base {
@@ -115,19 +123,21 @@
     color-scheme: light;
   }
 
+  /* Machine data and chrome are set in mono; sans is reserved for the voice
+     (guidance, descriptions, empty states) and for display headings. */
   body {
-    @apply bg-base-100 font-sans text-[13.5px] leading-relaxed text-base-content antialiased;
+    @apply bg-base-100 font-mono text-[13px] leading-relaxed text-base-content antialiased;
     font-feature-settings: 'tnum' 1;
     overflow: hidden;
   }
 
   ::selection {
-    background: color-mix(in oklab, var(--color-primary) 28%, transparent);
+    background: color-mix(in oklab, var(--color-primary) 30%, transparent);
     color: var(--color-base-content);
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-primary);
+    outline: 1px solid var(--color-primary);
     outline-offset: 2px;
   }
 
@@ -136,15 +146,15 @@
   }
 
   ::-webkit-scrollbar {
-    width: 9px;
-    height: 9px;
+    width: 10px;
+    height: 10px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
     background: var(--color-line);
-    border: 2px solid var(--color-base-100);
+    border: 3px solid var(--color-base-100);
     border-radius: 99px;
   }
   ::-webkit-scrollbar-thumb:hover {
@@ -157,111 +167,46 @@
 }
 
 @layer components {
-  /* Explanation is set in the sans face; machine-printed data stays mono. */
-  .voice {
-    @apply font-sans text-[13px] leading-[1.6] text-dim;
+  .eyebrow {
+    @apply text-2xs uppercase tracking-[0.18em] text-faint;
   }
 
+  /* Human voice: guidance and empty states are set in the sans face, so
+     machine-printed data (mono) and explanation (sans) stay distinguishable. */
+  .voice {
+    @apply font-sans text-[13.5px] leading-relaxed text-dim;
+  }
+
+  .hairline {
+    @apply border-line;
+  }
+
+  /* Display face: page titles only, so the grotesque reads as a headline
+     rather than as body copy. */
   .title {
-    @apply font-sans font-semibold tracking-[-0.02em];
+    @apply font-sans font-medium tracking-[-0.015em];
   }
 
   .kbd {
-    @apply inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-[4px] bg-base-300 px-1 text-[10.5px] leading-none text-faint;
+    @apply inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-[2px] bg-base-300 px-1 text-2xs leading-none text-faint;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-[2px] border border-line px-1.5 py-0.5 text-2xs tracking-wide text-dim;
   }
 
   .dot {
-    @apply inline-block size-[5px] shrink-0 rounded-full;
+    @apply inline-block size-[6px] shrink-0 rounded-full;
   }
 
-  .btn {
-    @apply inline-flex h-8 min-h-8 items-center justify-center gap-2 rounded-lg border-0 px-3 font-sans text-[12.5px] font-medium tracking-normal;
-    box-shadow: none;
-    transition:
-      background-color 140ms ease,
-      color 140ms ease,
-      transform 140ms ease,
-      opacity 140ms ease;
+  .link-quiet {
+    @apply text-dim underline decoration-line underline-offset-4 transition-colors;
+  }
+  .link-quiet:hover {
+    @apply text-base-content decoration-faint;
   }
 
-  .btn:active:not(:disabled) {
-    transform: scale(0.985);
-  }
-
-  .btn-xs {
-    @apply h-7 min-h-7 px-2 text-[11.5px];
-  }
-
-  .btn-sm {
-    @apply h-8 min-h-8 px-3 text-[12.5px];
-  }
-
-  .btn-ghost {
-    @apply bg-transparent text-dim;
-  }
-
-  .btn-ghost:hover {
-    @apply bg-base-200 text-base-content;
-  }
-
-  .btn-primary {
-    @apply bg-primary text-primary-content;
-  }
-
-  .btn-primary:hover {
-    background: color-mix(in oklab, var(--color-primary) 88%, white);
-  }
-
-  .btn-outline {
-    @apply bg-transparent text-dim;
-    box-shadow: inset 0 0 0 1px var(--color-line);
-  }
-
-  .btn-outline:hover {
-    @apply bg-base-200 text-base-content;
-    box-shadow: inset 0 0 0 1px var(--color-faint);
-  }
-
-  .btn-error {
-    @apply bg-error/10 text-error;
-  }
-
-  .btn-error:hover {
-    @apply bg-error text-error-content;
-  }
-
-  input.input,
-  select.select,
-  textarea.textarea {
-    width: 100%;
-    height: 34px;
-    border-radius: 0.5rem;
-    border: 0;
-    background-color: var(--color-base-200);
-    color: var(--color-base-content);
-    font-family: var(--font-sans);
-    font-size: 13px;
-    box-shadow: none;
-    transition: box-shadow 140ms ease;
-  }
-
-  input.input:focus,
-  select.select:focus,
-  textarea.textarea:focus {
-    outline: none;
-    box-shadow: inset 0 0 0 1px var(--color-primary);
-  }
-
-  input.input::placeholder,
-  textarea.textarea::placeholder {
-    color: color-mix(in oklab, var(--color-faint) 82%, transparent);
-  }
-
-  .field-label {
-    @apply mb-1.5 block text-[11px] font-medium text-faint;
-  }
-
-  /* Data table: one hairline between rows, no frames. */
+  /* Terminal listing: no zebra, hairline rows, hover only tints the row. */
   .ledger {
     width: 100%;
     border-collapse: collapse;
@@ -272,8 +217,10 @@
     padding: 0 14px 8px 0;
     border-bottom: 1px solid var(--color-line);
     color: var(--color-faint);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
     white-space: nowrap;
   }
 
@@ -287,12 +234,24 @@
     border-bottom: 0;
   }
 
-  .ledger tbody tr {
-    transition: background-color 140ms ease;
-  }
-
   .ledger tbody tr:hover td {
     background: color-mix(in oklab, var(--color-base-200) 55%, transparent);
+  }
+
+  /* Full-bleed ledger: cancels the panel body's horizontal padding so row
+     hairlines meet the panel edge, while cell text keeps the panel rhythm. */
+  .table-bleed {
+    margin-inline: -1rem;
+  }
+
+  .table-bleed .ledger th:first-child,
+  .table-bleed .ledger td:first-child {
+    padding-left: 1rem;
+  }
+
+  .table-bleed .ledger th:last-child,
+  .table-bleed .ledger td:last-child {
+    padding-right: 1rem;
   }
 
   .ledger td:first-child,
@@ -306,7 +265,41 @@
     text-align: right;
   }
 
-  /* The mark is masked rather than drawn, so it follows the theme text color. */
+  .field-label {
+    @apply mb-1.5 block text-2xs uppercase tracking-[0.14em] text-faint;
+  }
+
+  /* daisyUI ships its own field colors at equal specificity, so the console's
+     field skin is element-qualified to win without !important. */
+  input.input,
+  select.select,
+  textarea.textarea {
+    width: 100%;
+    height: 2.5rem;
+    border-radius: 2px;
+    border-color: var(--color-line);
+    background-color: var(--color-base-200);
+    color: var(--color-base-content);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    box-shadow: none;
+  }
+
+  input.input:focus,
+  select.select:focus,
+  textarea.textarea:focus {
+    outline: 1px solid var(--color-primary);
+    outline-offset: 0;
+    border-color: var(--color-primary);
+  }
+
+  input.input::placeholder,
+  textarea.textarea::placeholder {
+    color: color-mix(in oklab, var(--color-faint) 75%, transparent);
+  }
+
+  /* The brand mark is masked rather than drawn, so it takes the theme's text
+     color: a white glyph would vanish on the light field. */
   .brand-mark {
     display: block;
     background-color: currentColor;
@@ -314,6 +307,26 @@
     mask: url('/icon-outline.svg') center / contain no-repeat;
   }
 
+  .btn {
+    @apply rounded-[2px] border-line font-mono text-xs font-medium tracking-[0.02em];
+    box-shadow: none;
+  }
+
+  .btn-ghost {
+    @apply text-dim;
+  }
+
+  .btn-ghost:hover {
+    @apply bg-base-300 text-base-content;
+  }
+
+  .btn-primary {
+    @apply border-primary;
+  }
+
+  .btn-error {
+    @apply border-error/60;
+  }
 }
 
 @layer utilities {
@@ -418,6 +431,21 @@
   animation: rise 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Tab strip: the tab body's arrival, and the height the strip settles to when
+   a tab is opened or closed. */
+.tab-enter-active,
+.tab-leave-active {
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.tab-enter-from,
+.tab-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -427,4 +455,16 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* daisyUI registers its component styles in a layer that comes after
+   `components`, so the console's field skin loses to `.input`'s
+   `width: clamp(3rem, 20rem, 100%)` (320px) and fields end up narrower than a
+   `w-full` button. Unlayered rules outrank every layer, which is the only way
+   to win without `!important`. */
+input.input,
+select.select,
+textarea.textarea {
+  inline-size: 100%;
+  width: 100%;
 }

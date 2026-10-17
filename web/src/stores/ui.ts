@@ -2,7 +2,17 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import type { CloudFile } from '@/lib/api/types'
-import { THEME_KEY, applyTheme, readTheme, type Theme } from '@/lib/prefs'
+import {
+  LOCALE_KEY,
+  THEME_KEY,
+  applyLocale,
+  applyTheme,
+  readLocale,
+  readTheme,
+  type Locale,
+  type Theme,
+} from '@/lib/prefs'
+import { i18n } from '@/lib/i18n'
 
 export type DialogState =
   | { kind: 'new-folder' }
@@ -19,6 +29,7 @@ export const useUiStore = defineStore('ui', () => {
   const paletteOpen = ref(false)
   const dialog = ref<DialogState>(null)
   const theme = ref<Theme>(readTheme())
+  const locale = ref<Locale>(readLocale())
 
   const isDark = computed(() => theme.value === 'dark')
 
@@ -30,6 +41,14 @@ export const useUiStore = defineStore('ui', () => {
 
   function toggleTheme() {
     setTheme(theme.value === 'dark' ? 'light' : 'dark')
+  }
+
+  function setLocale(next: Locale) {
+    if (next === locale.value) return
+    locale.value = next
+    i18n.global.locale.value = next
+    applyLocale(next)
+    localStorage.setItem(LOCALE_KEY, next)
   }
 
   function openDialog(next: Exclude<DialogState, null>) {
@@ -47,9 +66,11 @@ export const useUiStore = defineStore('ui', () => {
     paletteOpen,
     dialog,
     theme,
+    locale,
     isDark,
     setTheme,
     toggleTheme,
+    setLocale,
     openDialog,
     closeDialog,
     toggleSidebar,

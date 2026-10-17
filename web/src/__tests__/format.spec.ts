@@ -66,7 +66,9 @@ describe('names and kinds', () => {
   })
 
   it('labels folders, extensions and mime-only files', () => {
-    expect(kindLabel(file({ name: 'Orbital 7', is_folder: true }))).toBe('FOLDER')
+    // A folder has no format identifier, so its kind is a word from the
+    // catalog and follows the interface language; extensions stay as-is.
+    expect(kindLabel(file({ name: 'Orbital 7', is_folder: true }))).toBe('Folder')
     expect(kindLabel(file({ name: 'pass-042.csv' }))).toBe('CSV')
     expect(
       kindLabel(

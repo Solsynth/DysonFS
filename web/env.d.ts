@@ -4,8 +4,10 @@ declare module '@carbon/icons-vue' {
   import type { Component } from 'vue'
   export const Archive16: Component
   export const ArrowDown16: Component
+  export const ArrowLeft16: Component
   export const ArrowRight16: Component
   export const ArrowUp16: Component
+  export const Catalog16: Component
   export const Checkmark16: Component
   export const ChevronDown16: Component
   export const ChevronRight16: Component
@@ -39,6 +41,7 @@ declare module '@carbon/icons-vue' {
   export const Move16: Component
   export const Moon16: Component
   export const Music16: Component
+  export const OpenPanelLeft16: Component
   export const PresentationFile16: Component
   export const Renew16: Component
   export const Search16: Component
@@ -46,6 +49,8 @@ declare module '@carbon/icons-vue' {
   export const SidePanelOpen16: Component
   export const StoragePool16: Component
   export const Sun16: Component
+  export const TableSplit16: Component
+  export const TextAlignLeft16: Component
   export const TimePlot16: Component
   export const TrashCan16: Component
   export const Undo16: Component

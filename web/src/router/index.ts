@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 declare module 'vue-router' {
   interface RouteMeta {
-    mode?: 'drive' | 'unindexed' | 'recycle'
+    mode?: 'drive' | 'unindexed' | 'recycle' | 'preview' | 'storage'
     title?: string
   }
 }
@@ -36,10 +36,18 @@ const router = createRouter({
       meta: { mode: 'recycle', title: 'Recycle Bin' },
     },
     {
+      // Preview is a tab of its own: the file's bytes are the tab's content,
+      // so several files can be read side by side.
+      path: '/file/:id',
+      name: 'preview',
+      component: () => import('@/views/PreviewView.vue'),
+      meta: { mode: 'preview', title: 'Preview' },
+    },
+    {
       path: '/storage',
       name: 'storage',
       component: () => import('@/views/StorageView.vue'),
-      meta: { title: 'Storage' },
+      meta: { mode: 'storage', title: 'Storage' },
     },
     { path: '/:pathMatch(.*)*', redirect: '/drive' },
   ],

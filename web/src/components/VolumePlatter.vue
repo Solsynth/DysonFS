@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { formatBytes } from '@/lib/format'
 import { useVaultStore } from '@/stores/vault'
@@ -10,8 +11,11 @@ const props = withDefaults(
     legend?: boolean
     caption?: string
   }>(),
-  { size: 'md', legend: true, caption: 'volume a' },
+  { size: 'md', legend: true },
 )
+
+const { t } = useI18n()
+const volumeCaption = computed(() => props.caption ?? t('storage.used'))
 
 const vault = useVaultStore()
 
@@ -49,7 +53,12 @@ const axis = computed(() => vault.usedFraction > 0.86)
         viewBox="0 0 120 120"
         class="h-full w-full -rotate-90"
         role="img"
-        :aria-label="`${caption}: ${displayPercent}% of quota used, ${formatBytes(vault.usedBytes)} of ${formatBytes(vault.quotaBytes)}`"
+        :aria-label="
+          `${volumeCaption}: ${t('status.usedOfQuota', {
+            used: formatBytes(vault.usedBytes),
+            quota: formatBytes(vault.quotaBytes),
+          })}`
+        "
       >
         <circle
           cx="60"
@@ -74,7 +83,7 @@ const axis = computed(() => vault.usedFraction > 0.86)
       </svg>
 
       <div class="absolute inset-0 flex flex-col items-center justify-center text-center">
-        <span class="text-[11px] text-faint">{{ hasQuota ? caption : 'No quota' }}</span>
+        <span class="text-[11px] text-faint">{{ hasQuota ? volumeCaption : t('storage.noQuota') }}</span>
         <div
           class="title mt-1.5 tabular-nums"
           :class="[percentClass, axis ? 'text-error' : 'text-base-content']"
@@ -83,23 +92,23 @@ const axis = computed(() => vault.usedFraction > 0.86)
           }}<span v-if="hasQuota" class="text-[0.46em] font-normal text-dim">%</span>
         </div>
         <span v-if="size !== 'sm'" class="mt-2 text-[11px] tabular-nums text-faint">
-          {{ formatBytes(vault.usedBytes) }} of {{ formatBytes(vault.quotaBytes) }}
+          {{ t('status.usedOfQuota', { used: formatBytes(vault.usedBytes), quota: formatBytes(vault.quotaBytes) }) }}
         </span>
         <span v-else class="mt-1 text-[11px] tabular-nums text-faint">
-          {{ formatBytes(vault.usedBytes) }} used
+          {{ t('storage.usedAmount', { size: formatBytes(vault.usedBytes) }) }}
         </span>
       </div>
     </div>
 
     <div v-if="legend" class="grid w-full grid-cols-2 gap-4">
       <div>
-        <div class="text-[11px] text-faint">Used</div>
+        <div class="text-[11px] text-faint">{{ t('storage.used') }}</div>
         <div class="mt-0.5 text-[12px] tabular-nums text-base-content">
           {{ formatBytes(vault.usedBytes) }}
         </div>
       </div>
       <div class="text-right">
-        <div class="text-[11px] text-faint">Free</div>
+        <div class="text-[11px] text-faint">{{ t('storage.free') }}</div>
         <div class="mt-0.5 text-[12px] tabular-nums text-dim">
           {{ formatBytes(vault.remainingBytes) }}
         </div>

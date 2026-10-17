@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   Checkmark16,
   ChevronDown16,
@@ -10,19 +11,24 @@ import {
 } from '@carbon/icons-vue'
 
 import IconButton from './IconButton.vue'
-import { formatBytes } from '@/lib/format'
+import { formatBytes, formatCount } from '@/lib/format'
 import { useUploadStore } from '@/stores/upload'
 
 const uploads = useUploadStore()
 
+const { t } = useI18n()
+
 const visible = computed(() => uploads.tasks.length > 0)
 const summary = computed(() => {
   if (uploads.activeCount > 0) {
-    return `${uploads.activeCount} in flight · ${uploads.overallProgress}%`
+    return t('transfers.inFlight', {
+      n: formatCount(uploads.activeCount),
+      percent: uploads.overallProgress,
+    })
   }
   const failed = uploads.tasks.filter((task) => task.status === 'error').length
-  if (failed > 0) return `${failed} failed`
-  return 'All complete'
+  if (failed > 0) return t('transfers.failed', { n: formatCount(failed) })
+  return t('transfers.allComplete')
 })
 
 function toggle() {
@@ -30,11 +36,11 @@ function toggle() {
 }
 
 function statusLabel(status: string, progress: number): string {
-  if (status === 'queued') return 'Queued'
+  if (status === 'queued') return t('transfers.queued')
   if (status === 'uploading') return `${progress}%`
-  if (status === 'done') return 'Complete'
-  if (status === 'cancelled') return 'Cancelled'
-  return 'Failed'
+  if (status === 'done') return t('transfers.done')
+  if (status === 'cancelled') return t('transfers.cancelled')
+  return t('transfers.failedOne')
 }
 </script>
 
@@ -48,7 +54,7 @@ function statusLabel(status: string, progress: number): string {
     <section
       v-if="visible"
       class="fixed bottom-11 right-3 z-50 w-[340px] max-w-[calc(100vw-24px)] rounded-xl bg-base-200 shadow-2xl"
-      aria-label="Transfers"
+      :aria-label="t('transfers.aria')"
     >
       <button
         type="button"
@@ -57,7 +63,7 @@ function statusLabel(status: string, progress: number): string {
         @click="toggle"
       >
         <Upload16 class="h-3.5 w-3.5 text-faint" />
-        <span class="text-[11px] font-medium text-faint">Transfers</span>
+        <span class="text-[11px] font-medium text-faint">{{ t('transfers.title') }}</span>
         <span class="text-[11px] text-faint">{{ summary }}</span>
         <span class="ml-auto text-[11px] tabular-nums text-dim">
           {{ uploads.finished.length + uploads.activeCount }}
@@ -102,12 +108,12 @@ function statusLabel(status: string, progress: number): string {
               <IconButton
                 v-if="task.status === 'uploading' || task.status === 'queued'"
                 tone="danger"
-                :label="`Cancel ${task.name}`"
+                :label="t('transfers.cancel', { name: task.name })"
                 @click="uploads.cancel(task.id)"
               >
                 <Close16 class="h-3.5 w-3.5" />
               </IconButton>
-              <IconButton v-else :label="`Dismiss ${task.name}`" @click="uploads.dismiss(task.id)">
+              <IconButton v-else :label="t('transfers.dismiss', { name: task.name })" @click="uploads.dismiss(task.id)">
                 <Close16 class="h-3.5 w-3.5" />
               </IconButton>
             </div>
@@ -133,13 +139,13 @@ function statusLabel(status: string, progress: number): string {
         </ul>
 
         <div class="flex items-center justify-between border-t border-line px-3 py-2">
-          <span class="text-[11px] text-faint">Uploads to this folder</span>
+          <span class="text-[11px] text-faint">{{ t('transfers.target') }}</span>
           <button
             type="button"
             class="text-[11px] text-faint transition-colors hover:text-base-content"
             @click="uploads.clearFinished()"
           >
-            Clear finished
+            {{ t('transfers.clearFinished') }}
           </button>
         </div>
       </template>

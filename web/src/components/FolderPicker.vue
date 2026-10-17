@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ChevronRight16, Folder16 } from '@carbon/icons-vue'
 
 import type { CloudFile } from '@/lib/api/types'
@@ -18,13 +19,15 @@ const props = withDefaults(
   { initialId: null, exclude: () => [] },
 )
 
+
+const { t } = useI18n()
 const emit = defineEmits<{
   change: [payload: { id: string | null; path: string }]
 }>()
 
 const vault = useVaultStore()
 
-const path = ref<Crumb[]>([{ id: null, name: 'My Drive' }])
+const path = ref<Crumb[]>([{ id: null, name: t('nav.drive') }])
 const folders = ref<CloudFile[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -37,7 +40,7 @@ function initialPath(): Crumb[] {
   if (props.initialId && vault.folderId === props.initialId && vault.crumbs.length > 1) {
     return vault.crumbs.map((crumb) => ({ id: crumb.id, name: crumb.name }))
   }
-  return [{ id: null, name: 'My Drive' }]
+  return [{ id: null, name: t('nav.drive') }]
 }
 
 onMounted(() => {
@@ -51,7 +54,7 @@ async function load() {
     const list = await vault.listFolders(currentId.value)
     folders.value = list.filter((folder) => !props.exclude.includes(folder.id))
   } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : 'The folder list was unreadable.'
+    error.value = caught instanceof Error ? caught.message : t('error.loadFolderBody')
     folders.value = []
   } finally {
     loading.value = false
@@ -81,7 +84,7 @@ function jump(index: number) {
   <div class="rounded-lg bg-base-200/60">
     <div
       class="flex flex-wrap items-center gap-1 border-b border-line px-3 py-2 text-[11px]"
-      aria-label="Destination"
+      :aria-label="t('folderPicker.aria')"
     >
       <template v-for="(crumb, index) in path" :key="crumb.id ?? 'root'">
         <span v-if="index > 0" class="text-line" aria-hidden="true">/</span>
@@ -107,8 +110,8 @@ function jump(index: number) {
 
       <div v-else-if="folders.length === 0" class="px-3 py-8 text-center">
         <Folder16 class="mx-auto h-5 w-5 text-faint" />
-        <p class="mt-2 text-[11px] text-faint">No folders under here.</p>
-        <p class="mt-0.5 text-[11px] text-faint">You can still move files to this location.</p>
+        <p class="mt-2 text-[11px] text-faint">{{ t('folderPicker.noFolders') }}</p>
+        <p class="mt-0.5 text-[11px] text-faint">{{ t('folderPicker.noFoldersHint') }}</p>
       </div>
 
       <template v-else>
@@ -130,9 +133,9 @@ function jump(index: number) {
     <div
       class="flex items-center justify-between gap-2 border-t border-line px-3 py-1.5 text-[11px]"
     >
-      <span class="truncate text-faint">Destination · {{ pathLabel }}</span>
+      <span class="truncate text-faint">{{ t('folderPicker.destination', { path: pathLabel }) }}</span>
       <span :class="canMoveHere ? 'text-success' : 'text-error'">
-        {{ canMoveHere ? 'Writable' : 'Unavailable' }}
+        {{ canMoveHere ? t('folderPicker.writable') : t('folderPicker.unavailable') }}
       </span>
     </div>
   </div>

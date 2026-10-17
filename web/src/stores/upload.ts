@@ -7,6 +7,7 @@ import { formatCount } from '@/lib/format'
 
 import { useNoticeStore } from './notice'
 import { useVaultStore } from './vault'
+import { translate } from '@/lib/i18n'
 
 export type UploadStatus = 'queued' | 'uploading' | 'done' | 'error' | 'cancelled'
 
@@ -84,8 +85,8 @@ export const useUploadStore = defineStore('upload', () => {
     collapsed.value = false
     notice.info(
       accepted.length === 1
-        ? `${accepted[0]!.name} queued to upload.`
-        : `${formatCount(accepted.length)} files queued to upload.`,
+        ? translate('notice.oneQueued', { name: accepted[0]!.name })
+        : translate('notice.manyQueued', { n: formatCount(accepted.length) }),
     )
     pump()
   }
@@ -115,7 +116,7 @@ export const useUploadStore = defineStore('upload', () => {
         onProgress: (percent) => update(id, { progress: percent }),
       })
       update(id, { status: 'done', progress: 100 })
-      notice.ok(`${file.name} uploaded.`)
+      notice.ok(translate('notice.oneUploaded', { name: file.name }))
       await Promise.all([vault.load(), vault.loadVolume()])
     } catch (caught) {
       if (controller.signal.aborted) {
@@ -124,7 +125,7 @@ export const useUploadStore = defineStore('upload', () => {
       }
       const message = caught instanceof Error ? caught.message : 'The transfer failed.'
       update(id, { status: 'error', error: message })
-      notice.error(`${file.name}: ${message}`)
+      notice.error(translate('notice.uploadFailed', { name: file.name, message }))
     } finally {
       controllers.delete(id)
       files.delete(id)
@@ -164,7 +165,7 @@ export const useUploadStore = defineStore('upload', () => {
         const file = list[index]
         if (file) sampleUpload(file, parentId)
       })
-      notice.info('Sample upload complete. Nothing was saved.')
+      notice.info(translate('notice.sampleUpload'))
       void vault.load()
     }
     sampleTimer = window.setTimeout(advance, 180)

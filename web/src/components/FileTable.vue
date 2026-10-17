@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { Link16 } from '@carbon/icons-vue'
 
 import FileGlyph from './FileGlyph.vue'
 import type { CloudFile } from '@/lib/api/types'
-import { openUrl } from '@/lib/api/drive'
 import { displayName, formatBytes, kindLabel, modifiedLabel } from '@/lib/format'
+import { useFileOpener } from '@/lib/opening'
 import { useVaultStore } from '@/stores/vault'
 
 const vault = useVaultStore()
-const router = useRouter()
+const opener = useFileOpener()
+const { t } = useI18n()
 
 const allSelected = computed(
   () => vault.items.length > 0 && vault.selection.length === vault.items.length,
@@ -23,25 +24,8 @@ function isPublic(file: CloudFile): boolean {
   return file.permission_status?.visibility === 'public'
 }
 
-function onClick(event: MouseEvent, file: CloudFile) {
-  const target = event.target as HTMLElement | null
-  if (target?.closest('input, button, a')) return
-  vault.select(file.id, {
-    toggle: event.metaKey || event.ctrlKey,
-    range: event.shiftKey,
-  })
-}
-
 function open(file: CloudFile) {
-  if (file.is_folder) {
-    void router.push({ name: 'folder', params: { id: file.id } })
-    return
-  }
-  if (vault.sample) {
-    vault.inspect(file.id)
-    return
-  }
-  window.open(openUrl(file.id), '_blank', 'noopener')
+  opener.open(file)
 }
 
 function onKeydown(event: KeyboardEvent, file: CloudFile) {
@@ -52,7 +36,7 @@ function onKeydown(event: KeyboardEvent, file: CloudFile) {
   }
   if (event.key === ' ') {
     event.preventDefault()
-    vault.select(file.id, { toggle: event.metaKey || event.ctrlKey })
+    vault.toggle(file.id)
     return
   }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -89,14 +73,14 @@ function sortState(key: 'name' | 'size' | 'date') {
       <thead class="sticky top-0 z-10 bg-ink">
         <tr class="text-[11px] font-medium text-faint">
           <th scope="col" class="w-10 pl-4 pr-1 text-left">
-            <span class="sr-only">Select</span>
+            <span class="sr-only">{{ t('drive.selectColumn') }}</span>
             <input
               type="checkbox"
               class="checkbox checkbox-xs rounded-[4px]"
               :checked="allSelected"
               :indeterminate.prop="someSelected"
               :disabled="vault.items.length === 0"
-              aria-label="Select all objects"
+              :aria-label="t('drive.selectAllObjects')"
               @change="toggleAll"
             />
           </th>
@@ -107,11 +91,11 @@ function sortState(key: 'name' | 'size' | 'date') {
               :class="vault.order === 'name' ? 'text-base-content' : ''"
               @click="sortBy('name')"
             >
-              Name
+              {{ t('drive.sortName') }}
               <span v-if="indicator('name')" class="text-primary">{{ indicator('name') }}</span>
             </button>
           </th>
-          <th scope="col" class="hidden w-[100px] text-left md:table-cell">Kind</th>
+          <th scope="col" class="hidden w-[100px] text-left md:table-cell">{{ t('meta.kind') }}</th>
           <th
             scope="col"
             class="hidden w-[92px] pr-3 text-right sm:table-cell"
@@ -123,7 +107,7 @@ function sortState(key: 'name' | 'size' | 'date') {
               :class="vault.order === 'size' ? 'text-base-content' : ''"
               @click="sortBy('size')"
             >
-              Size
+              {{ t('drive.sortSize') }}
               <span v-if="indicator('size')" class="text-primary">{{ indicator('size') }}</span>
             </button>
           </th>
@@ -138,7 +122,7 @@ function sortState(key: 'name' | 'size' | 'date') {
               :class="vault.order === 'date' ? 'text-base-content' : ''"
               @click="sortBy('date')"
             >
-              Modified
+              {{ t('meta.modified') }}
               <span v-if="indicator('date')" class="text-primary">{{ indicator('date') }}</span>
             </button>
           </th>
@@ -177,22 +161,21 @@ function sortState(key: 'name' | 'size' | 'date') {
           "
           :style="{ animationDelay: `${Math.min(index, 12) * 16}ms` }"
           :aria-selected="vault.selection.includes(file.id)"
-          @click="onClick($event, file)"
-          @dblclick="open(file)"
+          @click="open(file)"
           @keydown="onKeydown($event, file)"
         >
           <td class="pl-4 pr-1">
             <input
               type="checkbox"
-              class="checkbox checkbox-xs rounded-[4px] transition-opacity duration-150"
+              class="checkbox checkbox-xs rounded-[2px] transition-opacity duration-150"
               :class="
                 vault.selection.includes(file.id)
                   ? 'opacity-100'
                   : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
               "
               :checked="vault.selection.includes(file.id)"
-              :aria-label="`Select ${file.name}`"
-              @change="vault.select(file.id, { toggle: true })"
+              :aria-label="t('drive.selectObject', { name: displayName(file) })"
+              @change="vault.toggle(file.id, ($event as MouseEvent).shiftKey)"
               @click.stop
             />
           </td>
@@ -206,7 +189,7 @@ function sortState(key: 'name' | 'size' | 'date') {
                 <Link16
                   v-if="isPublic(file)"
                   class="h-3 w-3 shrink-0 text-primary/70"
-                  title="Published by link"
+                  :title="t('drive.publishedByLink')"
                 />
               </div>
             </div>

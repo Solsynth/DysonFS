@@ -41,8 +41,19 @@ export function isSampleData(): boolean {
   if (demoActive) return true
   if (import.meta.env.VITE_DEMO === '1') return true
   try {
-    if (new URLSearchParams(window.location.search).get('demo') === '1') return true
-    return sessionStorage.getItem(STORAGE_KEY) === '1'
+    if (sessionStorage.getItem(STORAGE_KEY) === '1') {
+      demoActive = true
+      return true
+    }
+    // `?demo=1` is how the console is usually tried out, but the query string
+    // is gone the moment the operator opens a folder. Latch it on first sight
+    // so sample mode survives in-app navigation.
+    if (new URLSearchParams(window.location.search).get('demo') === '1') {
+      sessionStorage.setItem(STORAGE_KEY, '1')
+      demoActive = true
+      return true
+    }
+    return false
   } catch {
     return false
   }

@@ -118,7 +118,7 @@ export interface AccountIdentity {
 
 export type FileOrder = 'date' | 'name' | 'size'
 export type KindFilter = 'all' | 'folders' | 'files'
-export type ViewMode = 'list' | 'grid'
+export type ViewMode = 'list' | 'grid' | 'column' | 'waterfall'
 
 export interface ListQuery {
   offset?: number

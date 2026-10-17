@@ -33,6 +33,7 @@ import {
   sampleUsage,
 } from '@/lib/demo'
 import { formatCount, formatBytes } from '@/lib/format'
+import { translate } from '@/lib/i18n'
 
 import { useNoticeStore } from './notice'
 
@@ -43,17 +44,20 @@ export interface Crumb {
   name: string
 }
 
-const VIEW_KEY = 'snfs:view'
+const VIEW_KEY = 'snfs.view'
 const MiB = 1024 * 1024
 
-interface SelectionOptions {
-  toggle?: boolean
-  range?: boolean
+const VIEW_MODES: Record<ViewMode, true> = {
+  list: true,
+  grid: true,
+  column: true,
+  waterfall: true,
 }
 
 function readView(): ViewMode {
   try {
-    return localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list'
+    const stored = localStorage.getItem(VIEW_KEY) as ViewMode | null
+    return stored && VIEW_MODES[stored] ? stored : 'list'
   } catch {
     return 'list'
   }
@@ -62,11 +66,11 @@ function readView(): ViewMode {
 function errorMessage(caught: unknown): string {
   if (caught instanceof DriveError) {
     if (caught.status === 0) return caught.message
-    if (caught.status === 403) return 'This account cannot do that to this file.'
+    if (caught.status === 403) return translate('notice.forbidden')
     return caught.message
   }
   if (caught instanceof Error) return caught.message
-  return 'The drive did not answer.'
+  return translate('notice.noAnswer')
 }
 
 function arrangeFoldersFirst(items: CloudFile[]): CloudFile[] {
@@ -90,7 +94,7 @@ export const useVaultStore = defineStore('vault', () => {
   const mode = ref<BrowsingMode>('drive')
   const folderId = ref<string | null>(null)
   const folder = ref<CloudFile | null>(null)
-  const crumbs = ref<Crumb[]>([{ id: null, name: 'My Drive' }])
+  const crumbs = ref<Crumb[]>([{ id: null, name: translate('nav.drive') }])
 
   const items = ref<CloudFile[]>([])
   const total = ref(0)
@@ -106,9 +110,11 @@ export const useVaultStore = defineStore('vault', () => {
   const poolFilter = ref<string | null>(null)
   const viewMode = ref<ViewMode>(readView())
 
+  // Selection is the checkbox's business alone; activating an object is a
+  // separate gesture that opens a tab.
   const selection = ref<string[]>([])
-  const inspectedId = ref<string | null>(null)
-  const inspectorOpen = ref(false)
+  /** The file whose tab is active: what the inspector and preview describe. */
+  const previewFile = ref<CloudFile | null>(null)
   let lastSelected: string | null = null
   let searchTimer: number | undefined
   let loadSeq = 0
@@ -151,12 +157,8 @@ export const useVaultStore = defineStore('vault', () => {
     const ids = new Set(selection.value)
     return items.value.filter((item) => ids.has(item.id))
   })
-  const primarySelected = computed(() => {
-    if (selection.value.length === 0) return null
-    return (
-      items.value.find((item) => item.id === inspectedId.value) ?? selectedItems.value[0] ?? null
-    )
-  })
+  const selectionCount = computed(() => selection.value.length)
+
   const selectedBytes = computed(() =>
     selectedItems.value.reduce((sum, item) => sum + (item.object?.size ?? 0), 0),
   )
@@ -167,12 +169,17 @@ export const useVaultStore = defineStore('vault', () => {
   const isEmpty = computed(() => !loading.value && !error.value && items.value.length === 0)
   const hasMore = computed(() => items.value.length < total.value)
   const showingLabel = computed(() => {
-    if (loading.value) return 'Reading…'
-    if (total.value === 0) return 'No objects'
+    if (loading.value) return translate('status.reading')
+    if (total.value === 0) return translate('status.noObjects')
     if (items.value.length < total.value) {
-      return `${formatCount(items.value.length)} of ${formatCount(total.value)}`
+      return translate('status.objectsOf', {
+        shown: formatCount(items.value.length),
+        total: formatCount(total.value),
+      })
     }
-    return `${formatCount(total.value)} ${total.value === 1 ? 'object' : 'objects'}`
+    return translate(total.value === 1 ? 'status.oneObject' : 'status.objectsCount', {
+      n: formatCount(total.value),
+    })
   })
 
   function storeView(next: ViewMode) {
@@ -184,78 +191,51 @@ export const useVaultStore = defineStore('vault', () => {
     }
   }
 
-  function toggleView() {
-    storeView(viewMode.value === 'list' ? 'grid' : 'list')
+  const VIEW_CYCLE: ViewMode[] = ['list', 'grid', 'column', 'waterfall']
+
+  function cycleView() {
+    const index = VIEW_CYCLE.indexOf(viewMode.value)
+    storeView(VIEW_CYCLE[(index + 1) % VIEW_CYCLE.length] ?? 'list')
   }
 
   function clearSelection() {
     selection.value = []
-    inspectedId.value = null
-    inspectorOpen.value = false
     lastSelected = null
   }
 
-  function select(id: string, options: SelectionOptions = {}) {
-    const item = items.value.find((entry) => entry.id === id)
-    if (!item) return
-
-    if (options.range && lastSelected) {
+  /** Ticks or unticks one checkbox. Shift extends the range from the anchor. */
+  function toggle(id: string, range = false) {
+    if (range && lastSelected) {
       const ids = items.value.map((entry) => entry.id)
       const from = ids.indexOf(lastSelected)
       const to = ids.indexOf(id)
       if (from >= 0 && to >= 0) {
         const [start, end] = from < to ? [from, to] : [to, from]
         selection.value = ids.slice(start, end + 1)
-        inspectedId.value = id
-        inspectorOpen.value = true
         return
       }
     }
 
-    if (options.toggle) {
-      const next = new Set(selection.value)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      selection.value = [...next]
-      if (selection.value.length === 0) {
-        inspectedId.value = null
-        inspectorOpen.value = false
-      } else {
-        inspectedId.value = id
-        inspectorOpen.value = true
-      }
-      lastSelected = id
-      return
-    }
-
-    selection.value = [id]
-    inspectedId.value = id
-    inspectorOpen.value = true
+    const next = new Set(selection.value)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    selection.value = [...next]
     lastSelected = id
   }
 
   function selectAll() {
     selection.value = items.value.map((item) => item.id)
-    inspectedId.value = selection.value[selection.value.length - 1] ?? null
-    inspectorOpen.value = selection.value.length > 0
+    lastSelected = selection.value[selection.value.length - 1] ?? null
   }
 
-  function inspect(id: string) {
-    selection.value = [id]
-    inspectedId.value = id
-    inspectorOpen.value = true
-    lastSelected = id
+  /** Records the file a tab is showing, for the preview body and inspector. */
+  function setPreviewFile(file: CloudFile | null) {
+    previewFile.value = file
   }
 
-  function closeInspector() {
-    inspectorOpen.value = false
-    inspectedId.value = null
-    selection.value = []
-  }
-
-  function toggleInspector() {
-    if (inspectorOpen.value) closeInspector()
-    else if (primarySelected.value) inspectorOpen.value = true
+  function patchItem(id: string, changes: Partial<CloudFile>) {
+    items.value = items.value.map((item) => (item.id === id ? { ...item, ...changes } : item))
+    if (previewFile.value?.id === id) previewFile.value = { ...previewFile.value, ...changes }
   }
 
   function buildOptions(offset: number) {
@@ -303,11 +283,9 @@ export const useVaultStore = defineStore('vault', () => {
       if (seq !== loadSeq) return
       items.value = arrangeFoldersFirst(page.items)
       total.value = page.total
-      selection.value = selection.value.filter((id) => items.value.some((item) => item.id === id))
-      if (inspectedId.value && !items.value.some((item) => item.id === inspectedId.value)) {
-        inspectedId.value = null
-        inspectorOpen.value = false
-      }
+      // Selections do not survive a reload of the listing; the tab's file is
+      // refreshed separately by the preview view.
+      clearSelection()
     } catch (caught) {
       if (seq !== loadSeq) return
       if (caught instanceof DOMException && caught.name === 'AbortError') return
@@ -348,7 +326,7 @@ export const useVaultStore = defineStore('vault', () => {
       crumbs.value = [
         {
           id: null,
-          name: nextMode === 'unindexed' ? 'Unindexed' : 'Recycle Bin',
+          name: translate(nextMode === 'unindexed' ? 'nav.unindexed' : 'nav.recycle'),
         },
       ]
       await load()
@@ -357,7 +335,7 @@ export const useVaultStore = defineStore('vault', () => {
 
     if (!nextFolderId) {
       folder.value = null
-      crumbs.value = [{ id: null, name: 'My Drive' }]
+      crumbs.value = [{ id: null, name: translate('nav.drive') }]
       await load()
       return
     }
@@ -372,7 +350,7 @@ export const useVaultStore = defineStore('vault', () => {
         }
         folder.value = found
         crumbs.value = [
-          { id: null, name: 'My Drive' },
+          { id: null, name: translate('nav.drive') },
           ...sampleBreadcrumb(nextFolderId).map((crumb: BreadcrumbItem) => ({
             id: crumb.id,
             name: crumb.name,
@@ -385,14 +363,14 @@ export const useVaultStore = defineStore('vault', () => {
         ])
         folder.value = info
         crumbs.value = [
-          { id: null, name: 'My Drive' },
+          { id: null, name: translate('nav.drive') },
           ...chain.map((crumb) => ({ id: crumb.id, name: crumb.name })),
         ]
       }
     } catch (caught) {
       error.value = errorMessage(caught)
       folder.value = null
-      crumbs.value = [{ id: null, name: 'My Drive' }]
+      crumbs.value = [{ id: null, name: translate('nav.drive') }]
     } finally {
       loading.value = false
     }
@@ -504,7 +482,7 @@ export const useVaultStore = defineStore('vault', () => {
       if (sample.value) sampleRename(file.id, trimmed)
       else await driveApi.rename(file.id, trimmed)
       if (folder.value?.id === file.id) setFolderName(trimmed)
-      notice.ok(`Renamed to ${trimmed}.`)
+      notice.ok(translate('notice.renamed', { name: trimmed }))
       await load()
     } catch (caught) {
       notice.error(errorMessage(caught))
@@ -521,7 +499,7 @@ export const useVaultStore = defineStore('vault', () => {
     try {
       if (sample.value) sampleCreateFolder(trimmed, folderId.value)
       else await driveApi.createFolder(trimmed, folderId.value)
-      notice.ok(`Folder ${trimmed} created.`)
+      notice.ok(translate('notice.folderCreated', { name: trimmed }))
       await Promise.all([load(), loadVolume()])
     } catch (caught) {
       notice.error(errorMessage(caught))
@@ -540,8 +518,8 @@ export const useVaultStore = defineStore('vault', () => {
       else await driveApi.move(ids, parentId)
       notice.ok(
         files.length === 1
-          ? `${files[0]?.name ?? 'Object'} moved.`
-          : `${formatCount(files.length)} objects moved.`,
+          ? translate('notice.oneMoved', { name: files[0]?.name ?? translate('dialog.object') })
+          : translate('notice.manyMoved', { n: formatCount(files.length) }),
       )
       clearSelection()
       await load()
@@ -562,8 +540,10 @@ export const useVaultStore = defineStore('vault', () => {
       else await driveApi.recycle(ids)
       notice.ok(
         files.length === 1
-          ? `${files[0]?.name ?? 'Object'} moved to the recycle bin.`
-          : `${formatCount(files.length)} objects moved to the recycle bin.`,
+          ? translate('notice.oneRecycled', {
+              name: files[0]?.name ?? translate('dialog.object'),
+            })
+          : translate('notice.manyRecycled', { n: formatCount(files.length) }),
       )
       clearSelection()
       await Promise.all([load(), loadVolume()])
@@ -584,8 +564,10 @@ export const useVaultStore = defineStore('vault', () => {
       else await driveApi.restore(ids)
       notice.ok(
         files.length === 1
-          ? `${files[0]?.name ?? 'Object'} restored.`
-          : `${formatCount(files.length)} objects restored.`,
+          ? translate('notice.oneRestored', {
+              name: files[0]?.name ?? translate('dialog.object'),
+            })
+          : translate('notice.manyRestored', { n: formatCount(files.length) }),
       )
       clearSelection()
       await Promise.all([load(), loadVolume()])
@@ -606,8 +588,10 @@ export const useVaultStore = defineStore('vault', () => {
       else await driveApi.purge(ids)
       notice.ok(
         files.length === 1
-          ? `${files[0]?.name ?? 'Object'} deleted permanently.`
-          : `${formatCount(files.length)} objects deleted permanently.`,
+          ? translate('notice.onePurged', {
+              name: files[0]?.name ?? translate('dialog.object'),
+            })
+          : translate('notice.manyPurged', { n: formatCount(files.length) }),
       )
       clearSelection()
       await Promise.all([load(), loadVolume()])
@@ -641,11 +625,7 @@ export const useVaultStore = defineStore('vault', () => {
       })
       if (sample.value) sampleSetVisibility(file.id, isPublic)
       else await driveApi.setPermissions(file.id, next)
-      notice.ok(
-        isPublic
-          ? 'Published. Anyone with the link can read this file.'
-          : 'Unpublished. The file is private again.',
-      )
+      notice.ok(translate(isPublic ? 'notice.published' : 'notice.unpublished'))
       await load()
     } catch (caught) {
       notice.error(errorMessage(caught))
@@ -702,8 +682,7 @@ export const useVaultStore = defineStore('vault', () => {
     poolFilter,
     viewMode,
     selection,
-    inspectedId,
-    inspectorOpen,
+    previewFile,
     usage,
     quota,
     pools,
@@ -720,7 +699,7 @@ export const useVaultStore = defineStore('vault', () => {
     usedFraction,
     fileCount,
     selectedItems,
-    primarySelected,
+    selectionCount,
     selectedBytes,
     activePool,
     canGoUp,
@@ -736,13 +715,12 @@ export const useVaultStore = defineStore('vault', () => {
     setKind,
     setOrder,
     setPoolFilter,
-    select,
+    toggle,
     selectAll,
-    inspect,
     clearSelection,
-    closeInspector,
-    toggleInspector,
-    toggleView,
+    setPreviewFile,
+    patchItem,
+    cycleView,
     storeView,
     rename,
     createFolder,

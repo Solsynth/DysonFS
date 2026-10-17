@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import type { Component } from 'vue'
 import {
+  Catalog16,
   Folder16,
   FolderAdd16,
-  Grid16,
   Keyboard16,
-  List16,
   Renew16,
   Search16,
-  SidePanelOpen16,
   StoragePool16,
   TrashCan16,
   Upload16,
@@ -19,8 +18,8 @@ import {
 
 import FileGlyph from './FileGlyph.vue'
 import type { CloudFile } from '@/lib/api/types'
-import { openUrl } from '@/lib/api/drive'
-import { formatBytes, kindLabel } from '@/lib/format'
+import { formatBytes, formatCount, kindLabel } from '@/lib/format'
+import { useFileOpener } from '@/lib/opening'
 import { useUiStore } from '@/stores/ui'
 import { useVaultStore } from '@/stores/vault'
 
@@ -36,7 +35,11 @@ interface Command {
 
 const ui = useUiStore()
 const vault = useVaultStore()
+const opener = useFileOpener()
+const route = useRoute()
 const router = useRouter()
+
+const { t } = useI18n()
 
 const query = ref('')
 const selected = ref(0)
@@ -55,12 +58,7 @@ function go(path: string) {
 
 function openFile(file: CloudFile) {
   close()
-  if (file.is_folder) {
-    void router.push({ name: 'folder', params: { id: file.id } })
-    return
-  }
-  if (vault.sample) vault.inspect(file.id)
-  else window.open(openUrl(file.id), '_blank', 'noopener')
+  opener.open(file)
 }
 
 const commands = computed<Command[]>(() => {
@@ -68,52 +66,52 @@ const commands = computed<Command[]>(() => {
   const base: Command[] = [
     {
       id: 'nav-drive',
-      label: 'Go to My Drive',
-      hint: 'locations',
-      group: 'Navigate',
+      label: t('palette.goDrive'),
+      hint: t('palette.hintLocations'),
+      group: t('palette.groupNavigate'),
       icon: Folder16,
       run: () => go('/drive'),
     },
     {
       id: 'nav-unindexed',
-      label: 'Go to Unindexed',
-      hint: 'objects outside the index',
-      group: 'Navigate',
+      label: t('palette.goUnindexed'),
+      hint: t('palette.hintUnindexed'),
+      group: t('palette.groupNavigate'),
       icon: WarningAlt16,
       run: () => go('/unindexed'),
     },
     {
       id: 'nav-recycle',
-      label: 'Go to Recycle Bin',
-      hint: 'recoverable objects',
-      group: 'Navigate',
+      label: t('palette.goRecycle'),
+      hint: t('palette.hintRecycle'),
+      group: t('palette.groupNavigate'),
       icon: TrashCan16,
       run: () => go('/recycle'),
     },
     {
       id: 'nav-storage',
-      label: 'Go to Storage',
-      hint: 'capacity and pools',
-      group: 'Navigate',
+      label: t('palette.goStorage'),
+      hint: t('palette.hintStorage'),
+      group: t('palette.groupNavigate'),
       icon: StoragePool16,
       run: () => go('/storage'),
     },
     {
       id: 'toggle-view',
-      label: vault.viewMode === 'list' ? 'Switch to grid view' : 'Switch to list view',
-      hint: 'layout',
-      group: 'View',
-      icon: vault.viewMode === 'list' ? Grid16 : List16,
+      label: t('palette.switchView', { mode: vault.viewMode }),
+      hint: t('palette.hintViews'),
+      group: t('palette.groupView'),
+      icon: Catalog16,
       run: () => {
-        vault.toggleView()
+        vault.cycleView()
         close()
       },
     },
     {
       id: 'refresh',
-      label: 'Refresh listing and storage',
-      hint: 'read again',
-      group: 'View',
+      label: t('palette.refresh'),
+      hint: t('palette.hintRefresh'),
+      group: t('palette.groupView'),
       icon: Renew16,
       run: () => {
         close()
@@ -122,9 +120,9 @@ const commands = computed<Command[]>(() => {
     },
     {
       id: 'shortcuts',
-      label: 'Keyboard shortcuts',
-      hint: 'reference',
-      group: 'Help',
+      label: t('palette.shortcuts'),
+      hint: t('palette.hintShortcuts'),
+      group: t('palette.groupHelp'),
       icon: Keyboard16,
       run: () => {
         close()
@@ -133,27 +131,13 @@ const commands = computed<Command[]>(() => {
     },
   ]
 
-  if (vault.inspectorOpen && vault.primarySelected) {
-    base.push({
-      id: 'focus-inspector',
-      label: 'Focus inspector',
-      hint: 'metadata and access',
-      group: 'View',
-      icon: SidePanelOpen16,
-      run: () => {
-        close()
-        vault.toggleInspector()
-      },
-    })
-  }
-
-  if (router.currentRoute.value.meta.mode === 'drive') {
+  if (route.meta.mode === 'drive') {
     base.unshift(
       {
         id: 'upload',
-        label: 'Upload files',
-        hint: 'to the current folder',
-        group: 'Actions',
+        label: t('palette.upload'),
+        hint: t('palette.hintUpload'),
+        group: t('palette.groupActions'),
         icon: Upload16,
         run: () => {
           close()
@@ -162,9 +146,9 @@ const commands = computed<Command[]>(() => {
       },
       {
         id: 'new-folder',
-        label: 'Create a new folder',
-        hint: 'in the current location',
-        group: 'Actions',
+        label: t('palette.newFolder'),
+        hint: t('palette.hintNewFolder'),
+        group: t('palette.groupActions'),
         icon: FolderAdd16,
         run: () => {
           close()
@@ -178,9 +162,9 @@ const commands = computed<Command[]>(() => {
 
   const searchCommand: Command = {
     id: 'search',
-    label: `Search this location for “${query.value.trim()}”`,
-    hint: 'in this folder',
-    group: 'Search',
+    label: t('palette.searchFor', { query: query.value.trim() }),
+    hint: t('palette.hintSearch'),
+    group: t('palette.groupSearch'),
     icon: Search16,
     run: () => {
       vault.setQuery(query.value.trim())
@@ -194,8 +178,14 @@ const commands = computed<Command[]>(() => {
     .map<Command>((file) => ({
       id: `file-${file.id}`,
       label: file.name,
-      hint: `${kindLabel(file)} · ${file.is_folder ? `${file.children_count ?? 0} objects` : formatBytes(file.object?.size)}`,
-      group: 'Objects in view',
+      hint: `${kindLabel(file)} · ${
+        file.is_folder
+          ? (file.children_count ?? 0) === 1
+            ? t('drive.oneItem')
+            : t('drive.manyItems', { n: formatCount(file.children_count ?? 0) })
+          : formatBytes(file.object?.size)
+      }`,
+      group: t('palette.groupFiles'),
       file,
       run: () => openFile(file),
     }))
@@ -290,7 +280,7 @@ function onKeydown(event: KeyboardEvent) {
           class="palette-in h-fit w-full max-w-[600px] rounded-xl bg-base-200 shadow-2xl"
           role="dialog"
           aria-modal="true"
-          aria-label="Command palette"
+          :aria-label="t('palette.aria')"
         >
           <div class="flex items-center gap-2.5 border-b border-line px-4">
             <Search16 class="shrink-0 text-faint" />
@@ -299,10 +289,10 @@ function onKeydown(event: KeyboardEvent) {
               v-model="query"
               type="text"
               class="h-[52px] min-w-0 flex-1 bg-transparent text-[13.5px] text-base-content outline-none placeholder:text-faint"
-              placeholder="Search files or run a command…"
+              :placeholder="t('palette.placeholder')"
               autocomplete="off"
               spellcheck="false"
-              aria-label="Search or run a command"
+              :aria-label="t('palette.searchAria')"
               @keydown="onKeydown"
             />
             <span class="kbd">esc</span>
@@ -310,7 +300,7 @@ function onKeydown(event: KeyboardEvent) {
 
           <div class="max-h-[52vh] overflow-y-auto px-2 py-2">
             <div v-if="commands.length === 0" class="px-4 py-8 text-center">
-              <p class="voice">No file or command matches that search.</p>
+              <p class="voice">{{ t('palette.empty') }}</p>
             </div>
 
             <template v-for="group in grouped" :key="group.name">
@@ -348,11 +338,11 @@ function onKeydown(event: KeyboardEvent) {
 
           <div class="flex items-center gap-3 border-t border-line px-4 py-2 text-[11px] text-faint">
             <span class="flex items-center gap-1"
-              ><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span
+              ><span class="kbd">↑</span><span class="kbd">↓</span> {{ t('palette.navigate') }}</span
             >
-            <span class="flex items-center gap-1"><span class="kbd">↵</span> run</span>
+            <span class="flex items-center gap-1"><span class="kbd">↵</span> {{ t('palette.run') }}</span>
             <span class="ml-auto flex items-center gap-1"
-              ><span class="kbd">⌘</span><span class="kbd">K</span> toggle</span
+              ><span class="kbd">⌘</span><span class="kbd">K</span> {{ t('palette.toggle') }}</span
             >
           </div>
         </div>

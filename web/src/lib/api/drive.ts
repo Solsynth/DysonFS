@@ -1,4 +1,5 @@
 import { buildUrl, DriveError, raiseUnauthorized, request, requestPage } from './client'
+import { translate } from '@/lib/i18n'
 import type {
   AccountIdentity,
   BreadcrumbItem,
@@ -112,6 +113,29 @@ export function previewUrl(fileId: string): string {
   })
 }
 
+/**
+ * Reads the head of a text-like file for the in-tab source preview.
+ *
+ * The open endpoint answers with a redirect to the storage backend, so this
+ * only succeeds when that backend is same-origin or sends CORS headers. A
+ * failure is reported to the caller rather than papered over: the preview
+ * falls back to the file's metadata and an Open action.
+ */
+export async function fetchTextPreview(fileId: string, limit = 256 * 1024): Promise<string> {
+  const response = await fetch(buildUrl(`/files/${fileId}/open`), { credentials: 'include' })
+  if (!response.ok) {
+    throw new DriveError(
+      response.status,
+      response.status === 403
+        ? translate('apiError.cannotReadBytes')
+        : translate('apiError.readFailed'),
+    )
+  }
+  const body = await response.text()
+  if (body.length <= limit) return body
+  return `${body.slice(0, limit)}\n\n… truncated at ${Math.round(limit / 1024)} KB`
+}
+
 export interface UploadOptions {
   parentId?: string | null
   onProgress?: (percent: number) => void
@@ -151,12 +175,12 @@ export function uploadDirect(file: File, options: UploadOptions = {}): Promise<C
           resolve(parsed)
         } catch {
           reject(
-            new DriveError(xhr.status, 'The upload finished but the file record was unreadable.'),
+            new DriveError(xhr.status, translate('apiError.unreadableRecord')),
           )
         }
         return
       }
-      let message = xhr.statusText || 'The upload failed.'
+      let message = xhr.statusText || translate('apiError.uploadFailed')
       try {
         const payload = JSON.parse(xhr.responseText) as { error?: string; message?: string }
         message = payload.message || payload.error || message
@@ -169,12 +193,12 @@ export function uploadDirect(file: File, options: UploadOptions = {}): Promise<C
 
     xhr.addEventListener('error', () => {
       options.signal?.removeEventListener('abort', abort)
-      reject(new DriveError(0, 'The upload connection dropped before it finished.'))
+      reject(new DriveError(0, translate('apiError.connectionDropped')))
     })
 
     xhr.addEventListener('abort', () => {
       options.signal?.removeEventListener('abort', abort)
-      reject(new DriveError(0, 'Upload cancelled.'))
+      reject(new DriveError(0, translate('apiError.uploadCancelled')))
     })
 
     xhr.send(form)

@@ -11,13 +11,16 @@ import './assets/main.css'
 
 import App from './App.vue'
 import router from './router'
-import { applyTheme, readTheme } from './lib/prefs'
+import { applyLocale, applyTheme, readLocale, readTheme } from './lib/prefs'
+import { i18n } from './lib/i18n'
 
 applyTheme(readTheme())
+applyLocale(readLocale())
 
 const app = createApp(App)
 
 app.use(createPinia())
+app.use(i18n)
 app.use(router)
 
 app.mount('#app')

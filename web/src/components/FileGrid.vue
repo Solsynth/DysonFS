@@ -1,39 +1,24 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { CopyLink16 } from '@carbon/icons-vue'
 
 import FileGlyph from './FileGlyph.vue'
 import type { CloudFile } from '@/lib/api/types'
-import { openUrl, previewUrl } from '@/lib/api/drive'
-import { displayName, formatBytes, kindLabel } from '@/lib/format'
+import { previewUrl } from '@/lib/api/drive'
+import { displayName, formatBytes, formatCount, kindLabel } from '@/lib/format'
 import { hasPreview } from '@/lib/fileKinds'
+import { useFileOpener } from '@/lib/opening'
 import { useVaultStore } from '@/stores/vault'
 
 const vault = useVaultStore()
-const router = useRouter()
+const opener = useFileOpener()
+const { t } = useI18n()
 
 const failed = ref<string[]>([])
 
-function onClick(event: MouseEvent, file: CloudFile) {
-  const target = event.target as HTMLElement | null
-  if (target?.closest('input, button, a')) return
-  vault.select(file.id, {
-    toggle: event.metaKey || event.ctrlKey,
-    range: event.shiftKey,
-  })
-}
-
 function open(file: CloudFile) {
-  if (file.is_folder) {
-    void router.push({ name: 'folder', params: { id: file.id } })
-    return
-  }
-  if (vault.sample) {
-    vault.inspect(file.id)
-    return
-  }
-  window.open(openUrl(file.id), '_blank', 'noopener')
+  opener.open(file)
 }
 
 function onKeydown(event: KeyboardEvent, file: CloudFile) {
@@ -44,7 +29,7 @@ function onKeydown(event: KeyboardEvent, file: CloudFile) {
   }
   if (event.key === ' ') {
     event.preventDefault()
-    vault.select(file.id, { toggle: event.metaKey || event.ctrlKey })
+    vault.toggle(file.id)
     return
   }
   if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
@@ -71,7 +56,7 @@ function isPublic(file: CloudFile): boolean {
 function subline(file: CloudFile): string {
   if (file.is_folder) {
     const count = file.children_count ?? 0
-    return `${count} ${count === 1 ? 'item' : 'items'}`
+    return count === 1 ? t('drive.oneItem') : t('drive.manyItems', { n: formatCount(count) })
   }
   return `${kindLabel(file)} · ${formatBytes(file.object?.size)}`
 }
@@ -82,14 +67,14 @@ function subline(file: CloudFile): string {
     <div
       class="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
       role="list"
-      aria-label="Objects"
+      :aria-label="t('drive.objects')"
     >
       <article
         v-for="(file, index) in vault.items"
         :key="file.id"
         tabindex="0"
         role="listitem"
-        class="row-in group relative flex cursor-default flex-col rounded-lg p-1.5 transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        class="row-in group relative flex cursor-pointer flex-col p-1.5 transition-colors duration-200"
         :class="
           vault.selection.includes(file.id)
             ? 'bg-primary/[0.07]'
@@ -97,12 +82,11 @@ function subline(file: CloudFile): string {
         "
         :style="{ animationDelay: `${Math.min(index, 12) * 18}ms` }"
         :aria-selected="vault.selection.includes(file.id)"
-        @click="onClick($event, file)"
-        @dblclick="open(file)"
+        @click="open(file)"
         @keydown="onKeydown($event, file)"
       >
         <div
-          class="relative aspect-[4/3] overflow-hidden rounded-lg bg-base-200/60"
+          class="relative aspect-[4/3] overflow-hidden border border-line bg-base-200/30"
         >
           <img
             v-if="showPreview(file)"
@@ -119,22 +103,22 @@ function subline(file: CloudFile): string {
 
           <input
             type="checkbox"
-            class="checkbox checkbox-xs absolute left-2 top-2 rounded-[4px] bg-ink/80 transition-opacity duration-150"
+            class="checkbox checkbox-xs absolute left-2 top-2 rounded-[2px] bg-ink/80 transition-opacity duration-150"
             :class="
               vault.selection.includes(file.id)
                 ? 'opacity-100'
                 : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
             "
             :checked="vault.selection.includes(file.id)"
-            :aria-label="`Select ${file.name}`"
-            @change="vault.select(file.id, { toggle: true })"
+            :aria-label="t('drive.selectObject', { name: displayName(file) })"
+            @change="vault.toggle(file.id, ($event as MouseEvent).shiftKey)"
             @click.stop
           />
 
           <CopyLink16
             v-if="isPublic(file)"
             class="absolute right-2 top-2 h-3.5 w-3.5 text-primary/70"
-            title="Published by link"
+            :title="t('drive.publishedByLink')"
           />
         </div>
 

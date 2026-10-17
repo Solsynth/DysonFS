@@ -1,18 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
-import {
-  Menu16,
-  Moon16,
-  Search16,
-  SidePanelClose16,
-  SidePanelOpen16,
-  Sun16,
-  Upload16,
-} from '@carbon/icons-vue'
+import { Menu16, Moon16, Search16, Sun16, Upload16 } from '@carbon/icons-vue'
 
 import BrandMark from './BrandMark.vue'
-import IconButton from './IconButton.vue'
 import { useSessionStore } from '@/stores/session'
 import { useUiStore } from '@/stores/ui'
 import { useUploadStore } from '@/stores/upload'
@@ -24,16 +16,13 @@ const ui = useUiStore()
 const uploads = useUploadStore()
 const vault = useVaultStore()
 const route = useRoute()
+const { t } = useI18n()
 
 const input = ref<HTMLInputElement | null>(null)
 
 const onDrive = computed(() => route.meta.mode === 'drive')
 const canUpload = computed(() => onDrive.value)
-const inspectorEnabled = computed(() => vault.primarySelected !== null)
-const identityName = computed(() => session.identity?.nick || session.identity?.name || 'account')
-const identityRole = computed(() =>
-  session.identity?.is_superuser ? 'Superuser' : 'Solar Network account',
-)
+const identityName = computed(() => session.identity?.nick || session.identity?.name || t('session.account'))
 
 function openPicker() {
   if (!canUpload.value) return
@@ -61,32 +50,40 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <header
-    class="relative z-30 flex h-[52px] shrink-0 items-center gap-2 border-b border-line bg-ink/95 px-3 md:px-4"
-  >
-    <IconButton class="lg:hidden" label="Open navigation" @click="ui.toggleSidebar()">
-      <Menu16 />
-    </IconButton>
+  <header class="relative z-30 flex h-[52px] shrink-0 items-center gap-2 border-b border-line bg-ink px-3 md:px-4">
+    <button
+      class="btn btn-ghost btn-xs grid size-7 place-items-center px-0 lg:hidden"
+      type="button"
+      :aria-label="t('nav.openNavigation')"
+      :title="t('nav.openNavigation')"
+      @click="ui.toggleSidebar()"
+    >
+      <Menu16 aria-hidden="true" />
+    </button>
 
+    <!-- The lockup carries the same identity as the Solar Network console,
+         so the two surfaces read as one product. -->
     <RouterLink
       to="/drive"
-      class="flex shrink-0 items-center gap-2.5 py-1"
-      aria-label="SnFS home"
+      class="flex shrink-0 items-center gap-2"
+      :aria-label="t('app.home')"
+      :title="`${t('app.product')} — ${t('app.fullName')}`"
     >
-      <BrandMark :size="21" class="text-base-content" />
-      <span class="text-[14px] font-semibold tracking-[-0.01em] text-base-content">SnFS</span>
+      <BrandMark :size="21" />
+      <span class="text-[13px] font-semibold tracking-[0.14em] text-base-content">{{ t('app.product') }}</span>
+      <span class="hidden text-2xs tracking-[0.04em] text-faint sm:inline">{{ t('app.network') }}</span>
     </RouterLink>
 
     <div class="ml-2 hidden flex-1 md:flex">
       <button
-        class="group flex h-8 w-full max-w-[360px] items-center gap-2 rounded-lg bg-base-200/70 px-3 text-left transition-colors duration-150 hover:bg-base-200"
+        class="group flex h-8 w-full max-w-[360px] items-center gap-2 border border-line bg-base-200/60 px-2.5 text-left transition-colors duration-150 hover:border-line hover:text-base-content"
         type="button"
-        aria-label="Search files or run a command"
+        :aria-label="t('app.searchFilesOrCommand')"
         @click="ui.paletteOpen = true"
       >
-        <Search16 class="shrink-0 text-faint transition-colors group-hover:text-dim" />
-        <span class="truncate text-[12.5px] text-faint transition-colors group-hover:text-dim">
-          Search files or run a command
+        <Search16 class="shrink-0 text-faint" aria-hidden="true" />
+        <span class="truncate text-2xs text-faint group-hover:text-dim">
+          {{ t('app.searchFilesOrCommand') }}
         </span>
         <span class="ml-auto hidden shrink-0 items-center gap-1 sm:flex">
           <span class="kbd">⌘</span>
@@ -98,54 +95,52 @@ onBeforeUnmount(() => {
     <div class="ml-auto flex shrink-0 items-center gap-1">
       <span
         v-if="session.sample"
-        class="mr-1 hidden items-center gap-1.5 text-[11px] text-faint lg:flex"
-        title="Showing sample data. No live drive is connected."
+        class="mr-1 hidden items-center gap-1.5 text-2xs text-faint lg:flex"
+        :title="t('app.sampleHint')"
       >
         <span class="dot bg-warning" aria-hidden="true" />
-        Sample
+        {{ t('app.sampleBadge') }}
       </span>
 
-      <IconButton class="md:hidden" label="Search files" @click="ui.paletteOpen = true">
-        <Search16 />
-      </IconButton>
+      <button
+        class="btn btn-ghost btn-xs grid size-7 place-items-center px-0 md:hidden"
+        type="button"
+        :aria-label="t('app.searchFiles')"
+        :title="t('app.searchFiles')"
+        @click="ui.paletteOpen = true"
+      >
+        <Search16 aria-hidden="true" />
+      </button>
 
-      <IconButton
-        class="hidden sm:inline-flex"
-        :label="ui.isDark ? 'Switch to light theme' : 'Switch to dark theme'"
+      <button
+        class="btn btn-ghost btn-xs grid size-7 place-items-center px-0"
+        type="button"
+        :aria-label="ui.isDark ? t('app.switchToLight') : t('app.switchToDark')"
+        :title="ui.isDark ? t('app.switchToLight') : t('app.switchToDark')"
         @click="ui.toggleTheme()"
       >
-        <Sun16 v-if="ui.isDark" />
-        <Moon16 v-else />
-      </IconButton>
-
-      <IconButton
-        class="hidden sm:inline-flex"
-        :label="inspectorEnabled ? 'Toggle inspector' : 'Select an object to inspect'"
-        :disabled="!inspectorEnabled"
-        @click="vault.toggleInspector()"
-      >
-        <SidePanelClose16 v-if="vault.inspectorOpen" />
-        <SidePanelOpen16 v-else />
-      </IconButton>
+        <Sun16 v-if="ui.isDark" aria-hidden="true" />
+        <Moon16 v-else aria-hidden="true" />
+      </button>
 
       <button
         class="btn btn-primary btn-sm ml-1"
         type="button"
         :disabled="!canUpload"
-        :title="canUpload ? 'Upload files' : 'Open a drive folder to upload'"
+        :title="canUpload ? t('app.uploadFiles') : t('app.uploadDisabled')"
         @click="openPicker"
       >
-        <Upload16 />
-        <span class="hidden sm:inline">Upload</span>
-        <span v-if="uploads.activeCount > 0" class="text-[11px] tabular-nums opacity-80">
+        <Upload16 aria-hidden="true" />
+        <span class="hidden sm:inline">{{ t('app.upload') }}</span>
+        <span v-if="uploads.activeCount > 0" class="text-2xs tabular-nums opacity-80">
           {{ uploads.activeCount }}
         </span>
       </button>
 
       <span
-        class="ml-1 grid size-7 shrink-0 place-items-center rounded-full bg-base-200 text-[11px] font-medium text-dim"
-        :title="`${identityName} · ${identityRole}`"
-        :aria-label="`Signed in as ${identityName}, ${identityRole}`"
+        class="ml-1 grid size-6 shrink-0 place-items-center border border-line bg-base-300 text-2xs text-dim"
+        :title="`${identityName} · ${t('app.network')}`"
+        :aria-label="t('app.signedInAs', { name: identityName })"
       >
         {{ initialOf(identityName) }}
       </span>

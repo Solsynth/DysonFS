@@ -1,3 +1,5 @@
+import { translate } from '@/lib/i18n'
+
 export type ErrorFields = Record<string, string[]>
 
 interface ApiErrorBody {
@@ -92,7 +94,7 @@ async function readJson<T>(response: Response): Promise<T> {
 async function parseError(response: Response): Promise<DriveError> {
   const fallback = new DriveError(
     response.status,
-    response.statusText || 'The drive did not answer.',
+    response.statusText || translate('apiError.noAnswer'),
   )
   try {
     const payload = (await response.json()) as ApiErrorBody
@@ -112,7 +114,7 @@ async function send(url: string, init: RequestInit): Promise<Response> {
     response = await fetch(url, init)
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') throw caught
-    throw new DriveError(0, 'The drive service is unreachable. Check the connection and retry.')
+    throw new DriveError(0, translate('apiError.unreachable'))
   }
   if (response.ok) return response
 

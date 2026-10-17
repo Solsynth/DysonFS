@@ -1,12 +1,14 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import AppSidebar from './AppSidebar.vue'
 import CommandPalette from './CommandPalette.vue'
+import ConsoleFooter from './ConsoleFooter.vue'
 import DialogHost from './DialogHost.vue'
-import InspectorPanel from './InspectorPanel.vue'
 import StatusBar from './StatusBar.vue'
+import TabStrip from './TabStrip.vue'
 import TitleBar from './TitleBar.vue'
 import UploadDock from './UploadDock.vue'
 import { useUiStore } from '@/stores/ui'
@@ -17,6 +19,7 @@ const ui = useUiStore()
 const vault = useVaultStore()
 const uploads = useUploadStore()
 const route = useRoute()
+const { t } = useI18n()
 
 function typing(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
@@ -40,10 +43,6 @@ function onKeydown(event: KeyboardEvent) {
     }
     if (ui.dialog) {
       ui.closeDialog()
-      return
-    }
-    if (vault.inspectorOpen) {
-      vault.closeInspector()
       return
     }
     if (ui.sidebarOpen) ui.sidebarOpen = false
@@ -70,6 +69,12 @@ function onKeydown(event: KeyboardEvent) {
   if ((event.key === 'u' || event.key === 'U') && onDrive) {
     event.preventDefault()
     window.dispatchEvent(new Event('snfs:upload'))
+    return
+  }
+
+  if (mod && event.key.toLowerCase() === 'a') {
+    event.preventDefault()
+    vault.selectAll()
     return
   }
 
@@ -103,10 +108,11 @@ onBeforeUnmount(() => {
       href="#main"
       class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[90] focus:border focus:border-line focus:bg-base-300 focus:px-3 focus:py-2 focus:text-xs"
     >
-      Skip to content
+      {{ t('app.skipToContent') }}
     </a>
 
     <TitleBar />
+    <TabStrip />
 
     <div class="flex min-h-0 flex-1">
       <AppSidebar />
@@ -123,10 +129,10 @@ onBeforeUnmount(() => {
           </Transition>
         </RouterView>
       </main>
-      <InspectorPanel />
     </div>
 
     <StatusBar />
+    <ConsoleFooter />
     <CommandPalette />
     <DialogHost />
     <UploadDock />
