@@ -14,6 +14,7 @@ declare module '@carbon/icons-vue' {
   export const Close16: Component
   export const CloudOffline16: Component
   export const Code16: Component
+  export const Copy16: Component
   export const CopyLink16: Component
   export const DataBase16: Component
   export const DataTable16: Component
@@ -36,6 +37,7 @@ declare module '@carbon/icons-vue' {
   export const Login16: Component
   export const Menu16: Component
   export const Move16: Component
+  export const Moon16: Component
   export const Music16: Component
   export const PresentationFile16: Component
   export const Renew16: Component
@@ -43,6 +45,7 @@ declare module '@carbon/icons-vue' {
   export const SidePanelClose16: Component
   export const SidePanelOpen16: Component
   export const StoragePool16: Component
+  export const Sun16: Component
   export const TimePlot16: Component
   export const TrashCan16: Component
   export const Undo16: Component

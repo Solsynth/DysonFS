@@ -81,14 +81,20 @@ function indicator(key: 'name' | 'size' | 'date') {
   if (vault.order !== key) return ''
   return vault.orderDesc ? '↓' : '↑'
 }
+
+function sortState(key: 'name' | 'size' | 'date') {
+  if (vault.order !== key) return 'none'
+  return vault.orderDesc ? 'descending' : 'ascending'
+}
 </script>
 
 <template>
   <div class="min-h-0 flex-1 overflow-auto scroll-region">
     <table class="w-full table-fixed border-collapse">
-      <thead class="sticky top-0 z-10 bg-ink">
-        <tr class="border-b border-line text-3xs uppercase tracking-[0.14em] text-faint">
+      <thead class="sticky top-0 z-10 bg-base-100">
+        <tr class="border-b border-line text-[10px] uppercase tracking-[0.14em] text-faint">
           <th scope="col" class="w-9 pl-3 pr-1 text-left">
+            <span class="sr-only">Select</span>
             <input
               type="checkbox"
               class="checkbox checkbox-xs rounded-[2px] border-line"
@@ -99,7 +105,7 @@ function indicator(key: 'name' | 'size' | 'date') {
               @change="toggleAll"
             />
           </th>
-          <th scope="col" class="min-w-0 text-left">
+          <th scope="col" class="min-w-0 text-left" :aria-sort="sortState('name')">
             <button
               type="button"
               class="flex h-8 w-full items-center gap-1 uppercase tracking-[0.14em] transition-colors hover:text-dim"
@@ -111,7 +117,11 @@ function indicator(key: 'name' | 'size' | 'date') {
             </button>
           </th>
           <th scope="col" class="hidden w-[92px] text-left md:table-cell">Kind</th>
-          <th scope="col" class="hidden w-[86px] pr-3 text-right sm:table-cell">
+          <th
+            scope="col"
+            class="hidden w-[86px] pr-3 text-right sm:table-cell"
+            :aria-sort="sortState('size')"
+          >
             <button
               type="button"
               class="flex h-8 w-full items-center justify-end gap-1 uppercase tracking-[0.14em] transition-colors hover:text-dim"
@@ -122,7 +132,11 @@ function indicator(key: 'name' | 'size' | 'date') {
               <span v-if="indicator('size')" class="text-primary">{{ indicator('size') }}</span>
             </button>
           </th>
-          <th scope="col" class="hidden w-[124px] pr-3 text-right lg:table-cell">
+          <th
+            scope="col"
+            class="hidden w-[124px] pr-3 text-right lg:table-cell"
+            :aria-sort="sortState('date')"
+          >
             <button
               type="button"
               class="flex h-8 w-full items-center justify-end gap-1 uppercase tracking-[0.14em] transition-colors hover:text-dim"
@@ -156,12 +170,8 @@ function indicator(key: 'name' | 'size' | 'date') {
           v-for="file in vault.items"
           :key="file.id"
           tabindex="0"
-          class="group h-[46px] cursor-default border-b border-line-soft transition-colors focus:outline-none focus-visible:bg-primary/10"
-          :class="
-            vault.selection.includes(file.id)
-              ? 'bg-primary/10'
-              : 'hover:bg-base-200/50'
-          "
+          class="group h-[46px] cursor-default border-b border-line-soft transition-colors focus-visible:bg-primary/10"
+          :class="vault.selection.includes(file.id) ? 'bg-primary/10' : 'hover:bg-base-200/50'"
           :aria-selected="vault.selection.includes(file.id)"
           @click="onClick($event, file)"
           @dblclick="open(file)"
@@ -190,7 +200,9 @@ function indicator(key: 'name' | 'size' | 'date') {
                   <span
                     class="truncate text-xs"
                     :class="
-                      vault.selection.includes(file.id) ? 'text-base-content' : 'text-base-content/90'
+                      vault.selection.includes(file.id)
+                        ? 'text-base-content'
+                        : 'text-base-content/90'
                     "
                     :title="displayName(file)"
                   >
@@ -202,7 +214,7 @@ function indicator(key: 'name' | 'size' | 'date') {
                     title="Published by link"
                   />
                 </div>
-                <div class="flex items-center gap-1.5 text-3xs text-faint">
+                <div class="flex items-center gap-1.5 text-2xs text-faint">
                   <span class="truncate">{{ poolName(file) }}</span>
                   <span aria-hidden="true">·</span>
                   <span>{{ modifiedLabel(file.updated_at) }}</span>
@@ -220,7 +232,9 @@ function indicator(key: 'name' | 'size' | 'date') {
           <td class="hidden pr-3 text-right text-2xs tabular-nums text-dim sm:table-cell">
             {{ file.is_folder ? '—' : formatBytes(file.object?.size) }}
           </td>
-          <td class="hidden whitespace-nowrap pr-3 text-right text-2xs tabular-nums text-faint lg:table-cell">
+          <td
+            class="hidden whitespace-nowrap pr-3 text-right text-2xs tabular-nums text-faint lg:table-cell"
+          >
             {{ modifiedLabel(file.updated_at) }}
           </td>
         </tr>

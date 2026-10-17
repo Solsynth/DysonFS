@@ -2,7 +2,6 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import {
   Close16,
-  CopyLink16,
   Edit16,
   FolderAdd16,
   Keyboard16,
@@ -12,16 +11,16 @@ import {
   WarningAlt16,
 } from '@carbon/icons-vue'
 
+import CopyButton from './CopyButton.vue'
 import FolderPicker from './FolderPicker.vue'
+import IconButton from './IconButton.vue'
 import { openUrl } from '@/lib/api/drive'
 import { formatBytes, formatCount } from '@/lib/format'
-import { useNoticeStore } from '@/stores/notice'
 import { useUiStore } from '@/stores/ui'
 import { useVaultStore } from '@/stores/vault'
 
 const ui = useUiStore()
 const vault = useVaultStore()
-const notice = useNoticeStore()
 
 const dialog = computed(() => ui.dialog)
 const folderName = ref('')
@@ -37,9 +36,7 @@ const confirmFiles = computed(() =>
   dialog.value?.kind === 'recycle' || dialog.value?.kind === 'purge' ? dialog.value.files : [],
 )
 const shareFile = computed(() => (dialog.value?.kind === 'share' ? dialog.value.file : null))
-const shareIsPublic = computed(
-  () => shareFile.value?.permission_status?.visibility === 'public',
-)
+const shareIsPublic = computed(() => shareFile.value?.permission_status?.visibility === 'public')
 const shareLink = computed(() =>
   shareFile.value ? `${window.location.origin}${openUrl(shareFile.value.id)}` : '',
 )
@@ -159,16 +156,6 @@ async function toggleShare() {
     // The store reports the failure.
   }
 }
-
-async function copyShareLink() {
-  if (!shareLink.value) return
-  try {
-    await navigator.clipboard.writeText(shareLink.value)
-    notice.ok('Public link copied.')
-  } catch {
-    notice.error('The browser refused clipboard access.')
-  }
-}
 </script>
 
 <template>
@@ -181,11 +168,11 @@ async function copyShareLink() {
     >
       <div
         v-if="dialog"
-        class="fixed inset-0 z-[75] flex items-center justify-center overflow-y-auto bg-black/70 px-4 py-8 backdrop-blur-[2px]"
+        class="fixed inset-0 z-[75] flex items-center justify-center overflow-y-auto bg-black/60 px-4 py-8 backdrop-blur-[2px]"
         @mousedown.self="close"
       >
         <div
-          class="palette-in w-full border border-line bg-ink shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
+          class="palette-in w-full border border-line bg-base-100 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
           :class="dialog.kind === 'shortcuts' ? 'max-w-[540px]' : 'max-w-[440px]'"
           role="dialog"
           aria-modal="true"
@@ -216,14 +203,9 @@ async function copyShareLink() {
                             : 'reference / shortcuts'
               }}
             </span>
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs ml-auto px-1"
-              aria-label="Close dialog"
-              @click="close"
-            >
+            <IconButton class="ml-auto" label="Close dialog" @click="close">
               <Close16 />
-            </button>
+            </IconButton>
           </div>
 
           <template v-if="dialog.kind === 'new-folder'">
@@ -296,13 +278,18 @@ async function copyShareLink() {
                 :exclude="moveFiles.map((file) => file.id)"
                 @change="onDestination"
               />
-              <p class="mt-2 text-3xs text-faint">
+              <p class="mt-2 text-2xs text-faint">
                 destination · <span class="text-dim">{{ destinationLabel }}</span>
               </p>
             </div>
             <div class="flex justify-end gap-2 border-t border-line px-4 py-3">
               <button class="btn btn-ghost btn-sm" type="button" @click="close">Cancel</button>
-              <button class="btn btn-primary btn-sm" type="button" :disabled="busy" @click="submitMove">
+              <button
+                class="btn btn-primary btn-sm"
+                type="button"
+                :disabled="busy"
+                @click="submitMove"
+              >
                 {{ busy ? 'Moving…' : 'Move here' }}
               </button>
             </div>
@@ -323,7 +310,12 @@ async function copyShareLink() {
             </div>
             <div class="flex justify-end gap-2 border-t border-line px-4 py-3">
               <button class="btn btn-ghost btn-sm" type="button" @click="close">Cancel</button>
-              <button class="btn btn-primary btn-sm" type="button" :disabled="busy" @click="submitRecycle">
+              <button
+                class="btn btn-primary btn-sm"
+                type="button"
+                :disabled="busy"
+                @click="submitRecycle"
+              >
                 {{ busy ? 'Recycling…' : 'Move to recycle' }}
               </button>
             </div>
@@ -331,18 +323,27 @@ async function copyShareLink() {
 
           <template v-else-if="dialog.kind === 'purge'">
             <div class="px-4 py-4">
-              <h2 id="dialog-title" class="title text-lg text-error">Delete {{ confirmLabel }} forever?</h2>
+              <h2 id="dialog-title" class="title text-lg text-error">
+                Delete {{ confirmLabel }} forever?
+              </h2>
               <p class="voice mt-1.5">
                 {{ confirmNoun }}{{ confirmSize }} will be erased from storage and the index.
               </p>
-              <div class="mt-3 flex items-center gap-2 border border-error/30 bg-error/5 px-3 py-2 text-2xs text-error">
+              <div
+                class="mt-3 flex items-center gap-2 border border-error/30 bg-error/5 px-3 py-2 text-2xs text-error"
+              >
                 <WarningAlt16 class="h-3.5 w-3.5 shrink-0" />
                 This cannot be undone.
               </div>
             </div>
             <div class="flex justify-end gap-2 border-t border-line px-4 py-3">
               <button class="btn btn-ghost btn-sm" type="button" @click="close">Cancel</button>
-              <button class="btn btn-error btn-sm" type="button" :disabled="busy" @click="submitPurge">
+              <button
+                class="btn btn-error btn-sm"
+                type="button"
+                :disabled="busy"
+                @click="submitPurge"
+              >
                 {{ busy ? 'Purging…' : 'Delete forever' }}
               </button>
             </div>
@@ -358,7 +359,9 @@ async function copyShareLink() {
                 the master so it can be revoked.
               </p>
 
-              <div class="mt-4 flex items-center justify-between gap-3 border border-line bg-base-200/30 px-3 py-2.5">
+              <div
+                class="mt-4 flex items-center justify-between gap-3 border border-line bg-base-200/30 px-3 py-2.5"
+              >
                 <div>
                   <div class="eyebrow">public link</div>
                   <div class="mt-1 text-2xs" :class="shareIsPublic ? 'text-brass' : 'text-faint'">
@@ -381,29 +384,18 @@ async function copyShareLink() {
                 </button>
               </div>
 
-              <div v-if="shareIsPublic" class="mt-2 flex items-stretch border border-line bg-base-200/50">
+              <div v-if="shareIsPublic" class="mt-2 flex items-stretch gap-2">
                 <input
                   :value="shareLink"
                   readonly
-                  class="min-w-0 flex-1 bg-transparent px-2 py-1.5 font-mono text-3xs text-dim outline-none"
+                  class="input h-7 min-w-0 flex-1 px-2 font-mono text-2xs text-dim"
                   aria-label="Public link"
                   @focus="($event.target as HTMLInputElement).select()"
                 />
-                <button
-                  type="button"
-                  class="flex shrink-0 items-center gap-1 border-l border-line px-2 text-3xs text-faint transition-colors hover:text-base-content"
-                  @click="copyShareLink"
-                >
-                  <CopyLink16 class="h-3.5 w-3.5" />
-                  Copy
-                </button>
+                <CopyButton :value="shareLink" label="public link" />
               </div>
             </div>
             <div class="flex justify-end gap-2 border-t border-line px-4 py-3">
-              <button class="btn btn-outline btn-sm" type="button" @click="copyShareLink">
-                <CopyLink16 class="mr-1.5" />
-                Copy link
-              </button>
               <button class="btn btn-primary btn-sm" type="button" @click="close">Done</button>
             </div>
           </template>

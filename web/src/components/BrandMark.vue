@@ -38,6 +38,11 @@ withDefaults(
       stroke-width="1"
       opacity="0.55"
     />
-    <path d="M16 1.4v2.1M16 28.5v2.1M1.4 16h2.1M28.5 16h2.1" stroke="currentColor" stroke-width="1" opacity="0.4" />
+    <path
+      d="M16 1.4v2.1M16 28.5v2.1M1.4 16h2.1M28.5 16h2.1"
+      stroke="currentColor"
+      stroke-width="1"
+      opacity="0.4"
+    />
   </svg>
 </template>

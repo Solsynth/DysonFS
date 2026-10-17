@@ -2,13 +2,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { Component } from 'vue'
-import {
-  CircleDash16,
-  Folder16,
-  StoragePool16,
-  TrashCan16,
-  WarningAlt16,
-} from '@carbon/icons-vue'
+import { CircleDash16, Folder16, StoragePool16, TrashCan16, WarningAlt16 } from '@carbon/icons-vue'
 
 import VolumePlatter from './VolumePlatter.vue'
 import { formatBytes, formatCount, initialOf } from '@/lib/format'
@@ -43,11 +37,9 @@ const nav = computed<NavItem[]>(() => [
 ])
 
 const poolColors = ['#c9ae83', '#8184c9', '#8fa6c9', '#8fbaa0', '#c98a7f']
-const maxPool = computed(() =>
-  Math.max(1, ...vault.poolRows.map((row) => row.bytes)),
-)
+const maxPool = computed(() => Math.max(1, ...vault.poolRows.map((row) => row.bytes)))
 
-const operator = computed(() => session.identity?.nick || session.identity?.name || 'operator')
+const operator = computed(() => session.identity?.nick || session.identity?.name || 'account')
 const operatorRole = computed(() =>
   session.identity?.is_superuser ? 'superuser' : 'authenticated',
 )
@@ -86,7 +78,7 @@ function barWidth(bytes: number): string {
   </Transition>
 
   <aside
-    class="fixed bottom-7 left-0 top-12 z-40 flex w-[250px] shrink-0 flex-col border-r border-line bg-ink transition-transform duration-200 lg:static lg:z-auto lg:h-full lg:translate-x-0"
+    class="fixed bottom-7 left-0 top-12 z-40 flex w-[250px] shrink-0 flex-col border-r border-line bg-base-100 transition-transform duration-200 lg:static lg:z-auto lg:h-full lg:translate-x-0"
     :class="ui.sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
     aria-label="Drive navigation"
   >
@@ -95,7 +87,7 @@ function barWidth(bytes: number): string {
         <span class="eyebrow">capacity / volume a</span>
         <RouterLink
           to="/storage"
-          class="text-3xs uppercase tracking-[0.12em] text-faint transition-colors hover:text-dim"
+          class="text-2xs uppercase tracking-[0.12em] text-faint transition-colors hover:text-dim"
           @click="navigate"
         >
           details
@@ -105,8 +97,8 @@ function barWidth(bytes: number): string {
         <VolumePlatter size="sm" :legend="false" caption="volume a" />
       </RouterLink>
       <div class="mt-2.5 flex items-center justify-between border-t border-line-soft pt-2">
-        <span class="text-3xs text-faint">{{ formatBytes(vault.usedBytes) }} used</span>
-        <span class="text-3xs text-dim">{{ formatBytes(vault.remainingBytes) }} free</span>
+        <span class="text-2xs text-faint">{{ formatBytes(vault.usedBytes) }} used</span>
+        <span class="text-2xs text-dim">{{ formatBytes(vault.remainingBytes) }} free</span>
       </div>
     </div>
 
@@ -118,11 +110,16 @@ function barWidth(bytes: number): string {
         v-for="item in nav"
         :key="item.to"
         :to="item.to"
-        class="group flex items-center gap-2 px-2 py-[7px] text-xs transition-colors"
+        class="group flex items-center gap-2 px-2 py-[7px] text-2xs transition-colors"
         :class="
           route.path === item.to || (item.match === '/drive' && route.path.startsWith('/drive'))
             ? 'bg-primary/10 text-base-content'
             : 'text-dim hover:bg-base-200/60 hover:text-base-content'
+        "
+        :aria-current="
+          route.path === item.to || (item.match === '/drive' && route.path.startsWith('/drive'))
+            ? 'page'
+            : undefined
         "
         @click="navigate"
       >
@@ -137,19 +134,19 @@ function barWidth(bytes: number): string {
         />
         <component :is="item.icon" class="shrink-0 text-faint" aria-hidden="true" />
         <span class="truncate">{{ item.label }}</span>
-        <span v-if="item.badge" class="ml-auto text-3xs tabular-nums text-faint">
+        <span v-if="item.badge" class="ml-auto text-2xs tabular-nums text-faint">
           {{ item.badge }}
         </span>
       </RouterLink>
 
       <div class="mt-5 flex items-center justify-between px-1.5 pb-1.5">
         <span class="eyebrow">pools</span>
-        <span class="text-3xs text-faint">{{ vault.pools.length }}</span>
+        <span class="text-2xs text-faint">{{ vault.pools.length }}</span>
       </div>
 
       <button
         type="button"
-        class="group flex w-full items-center gap-2 px-2 py-[6px] text-left text-xs transition-colors"
+        class="group flex w-full items-center gap-2 px-2 py-[6px] text-left text-2xs transition-colors"
         :class="
           vault.poolFilter === null
             ? 'text-base-content'
@@ -159,7 +156,7 @@ function barWidth(bytes: number): string {
       >
         <CircleDash16 class="shrink-0 text-faint" aria-hidden="true" />
         <span>All pools</span>
-        <span class="ml-auto text-3xs text-faint">default</span>
+        <span class="ml-auto text-2xs text-faint">default</span>
       </button>
 
       <button
@@ -171,7 +168,7 @@ function barWidth(bytes: number): string {
         :title="`Filter by ${row.pool.name}`"
         @click="selectPool(row.pool.id)"
       >
-        <div class="flex items-center gap-2 text-xs">
+        <div class="flex items-center gap-2 text-2xs">
           <span
             class="dot"
             :style="{ backgroundColor: poolColors[index % poolColors.length] }"
@@ -183,7 +180,7 @@ function barWidth(bytes: number): string {
           >
             {{ row.pool.name }}
           </span>
-          <span class="ml-auto shrink-0 text-3xs tabular-nums text-faint">
+          <span class="ml-auto shrink-0 text-2xs tabular-nums text-faint">
             {{ formatBytes(row.bytes) }}
           </span>
         </div>
@@ -199,7 +196,10 @@ function barWidth(bytes: number): string {
         </div>
       </button>
 
-      <p v-if="vault.poolRows.length === 0 && !vault.volumeLoading" class="px-2 py-1 text-3xs text-faint">
+      <p
+        v-if="vault.poolRows.length === 0 && !vault.volumeLoading"
+        class="px-2 py-1 text-2xs text-faint"
+      >
         No visible pools.
       </p>
 
@@ -208,12 +208,13 @@ function barWidth(bytes: number): string {
       </div>
       <RouterLink
         to="/storage"
-        class="group flex items-center gap-2 px-2 py-[7px] text-xs transition-colors"
+        class="group flex items-center gap-2 px-2 py-[7px] text-2xs transition-colors"
         :class="
           route.path === '/storage'
             ? 'bg-primary/10 text-base-content'
             : 'text-dim hover:bg-base-200/60 hover:text-base-content'
         "
+        :aria-current="route.path === '/storage' ? 'page' : undefined"
         @click="navigate"
       >
         <span
@@ -236,16 +237,16 @@ function barWidth(bytes: number): string {
         </span>
         <div class="min-w-0">
           <div class="truncate text-2xs text-base-content">{{ operator }}</div>
-          <div class="text-3xs uppercase tracking-[0.12em] text-faint">{{ operatorRole }}</div>
+          <div class="text-2xs uppercase tracking-[0.12em] text-faint">{{ operatorRole }}</div>
         </div>
-        <span class="ml-auto dot bg-success pulse-soft" title="Session active" aria-hidden="true" />
+        <span class="ml-auto dot bg-success" title="Session active" aria-hidden="true" />
       </div>
       <div class="mt-2 flex items-center justify-between gap-2 border-t border-line-soft pt-2">
-        <span class="text-3xs text-faint">{{ formatCount(vault.fileCount) }} objects indexed</span>
-        <span v-if="session.sample" class="text-3xs uppercase tracking-[0.1em] text-brass">
+        <span class="text-2xs text-faint">{{ formatCount(vault.fileCount) }} objects indexed</span>
+        <span v-if="session.sample" class="text-2xs uppercase tracking-[0.1em] text-brass">
           sample
         </span>
-        <span v-else class="text-3xs uppercase tracking-[0.1em] text-faint">live</span>
+        <span v-else class="text-2xs uppercase tracking-[0.1em] text-faint">live</span>
       </div>
     </div>
   </aside>

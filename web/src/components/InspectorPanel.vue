@@ -4,7 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   Checkmark16,
   Close16,
-  CopyLink16,
   Download16,
   Edit16,
   FolderDetails16,
@@ -15,7 +14,9 @@ import {
   View16,
 } from '@carbon/icons-vue'
 
+import CopyButton from './CopyButton.vue'
 import FileGlyph from './FileGlyph.vue'
+import IconButton from './IconButton.vue'
 import { openUrl, previewUrl } from '@/lib/api/drive'
 import type { CloudFile } from '@/lib/api/types'
 import {
@@ -48,7 +49,8 @@ const multi = computed(() => count.value > 1)
 const mode = computed(() => (route.meta.mode as 'drive' | 'unindexed' | 'recycle') ?? 'drive')
 const inRecycle = computed(() => mode.value === 'recycle')
 const showPreview = computed(
-  () => !!file.value && !multi.value && !vault.sample && hasPreview(file.value) && !previewFailed.value,
+  () =>
+    !!file.value && !multi.value && !vault.sample && hasPreview(file.value) && !previewFailed.value,
 )
 const isPublic = computed(() => file.value?.permission_status?.visibility === 'public')
 const dimensions = computed(() => (file.value ? fileDimensions(file.value) : null))
@@ -82,7 +84,7 @@ function openFile() {
     return
   }
   if (vault.sample) {
-    notice.info('Sample objects have no live bytes to open.')
+    notice.info('Sample objects have no file to open.')
     return
   }
   window.open(openUrl(file.value.id), '_blank', 'noopener')
@@ -91,11 +93,11 @@ function openFile() {
 function download() {
   if (!file.value) return
   if (file.value.is_folder) {
-    notice.info('Folders download as archives only from the API.')
+    notice.info('Folders download as a single archive, not a file.')
     return
   }
   if (vault.sample) {
-    notice.info('Sample objects have no live bytes to download.')
+    notice.info('Sample objects cannot be downloaded.')
     return
   }
   window.open(openUrl(file.value.id, true), '_blank', 'noopener')
@@ -156,22 +158,17 @@ async function toggleVisibility() {
 <template>
   <aside
     v-if="file"
-    class="fixed bottom-7 right-0 top-12 z-40 flex w-full flex-col border-l border-line bg-ink shadow-[-16px_0_40px_rgba(0,0,0,0.35)] sm:w-[336px] sm:max-w-[92vw] xl:static xl:z-auto xl:h-full xl:shadow-none"
+    class="fixed bottom-7 right-0 top-12 z-40 flex w-full flex-col border-l border-line bg-base-100 shadow-[-16px_0_40px_rgba(0,0,0,0.35)] sm:w-[336px] sm:max-w-[92vw] xl:static xl:z-auto xl:h-full xl:shadow-none"
     aria-label="Object inspector"
   >
     <div class="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
-      <span class="eyebrow">inspector / {{ multi ? 'selection' : 'object' }}</span>
-      <span class="ml-auto text-3xs tabular-nums text-faint">
+      <span class="eyebrow">inspector</span>
+      <span class="ml-auto text-2xs tabular-nums text-faint">
         {{ multi ? `${count} objects` : shortId(file.id) }}
       </span>
-      <button
-        type="button"
-        class="btn btn-ghost btn-xs px-1"
-        aria-label="Close inspector"
-        @click="close"
-      >
+      <IconButton label="Close inspector" @click="close">
         <Close16 />
-      </button>
+      </IconButton>
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto scroll-region">
@@ -192,18 +189,22 @@ async function toggleVisibility() {
               <FolderDetails16 class="h-3.5 w-3.5 shrink-0 text-faint" />
               <span class="truncate">{{ displayName(item) }}</span>
             </div>
-            <div v-if="count > 6" class="text-3xs text-faint">and {{ count - 6 }} more</div>
+            <div v-if="count > 6" class="text-2xs text-faint">and {{ count - 6 }} more</div>
           </div>
         </div>
 
-        <div class="grid grid-cols-3 gap-px border-b border-line bg-line">
-          <button class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200" type="button" @click="move">
+        <div class="grid grid-cols-3 gap-1 px-3 py-2.5">
+          <button
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
+            type="button"
+            @click="move"
+          >
             <Move16 class="text-faint" />
             Move
           </button>
           <button
             v-if="inRecycle"
-            class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200"
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
             type="button"
             @click="restore"
           >
@@ -212,7 +213,7 @@ async function toggleVisibility() {
           </button>
           <button
             v-else
-            class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200"
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
             type="button"
             @click="recycle"
           >
@@ -221,16 +222,16 @@ async function toggleVisibility() {
           </button>
           <button
             v-if="inRecycle"
-            class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-error transition-colors hover:bg-error/10"
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-error transition-colors hover:bg-error/10"
             type="button"
             @click="purge"
           >
             <TrashCan16 />
-            Delete
+            Delete forever
           </button>
           <button
             v-else
-            class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200"
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
             type="button"
             @click="vault.clearSelection()"
           >
@@ -253,14 +254,14 @@ async function toggleVisibility() {
             <div class="absolute inset-0 opacity-50 ruler" aria-hidden="true" />
             <div class="relative flex flex-col items-center gap-3">
               <FileGlyph v-if="file" :file="file" size="lg" class="opacity-80" />
-              <span class="text-3xs uppercase tracking-[0.16em] text-faint">
+              <span class="text-2xs uppercase tracking-[0.16em] text-faint">
                 {{ file ? kindLabel(file) : 'object' }}
               </span>
             </div>
           </div>
           <span
             v-if="isPublic"
-            class="absolute left-2 top-2 flex items-center gap-1 border border-brass/40 bg-ink/85 px-1.5 py-0.5 text-3xs text-brass"
+            class="absolute left-2 top-2 flex items-center gap-1 border border-brass/40 bg-ink/85 px-1.5 py-0.5 text-2xs text-brass"
           >
             <Link16 class="h-3 w-3" />
             public
@@ -280,26 +281,42 @@ async function toggleVisibility() {
           </div>
         </div>
 
-        <div class="grid grid-cols-3 gap-px border-b border-line bg-line">
-          <button class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200" type="button" @click="openFile">
+        <div class="grid grid-cols-3 gap-1 px-3 py-2.5">
+          <button
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
+            type="button"
+            @click="openFile"
+          >
             <View16 class="text-faint" />
             Open
           </button>
-          <button class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200" type="button" @click="download">
+          <button
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
+            type="button"
+            @click="download"
+          >
             <Download16 class="text-faint" />
             Download
           </button>
-          <button class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200" type="button" @click="rename">
+          <button
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
+            type="button"
+            @click="rename"
+          >
             <Edit16 class="text-faint" />
             Rename
           </button>
-          <button class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200" type="button" @click="move">
+          <button
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
+            type="button"
+            @click="move"
+          >
             <Move16 class="text-faint" />
             Move
           </button>
           <button
             v-if="inRecycle"
-            class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200"
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
             type="button"
             @click="restore"
           >
@@ -308,7 +325,7 @@ async function toggleVisibility() {
           </button>
           <button
             v-else
-            class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200"
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
             type="button"
             @click="recycle"
           >
@@ -317,20 +334,20 @@ async function toggleVisibility() {
           </button>
           <button
             v-if="inRecycle"
-            class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-error transition-colors hover:bg-error/10"
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-error transition-colors hover:bg-error/10"
             type="button"
             @click="purge"
           >
             <TrashCan16 />
-            Delete
+            Delete forever
           </button>
           <button
             v-else
-            class="flex flex-col items-center gap-1.5 bg-ink py-3 text-3xs text-dim transition-colors hover:bg-base-200"
+            class="flex flex-col items-center gap-1.5 rounded-[2px] py-2 text-2xs text-dim transition-colors hover:bg-base-200"
             type="button"
             @click="linkAction"
           >
-            <CopyLink16 class="text-faint" />
+            <Link16 class="text-faint" />
             Copy link
           </button>
         </div>
@@ -360,22 +377,15 @@ async function toggleVisibility() {
             </button>
           </div>
 
-          <div v-if="isPublic" class="mt-2.5 flex items-stretch border border-line bg-base-200/50">
+          <div v-if="isPublic" class="mt-2.5 flex items-stretch gap-2">
             <input
               :value="publicLink"
               readonly
-              class="min-w-0 flex-1 truncate bg-transparent px-2 py-1.5 font-mono text-3xs text-dim outline-none"
+              class="input h-7 min-w-0 flex-1 truncate px-2 font-mono text-2xs text-dim"
               aria-label="Public link"
               @focus="($event.target as HTMLInputElement).select()"
             />
-            <button
-              type="button"
-              class="flex shrink-0 items-center border-l border-line px-2 text-3xs text-faint transition-colors hover:text-base-content"
-              aria-label="Copy public link"
-              @click="linkAction"
-            >
-              <CopyLink16 class="h-3.5 w-3.5" />
-            </button>
+            <CopyButton :value="publicLink" label="public link" />
           </div>
         </div>
 
@@ -419,25 +429,38 @@ async function toggleVisibility() {
             </dd>
           </div>
           <div class="flex items-center justify-between gap-3 px-4 py-2">
-            <dt class="text-faint">Object</dt>
-            <dd class="font-mono text-dim">{{ shortId(file?.object_id) }}</dd>
+            <dt class="text-faint">Object id</dt>
+            <dd class="font-mono text-dim" :title="file?.object_id ?? undefined">
+              {{ shortId(file?.object_id) }}
+            </dd>
           </div>
           <div class="flex items-center justify-between gap-3 px-4 py-2">
             <dt class="text-faint">Hash</dt>
-            <dd class="font-mono text-dim">{{ shortHash(file?.object?.hash) }}</dd>
+            <dd class="font-mono text-dim" :title="file?.object?.hash ?? undefined">
+              {{ shortHash(file?.object?.hash) }}
+            </dd>
           </div>
         </dl>
 
         <div v-if="permissions" class="border-t border-line px-4 py-3.5">
           <div class="eyebrow">capabilities</div>
           <div class="mt-2 flex flex-wrap gap-1.5">
-            <span class="chip" :class="permissions.readable ? 'border-success/30 text-success' : 'text-faint'">
+            <span
+              class="chip"
+              :class="permissions.readable ? 'border-success/30 text-success' : 'text-faint'"
+            >
               {{ permissions.readable ? 'read' : 'no read' }}
             </span>
-            <span class="chip" :class="permissions.writable ? 'border-success/30 text-success' : 'text-faint'">
+            <span
+              class="chip"
+              :class="permissions.writable ? 'border-success/30 text-success' : 'text-faint'"
+            >
               {{ permissions.writable ? 'write' : 'no write' }}
             </span>
-            <span class="chip" :class="permissions.manageable ? 'border-success/30 text-success' : 'text-faint'">
+            <span
+              class="chip"
+              :class="permissions.manageable ? 'border-success/30 text-success' : 'text-faint'"
+            >
               {{ permissions.manageable ? 'manage' : 'no manage' }}
             </span>
           </div>
@@ -445,8 +468,12 @@ async function toggleVisibility() {
       </template>
     </div>
 
-    <div class="flex h-8 shrink-0 items-center justify-between border-t border-line px-3 text-3xs text-faint">
-      <span class="uppercase tracking-[0.12em]">{{ vault.sample ? 'sample object' : 'live object' }}</span>
+    <div
+      class="flex h-8 shrink-0 items-center justify-between border-t border-line px-3 text-2xs text-faint"
+    >
+      <span class="uppercase tracking-[0.12em]">{{
+        vault.sample ? 'sample object' : 'live object'
+      }}</span>
       <span class="font-mono">{{ file ? shortId(file.id) : '—' }}</span>
     </div>
   </aside>

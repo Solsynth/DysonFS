@@ -8,7 +8,6 @@ import DialogHost from './DialogHost.vue'
 import InspectorPanel from './InspectorPanel.vue'
 import StatusBar from './StatusBar.vue'
 import TitleBar from './TitleBar.vue'
-import ToastStack from './ToastStack.vue'
 import UploadDock from './UploadDock.vue'
 import { useUiStore } from '@/stores/ui'
 import { useUploadStore } from '@/stores/upload'
@@ -115,9 +114,9 @@ onBeforeUnmount(() => {
         <RouterView v-slot="{ Component }">
           <Transition
             mode="out-in"
-            enter-active-class="transition duration-150 ease-out"
+            enter-active-class="transition duration-[160ms] ease-out"
             enter-from-class="opacity-0 translate-y-[2px]"
-            leave-active-class="transition duration-100 ease-in"
+            leave-active-class="transition duration-[160ms] ease-in"
             leave-to-class="opacity-0"
           >
             <component :is="Component" />
@@ -131,6 +130,5 @@ onBeforeUnmount(() => {
     <CommandPalette />
     <DialogHost />
     <UploadDock />
-    <ToastStack />
   </div>
 </template>

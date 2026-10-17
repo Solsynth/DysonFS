@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Checkmark16, ChevronDown16, ChevronUp16, Close16, Error16, Upload16 } from '@carbon/icons-vue'
+import {
+  Checkmark16,
+  ChevronDown16,
+  ChevronUp16,
+  Close16,
+  Error16,
+  Upload16,
+} from '@carbon/icons-vue'
 
+import IconButton from './IconButton.vue'
 import { formatBytes } from '@/lib/format'
 import { useUploadStore } from '@/stores/upload'
 
@@ -24,7 +32,7 @@ function toggle() {
 function statusLabel(status: string, progress: number): string {
   if (status === 'queued') return 'queued'
   if (status === 'uploading') return `${progress}%`
-  if (status === 'done') return 'landed'
+  if (status === 'done') return 'complete'
   if (status === 'cancelled') return 'cancelled'
   return 'failed'
 }
@@ -39,7 +47,7 @@ function statusLabel(status: string, progress: number): string {
   >
     <section
       v-if="visible"
-      class="fixed bottom-10 right-3 z-50 w-[340px] max-w-[calc(100vw-24px)] border border-line bg-ink shadow-[0_16px_48px_rgba(0,0,0,0.45)]"
+      class="fixed bottom-10 right-3 z-50 w-[340px] max-w-[calc(100vw-24px)] border border-line bg-base-100 shadow-[0_16px_48px_rgba(0,0,0,0.35)]"
       aria-label="Transfers"
     >
       <button
@@ -50,8 +58,8 @@ function statusLabel(status: string, progress: number): string {
       >
         <Upload16 class="h-3.5 w-3.5 text-faint" />
         <span class="eyebrow">transfers</span>
-        <span class="text-3xs text-faint">{{ summary }}</span>
-        <span class="ml-auto text-3xs tabular-nums text-dim">
+        <span class="text-2xs text-faint">{{ summary }}</span>
+        <span class="ml-auto text-2xs tabular-nums text-dim">
           {{ uploads.finished.length + uploads.activeCount }}
         </span>
         <ChevronUp16 v-if="uploads.collapsed" class="h-3.5 w-3.5 text-faint" />
@@ -69,8 +77,14 @@ function statusLabel(status: string, progress: number): string {
         <ul class="max-h-[260px] divide-y divide-line-soft overflow-y-auto">
           <li v-for="task in uploads.tasks" :key="task.id" class="px-3 py-2">
             <div class="flex items-center gap-2">
-              <Checkmark16 v-if="task.status === 'done'" class="h-3.5 w-3.5 shrink-0 text-success" />
-              <Error16 v-else-if="task.status === 'error'" class="h-3.5 w-3.5 shrink-0 text-error" />
+              <Checkmark16
+                v-if="task.status === 'done'"
+                class="h-3.5 w-3.5 shrink-0 text-success"
+              />
+              <Error16
+                v-else-if="task.status === 'error'"
+                class="h-3.5 w-3.5 shrink-0 text-error"
+              />
               <span
                 v-else
                 class="dot shrink-0"
@@ -80,27 +94,20 @@ function statusLabel(status: string, progress: number): string {
               <span class="min-w-0 flex-1 truncate text-2xs text-base-content" :title="task.name">
                 {{ task.name }}
               </span>
-              <span class="shrink-0 text-3xs tabular-nums text-faint">
+              <span class="shrink-0 text-2xs tabular-nums text-faint">
                 {{ statusLabel(task.status, task.progress) }}
               </span>
-              <button
+              <IconButton
                 v-if="task.status === 'uploading' || task.status === 'queued'"
-                type="button"
-                class="shrink-0 text-faint transition-colors hover:text-error"
-                :aria-label="`Cancel ${task.name}`"
+                tone="danger"
+                :label="`Cancel ${task.name}`"
                 @click="uploads.cancel(task.id)"
               >
                 <Close16 class="h-3.5 w-3.5" />
-              </button>
-              <button
-                v-else
-                type="button"
-                class="shrink-0 text-faint transition-colors hover:text-base-content"
-                :aria-label="`Dismiss ${task.name}`"
-                @click="uploads.dismiss(task.id)"
-              >
+              </IconButton>
+              <IconButton v-else :label="`Dismiss ${task.name}`" @click="uploads.dismiss(task.id)">
                 <Close16 class="h-3.5 w-3.5" />
-              </button>
+              </IconButton>
             </div>
 
             <div class="mt-1.5 flex items-center gap-2">
@@ -117,17 +124,17 @@ function statusLabel(status: string, progress: number): string {
                   :style="{ width: `${task.status === 'done' ? 100 : task.progress}%` }"
                 />
               </div>
-              <span class="text-3xs tabular-nums text-faint">{{ formatBytes(task.size) }}</span>
+              <span class="text-2xs tabular-nums text-faint">{{ formatBytes(task.size) }}</span>
             </div>
-            <p v-if="task.error" class="mt-1 truncate text-3xs text-error">{{ task.error }}</p>
+            <p v-if="task.error" class="mt-1 truncate text-2xs text-error">{{ task.error }}</p>
           </li>
         </ul>
 
         <div class="flex items-center justify-between border-t border-line px-3 py-1.5">
-          <span class="text-3xs text-faint">direct upload / proxied</span>
+          <span class="text-2xs text-faint">Uploads to this folder</span>
           <button
             type="button"
-            class="text-3xs text-faint transition-colors hover:text-base-content"
+            class="text-2xs text-faint transition-colors hover:text-base-content"
             @click="uploads.clearFinished()"
           >
             Clear finished

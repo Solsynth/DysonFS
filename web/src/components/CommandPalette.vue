@@ -111,8 +111,8 @@ const commands = computed<Command[]>(() => {
     },
     {
       id: 'refresh',
-      label: 'Refresh listing and telemetry',
-      hint: 're-read from master',
+      label: 'Refresh listing and storage',
+      hint: 'read again',
       group: 'View',
       icon: Renew16,
       run: () => {
@@ -179,7 +179,7 @@ const commands = computed<Command[]>(() => {
   const searchCommand: Command = {
     id: 'search',
     label: `Search this location for “${query.value.trim()}”`,
-    hint: 'server-side query',
+    hint: 'in this folder',
     group: 'Search',
     icon: Search16,
     run: () => {
@@ -202,8 +202,7 @@ const commands = computed<Command[]>(() => {
 
   const filtered = base.filter(
     (command) =>
-      command.label.toLowerCase().includes(needle) ||
-      command.hint.toLowerCase().includes(needle),
+      command.label.toLowerCase().includes(needle) || command.hint.toLowerCase().includes(needle),
   )
 
   return [searchCommand, ...matches, ...filtered]
@@ -245,8 +244,7 @@ watch(
 
 function move(delta: number) {
   if (commands.value.length === 0) return
-  selected.value =
-    (selected.value + delta + commands.value.length) % commands.value.length
+  selected.value = (selected.value + delta + commands.value.length) % commands.value.length
   void nextTick(() => {
     document.getElementById(`palette-item-${selected.value}`)?.scrollIntoView({ block: 'nearest' })
   })
@@ -285,11 +283,11 @@ function onKeydown(event: KeyboardEvent) {
     >
       <div
         v-if="ui.paletteOpen"
-        class="fixed inset-0 z-[80] flex justify-center bg-black/65 px-3 pt-[10vh] backdrop-blur-[2px]"
+        class="fixed inset-0 z-[80] flex justify-center bg-black/60 px-3 pt-[10vh] backdrop-blur-[2px]"
         @mousedown.self="close"
       >
         <div
-          class="palette-in h-fit w-full max-w-[620px] border border-line bg-ink shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
+          class="palette-in h-fit w-full max-w-[620px] border border-line bg-base-100 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
           role="dialog"
           aria-modal="true"
           aria-label="Command palette"
@@ -333,7 +331,9 @@ function onKeydown(event: KeyboardEvent) {
                 @mousemove="selected = entry.index"
                 @click="entry.command.run()"
               >
-                <span class="grid size-6 shrink-0 place-items-center border border-line-soft bg-base-200/50">
+                <span
+                  class="grid size-6 shrink-0 place-items-center border border-line-soft bg-base-200/50"
+                >
                   <FileGlyph v-if="entry.command.file" :file="entry.command.file" />
                   <component
                     :is="entry.command.icon"
@@ -342,16 +342,22 @@ function onKeydown(event: KeyboardEvent) {
                   />
                 </span>
                 <span class="min-w-0 flex-1 truncate text-xs">{{ entry.command.label }}</span>
-                <span class="hidden shrink-0 text-3xs text-faint sm:block">{{ entry.command.hint }}</span>
+                <span class="hidden shrink-0 text-2xs text-faint sm:block">{{
+                  entry.command.hint
+                }}</span>
                 <span v-if="selected === entry.index" class="kbd shrink-0">↵</span>
               </button>
             </template>
           </div>
 
-          <div class="flex items-center gap-3 border-t border-line px-3.5 py-2 text-3xs text-faint">
-            <span class="flex items-center gap-1"><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span>
+          <div class="flex items-center gap-3 border-t border-line px-3.5 py-2 text-2xs text-faint">
+            <span class="flex items-center gap-1"
+              ><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span
+            >
             <span class="flex items-center gap-1"><span class="kbd">↵</span> run</span>
-            <span class="ml-auto flex items-center gap-1"><span class="kbd">⌘</span><span class="kbd">K</span> toggle</span>
+            <span class="ml-auto flex items-center gap-1"
+              ><span class="kbd">⌘</span><span class="kbd">K</span> toggle</span
+            >
           </div>
         </div>
       </div>

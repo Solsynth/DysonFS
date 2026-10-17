@@ -7,13 +7,31 @@
     <link rel="icon" href="/favicon.png" type="image/png" sizes="1024x1024" />
     <link rel="apple-touch-icon" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#080b13" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0a0d16" />
     <meta
       name="description"
-      content="DysonFS — the file system of Solar Network. Browse, upload, and manage your drive."
+      content="Dyson Drive — the file system of Solar Network. Browse, upload, and manage your drive."
     />
-    <title>DysonFS</title>
+    <title>Dyson Drive</title>
+    <script>
+      // Apply the stored (or OS) theme before first paint so a light-theme
+      // operator never sees a dark flash while the module bundle loads.
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('solarpass.theme')
+          var theme =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark'
+          document.documentElement.dataset.theme = theme === 'light' ? 'dyson-light' : 'dyson'
+        } catch (error) {
+          /* Leave the default theme in place. */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

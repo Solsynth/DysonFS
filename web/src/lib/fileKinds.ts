@@ -52,8 +52,31 @@ const codeExtensions = new Set([
 ])
 
 const dataExtensions = new Set(['json', 'xml', 'csv', 'tsv', 'parquet', 'ndjson'])
-const archiveExtensions = new Set(['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'dmg', 'iso'])
-const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'heic', 'svg', 'bmp', 'tif', 'tiff'])
+const archiveExtensions = new Set([
+  'zip',
+  'tar',
+  'gz',
+  'tgz',
+  'bz2',
+  'xz',
+  '7z',
+  'rar',
+  'dmg',
+  'iso',
+])
+const imageExtensions = new Set([
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'avif',
+  'heic',
+  'svg',
+  'bmp',
+  'tif',
+  'tiff',
+])
 const videoExtensions = new Set(['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'mpg', 'mpeg'])
 const audioExtensions = new Set(['mp3', 'flac', 'wav', 'ogg', 'm4a', 'aac', 'opus'])
 const sheetExtensions = new Set(['xls', 'xlsx', 'csv', 'ods'])

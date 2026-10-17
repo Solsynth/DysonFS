@@ -161,7 +161,12 @@ export const samplePools: FilePool[] = [
     name: 'asterism',
     description: 'Primary object storage for active work.',
     account_id: 'demo-account',
-    storage_config: { enable_signed: true, enable_ssl: true, endpoint: 's3.internal', bucket: 'dyson-live' },
+    storage_config: {
+      enable_signed: true,
+      enable_ssl: true,
+      endpoint: 's3.internal',
+      bucket: 'dyson-live',
+    },
     billing_config: { cost_multiplier: 1 },
     policy_config: { public_usable: false },
     is_hidden: false,
@@ -173,7 +178,12 @@ export const samplePools: FilePool[] = [
     name: 'deep-field',
     description: 'Everyday archive. Slower tier, lower cost.',
     account_id: 'demo-account',
-    storage_config: { enable_signed: true, enable_ssl: true, endpoint: 's3-archive.internal', bucket: 'dyson-archive' },
+    storage_config: {
+      enable_signed: true,
+      enable_ssl: true,
+      endpoint: 's3-archive.internal',
+      bucket: 'dyson-archive',
+    },
     billing_config: { cost_multiplier: 0.6 },
     policy_config: { public_usable: false },
     is_hidden: false,
@@ -185,7 +195,12 @@ export const samplePools: FilePool[] = [
     name: 'nightfall',
     description: 'Cold storage for completed missions.',
     account_id: 'demo-account',
-    storage_config: { enable_signed: true, enable_ssl: true, endpoint: 's3-cold.internal', bucket: 'dyson-cold' },
+    storage_config: {
+      enable_signed: true,
+      enable_ssl: true,
+      endpoint: 's3-cold.internal',
+      bucket: 'dyson-cold',
+    },
     billing_config: { cost_multiplier: 0.25 },
     policy_config: { public_usable: false },
     is_hidden: false,
@@ -221,16 +236,7 @@ const seedFiles: CloudFile[] = [
   folder('fld-archive', 'Archive', null, 3, '2026-09-28T11:20:00Z', 'pool-deep-field'),
   folder('fld-telemetry', 'Telemetry', 'fld-orbital', 3, '2026-10-17T09:40:00Z'),
 
-  doc(
-    'file-readme',
-    'README.md',
-    null,
-    3_260,
-    'text/markdown',
-    '2026-10-15T14:22:00Z',
-    {},
-    {},
-  ),
+  doc('file-readme', 'README.md', null, 3_260, 'text/markdown', '2026-10-15T14:22:00Z', {}, {}),
   doc(
     'file-manifest',
     'drive-manifest.json',
@@ -273,15 +279,9 @@ const seedFiles: CloudFile[] = [
     '2026-10-17T06:18:00Z',
     { indexed: false, pool_id: 'pool-nightfall' },
   ),
-  doc(
-    'file-scratch',
-    'scratch-notes.md',
-    null,
-    7_940,
-    'text/markdown',
-    '2026-10-17T07:02:00Z',
-    { indexed: false },
-  ),
+  doc('file-scratch', 'scratch-notes.md', null, 7_940, 'text/markdown', '2026-10-17T07:02:00Z', {
+    indexed: false,
+  }),
   doc(
     'file-dump',
     'telemetry-dump.bin',
@@ -425,7 +425,12 @@ const seedFiles: CloudFile[] = [
 
 export const sampleFiles: CloudFile[] = seedFiles
 
-function compareFiles(a: CloudFile, b: CloudFile, order: DemoContext['order'], desc: boolean): number {
+function compareFiles(
+  a: CloudFile,
+  b: CloudFile,
+  order: DemoContext['order'],
+  desc: boolean,
+): number {
   // Folders hold their position above files in every sample view.
   if (a.is_folder !== b.is_folder) return a.is_folder ? -1 : 1
   let delta = 0
@@ -507,7 +512,13 @@ export function sampleRename(fileId: string, name: string) {
 }
 
 export function sampleCreateFolder(name: string, parentId: string | null): CloudFile {
-  const created = folder(`fld-${Date.now().toString(36)}`, name, parentId, 0, new Date().toISOString())
+  const created = folder(
+    `fld-${Date.now().toString(36)}`,
+    name,
+    parentId,
+    0,
+    new Date().toISOString(),
+  )
   sampleFiles.unshift(created)
   const parent = parentId ? sampleFile(parentId) : null
   if (parent) parent.children_count = (parent.children_count ?? 0) + 1

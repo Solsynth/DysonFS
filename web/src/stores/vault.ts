@@ -154,9 +154,7 @@ export const useVaultStore = defineStore('vault', () => {
   const primarySelected = computed(() => {
     if (selection.value.length === 0) return null
     return (
-      items.value.find((item) => item.id === inspectedId.value) ??
-      selectedItems.value[0] ??
-      null
+      items.value.find((item) => item.id === inspectedId.value) ?? selectedItems.value[0] ?? null
     )
   })
   const selectedBytes = computed(() =>
@@ -165,7 +163,7 @@ export const useVaultStore = defineStore('vault', () => {
   const activePool = computed(
     () => pools.value.find((pool) => pool.id === poolFilter.value) ?? null,
   )
-  const canGoUp = computed(() => (folder.value ? folder.value.parent_id ?? null : null))
+  const canGoUp = computed(() => (folder.value ? (folder.value.parent_id ?? null) : null))
   const isEmpty = computed(() => !loading.value && !error.value && items.value.length === 0)
   const hasMore = computed(() => items.value.length < total.value)
   const showingLabel = computed(() => {
@@ -305,9 +303,7 @@ export const useVaultStore = defineStore('vault', () => {
       if (seq !== loadSeq) return
       items.value = arrangeFoldersFirst(page.items)
       total.value = page.total
-      selection.value = selection.value.filter((id) =>
-        items.value.some((item) => item.id === id),
-      )
+      selection.value = selection.value.filter((id) => items.value.some((item) => item.id === id))
       if (inspectedId.value && !items.value.some((item) => item.id === inspectedId.value)) {
         inspectedId.value = null
         inspectorOpen.value = false
@@ -633,7 +629,8 @@ export const useVaultStore = defineStore('vault', () => {
     try {
       const current = await permissionsFor(file)
       const next = current.filter(
-        (permission) => permission.subject_type !== 'public' && permission.subject_type !== 'private',
+        (permission) =>
+          permission.subject_type !== 'public' && permission.subject_type !== 'private',
       )
       next.push({
         id: undefined,
@@ -668,7 +665,8 @@ export const useVaultStore = defineStore('vault', () => {
     }
     if (sample.value) {
       return sampleFiles.filter(
-        (file) => file.is_folder && !file.is_marked_recycle && (file.parent_id ?? null) === parentId,
+        (file) =>
+          file.is_folder && !file.is_marked_recycle && (file.parent_id ?? null) === parentId,
       )
     }
     const page = parentId

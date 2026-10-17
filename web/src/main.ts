@@ -11,6 +11,9 @@ import './assets/main.css'
 
 import App from './App.vue'
 import router from './router'
+import { applyTheme, readTheme } from './lib/prefs'
+
+applyTheme(readTheme())
 
 const app = createApp(App)
 

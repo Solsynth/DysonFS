@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 
 import { uploadDirect } from '@/lib/api/drive'
 import { isSampleData, sampleUpload } from '@/lib/demo'
+import { formatCount } from '@/lib/format'
 
 import { useNoticeStore } from './notice'
 import { useVaultStore } from './vault'
@@ -83,8 +84,8 @@ export const useUploadStore = defineStore('upload', () => {
     collapsed.value = false
     notice.info(
       accepted.length === 1
-        ? `Queued ${accepted[0]!.name}.`
-        : `Queued ${accepted.length} transfers.`,
+        ? `${accepted[0]!.name} queued to upload.`
+        : `${formatCount(accepted.length)} files queued to upload.`,
     )
     pump()
   }
@@ -114,7 +115,7 @@ export const useUploadStore = defineStore('upload', () => {
         onProgress: (percent) => update(id, { progress: percent }),
       })
       update(id, { status: 'done', progress: 100 })
-      notice.ok(`${file.name} landed in the drive.`)
+      notice.ok(`${file.name} uploaded.`)
       await Promise.all([vault.load(), vault.loadVolume()])
     } catch (caught) {
       if (controller.signal.aborted) {
@@ -163,7 +164,7 @@ export const useUploadStore = defineStore('upload', () => {
         const file = list[index]
         if (file) sampleUpload(file, parentId)
       })
-      notice.info('Sample transfer complete. No bytes left the browser.')
+      notice.info('Sample upload complete. Nothing was saved.')
       void vault.load()
     }
     sampleTimer = window.setTimeout(advance, 180)

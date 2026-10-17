@@ -50,7 +50,8 @@ function onKeydown(event: KeyboardEvent, file: CloudFile) {
   if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
     event.preventDefault()
     const card = event.currentTarget as HTMLElement
-    const sibling = event.key === 'ArrowRight' ? card.nextElementSibling : card.previousElementSibling
+    const sibling =
+      event.key === 'ArrowRight' ? card.nextElementSibling : card.previousElementSibling
     if (sibling instanceof HTMLElement) sibling.focus()
   }
 }
@@ -80,7 +81,7 @@ function isPublic(file: CloudFile): boolean {
         :key="file.id"
         tabindex="0"
         role="listitem"
-        class="group relative flex cursor-default flex-col border transition-colors focus:outline-none"
+        class="group relative flex cursor-default flex-col border transition-colors focus-visible:outline"
         :class="
           vault.selection.includes(file.id)
             ? 'border-primary/70 bg-primary/[0.08]'
@@ -108,7 +109,7 @@ function isPublic(file: CloudFile): boolean {
 
           <input
             type="checkbox"
-            class="checkbox checkbox-xs absolute left-2 top-2 rounded-[2px] border-line bg-ink/80 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
+            class="checkbox checkbox-xs absolute left-2 top-2 rounded-[2px] border-line bg-base-100/80 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
             :class="vault.selection.includes(file.id) ? 'opacity-100' : ''"
             :checked="vault.selection.includes(file.id)"
             :aria-label="`Select ${file.name}`"
@@ -118,7 +119,7 @@ function isPublic(file: CloudFile): boolean {
 
           <span
             v-if="isPublic(file)"
-            class="absolute right-2 top-2 grid size-5 place-items-center border border-brass/40 bg-ink/85 text-brass"
+            class="absolute right-2 top-2 grid size-5 place-items-center border border-brass/40 bg-base-100/85 text-brass"
             title="Published by link"
           >
             <CopyLink16 class="h-3 w-3" />
@@ -126,7 +127,7 @@ function isPublic(file: CloudFile): boolean {
 
           <span
             v-if="file.is_folder && (file.children_count ?? 0) > 0"
-            class="absolute bottom-2 right-2 border border-line bg-ink/85 px-1.5 py-0.5 text-3xs tabular-nums text-dim"
+            class="absolute bottom-2 right-2 border border-line bg-base-100/85 px-1.5 py-0.5 text-2xs tabular-nums text-dim"
           >
             {{ file.children_count }}
           </span>
@@ -136,10 +137,12 @@ function isPublic(file: CloudFile): boolean {
           <span class="truncate text-xs text-base-content" :title="displayName(file)">
             {{ displayName(file) }}
           </span>
-          <span class="flex items-center gap-1.5 text-3xs text-faint">
+          <span class="flex items-center gap-1.5 text-2xs text-faint">
             <span class="uppercase tracking-[0.06em]">{{ kindLabel(file) }}</span>
             <span aria-hidden="true">·</span>
-            <span>{{ file.is_folder ? modifiedLabel(file.updated_at) : formatBytes(file.object?.size) }}</span>
+            <span>{{
+              file.is_folder ? modifiedLabel(file.updated_at) : formatBytes(file.object?.size)
+            }}</span>
           </span>
         </div>
       </article>

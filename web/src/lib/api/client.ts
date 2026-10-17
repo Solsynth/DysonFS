@@ -15,7 +15,13 @@ export class DriveError extends Error {
   readonly detail?: string
   readonly fields?: ErrorFields
 
-  constructor(status: number, message: string, code?: string, detail?: string, fields?: ErrorFields) {
+  constructor(
+    status: number,
+    message: string,
+    code?: string,
+    detail?: string,
+    fields?: ErrorFields,
+  ) {
     super(message)
     this.name = 'DriveError'
     this.status = status
@@ -94,13 +100,7 @@ async function parseError(response: Response): Promise<DriveError> {
       payload.message ||
       (typeof payload.error === 'string' ? payload.error : '') ||
       fallback.message
-    return new DriveError(
-      response.status,
-      message,
-      payload.code,
-      payload.detail,
-      payload.errors,
-    )
+    return new DriveError(response.status, message, payload.code, payload.detail, payload.errors)
   } catch {
     return fallback
   }

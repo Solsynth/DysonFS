@@ -25,11 +25,11 @@ const displayPercent = computed(() => {
   if (!hasQuota.value) return '—'
   return percent.value < 10 ? percent.value.toFixed(1) : Math.round(percent.value).toString()
 })
-const activeTicks = computed(() =>
-  hasQuota.value ? Math.round(vault.usedFraction * TICKS) : 0,
-)
+const activeTicks = computed(() => (hasQuota.value ? Math.round(vault.usedFraction * TICKS) : 0))
 const circumference = 2 * Math.PI * 76
-const arcLength = computed(() => `${Math.max(0, vault.usedFraction) * circumference} ${circumference}`)
+const arcLength = computed(
+  () => `${Math.max(0, vault.usedFraction) * circumference} ${circumference}`,
+)
 const axis = computed(() => vault.usedFraction > 0.86)
 
 const percentClass = computed(() => {
@@ -51,11 +51,17 @@ const percentClass = computed(() => {
         <defs>
           <radialGradient id="platter-core" cx="50%" cy="42%" r="70%">
             <stop offset="0%" stop-color="var(--color-base-300)" stop-opacity="0.9" />
-            <stop offset="100%" stop-color="var(--color-base)" stop-opacity="0.2" />
+            <stop offset="100%" stop-color="var(--color-base-100)" stop-opacity="0.2" />
           </radialGradient>
         </defs>
 
-        <circle cx="100" cy="100" r="89" fill="url(#platter-core)" stroke="var(--color-line-soft)" />
+        <circle
+          cx="100"
+          cy="100"
+          r="89"
+          fill="url(#platter-core)"
+          stroke="var(--color-line-soft)"
+        />
 
         <line
           v-for="tick in tickList"
@@ -99,8 +105,23 @@ const percentClass = computed(() => {
           class="platter-arc"
         />
 
-        <circle cx="100" cy="100" r="58" fill="none" stroke="var(--color-line-soft)" stroke-dasharray="1 5" opacity="0.8" />
-        <circle cx="100" cy="100" r="38" fill="none" stroke="var(--color-line-soft)" opacity="0.65" />
+        <circle
+          cx="100"
+          cy="100"
+          r="58"
+          fill="none"
+          stroke="var(--color-line-soft)"
+          stroke-dasharray="1 5"
+          opacity="0.8"
+        />
+        <circle
+          cx="100"
+          cy="100"
+          r="38"
+          fill="none"
+          stroke="var(--color-line-soft)"
+          opacity="0.65"
+        />
 
         <path
           d="M100 26v5M100 169v5M26 100h5M169 100h5"
@@ -112,31 +133,32 @@ const percentClass = computed(() => {
       </svg>
 
       <div class="absolute inset-0 flex flex-col items-center justify-center text-center">
-        <span class="eyebrow !text-[9px]">{{ hasQuota ? caption : 'no quota' }}</span>
+        <span class="eyebrow !text-[10px]">{{ hasQuota ? caption : 'no quota' }}</span>
         <div
           class="title mt-1 tabular-nums"
           :class="[percentClass, axis ? 'text-error' : 'text-base-content']"
         >
-          {{ displayPercent }}<span v-if="hasQuota" class="text-[0.5em] font-normal text-dim">%</span>
+          {{ displayPercent
+          }}<span v-if="hasQuota" class="text-[0.5em] font-normal text-dim">%</span>
         </div>
         <span v-if="size !== 'sm'" class="mt-1.5 text-2xs tracking-[0.04em] text-faint">
           {{ formatBytes(vault.usedBytes) }} / {{ formatBytes(vault.quotaBytes) }}
         </span>
-        <span v-else class="mt-1 text-3xs tracking-[0.08em] text-faint">
+        <span v-else class="mt-1 text-2xs tracking-[0.08em] text-faint">
           {{ formatBytes(vault.usedBytes) }} used
         </span>
       </div>
     </div>
 
-    <div v-if="legend" class="grid w-full grid-cols-2 gap-px bg-line">
-      <div class="bg-ink px-3 py-2">
+    <div v-if="legend" class="grid w-full grid-cols-2 gap-3">
+      <div>
         <span class="eyebrow">used</span>
         <div class="mt-1 flex items-center gap-1.5 text-xs text-base-content">
           <span class="dot bg-brass" aria-hidden="true" />
           {{ formatBytes(vault.usedBytes) }}
         </div>
       </div>
-      <div class="bg-ink px-3 py-2 text-right">
+      <div class="text-right">
         <span class="eyebrow">free</span>
         <div class="mt-1 flex items-center justify-end gap-1.5 text-xs text-dim">
           {{ formatBytes(vault.remainingBytes) }}

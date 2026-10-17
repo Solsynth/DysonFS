@@ -32,6 +32,11 @@ const folderParam = computed(() => (typeof route.params.id === 'string' ? route.
 const onDrive = computed(() => mode.value === 'drive')
 const folderCount = computed(() => vault.items.filter((file) => file.is_folder).length)
 const viewKey = computed(() => `${route.fullPath}:${vault.viewMode}`)
+const pageTitle = computed(() => {
+  const last = vault.crumbs[vault.crumbs.length - 1]
+  if (last?.name) return last.name
+  return typeof route.meta.title === 'string' ? route.meta.title : 'My Drive'
+})
 
 const emptyState = computed(() => {
   if (vault.query.trim()) {
@@ -124,13 +129,15 @@ function retry() {
 
 <template>
   <div
-    class="relative flex min-h-0 flex-1 flex-col bg-ink"
+    class="relative flex min-h-0 flex-1 flex-col bg-base-100"
     @dragenter="onDragEnter"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
   >
     <FileToolbar />
+
+    <h1 class="sr-only">{{ pageTitle }}</h1>
 
     <div class="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -154,7 +161,7 @@ function retry() {
 
       <div
         v-if="vault.error && !vault.loading"
-        class="absolute inset-0 grid place-items-center overflow-y-auto bg-ink px-5"
+        class="absolute inset-0 grid place-items-center overflow-y-auto bg-base-100 px-5"
       >
         <div class="w-full max-w-[420px] border border-line bg-base-200/30 p-5 text-center">
           <WarningAlt16 class="mx-auto h-6 w-6 text-error" />
@@ -191,11 +198,15 @@ function retry() {
             </button>
           </template>
           <template v-else-if="onDrive">
-            <button class="btn btn-primary btn-sm" type="button" @click="requestUpload">
+            <button class="btn btn-outline btn-sm" type="button" @click="requestUpload">
               <Upload16 class="mr-1.5" />
               Upload files
             </button>
-            <button class="btn btn-outline btn-sm" type="button" @click="ui.openDialog({ kind: 'new-folder' })">
+            <button
+              class="btn btn-outline btn-sm"
+              type="button"
+              @click="ui.openDialog({ kind: 'new-folder' })"
+            >
               <FolderAdd16 class="mr-1.5" />
               New folder
             </button>
@@ -206,10 +217,10 @@ function retry() {
 
     <footer
       v-if="vault.items.length > 0"
-      class="flex h-9 shrink-0 items-center gap-3 border-t border-line bg-ink px-3 text-3xs text-faint md:px-4"
+      class="flex h-9 shrink-0 items-center gap-3 bg-base-100 px-3 text-2xs text-faint md:px-4"
     >
       <span>{{ vault.showingLabel }}</span>
-      <span v-if="folderCount > 0" class="hidden text-3xs sm:block">
+      <span v-if="folderCount > 0" class="hidden text-2xs sm:block">
         · {{ formatCount(folderCount) }} {{ plural(folderCount, 'folder') }}
       </span>
       <div class="ml-auto">
@@ -229,9 +240,11 @@ function retry() {
 
     <div
       v-if="dragging"
-      class="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-ink/85 p-6 backdrop-blur-[1px]"
+      class="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-base-100/85 p-6 backdrop-blur-[1px]"
     >
-      <div class="flex flex-col items-center gap-2.5 border border-dashed border-primary/70 bg-primary/[0.06] px-10 py-8 text-center">
+      <div
+        class="flex flex-col items-center gap-2.5 border border-dashed border-primary/70 bg-primary/[0.06] px-10 py-8 text-center"
+      >
         <Upload16 class="h-7 w-7 text-primary" />
         <div class="title text-lg text-base-content">Drop to upload</div>
         <div class="voice">

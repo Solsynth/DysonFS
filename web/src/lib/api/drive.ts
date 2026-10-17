@@ -86,8 +86,7 @@ export const driveApi = {
       body: { file_ids: fileIds },
     }),
 
-  permissions: (fileId: string) =>
-    request<FilePermission[]>(`/files/${fileId}/permissions`),
+  permissions: (fileId: string) => request<FilePermission[]>(`/files/${fileId}/permissions`),
 
   setPermissions: (fileId: string, items: FilePermission[]) =>
     request<{ ok: boolean }>(`/files/${fileId}/permissions`, {
@@ -151,7 +150,9 @@ export function uploadDirect(file: File, options: UploadOptions = {}): Promise<C
           options.onProgress?.(100)
           resolve(parsed)
         } catch {
-          reject(new DriveError(xhr.status, 'The upload finished but the file record was unreadable.'))
+          reject(
+            new DriveError(xhr.status, 'The upload finished but the file record was unreadable.'),
+          )
         }
         return
       }

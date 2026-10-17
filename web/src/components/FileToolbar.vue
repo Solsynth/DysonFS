@@ -18,6 +18,7 @@ import {
 
 import type { FileOrder, KindFilter } from '@/lib/api/types'
 import { formatBytes, formatCount } from '@/lib/format'
+import IconButton from './IconButton.vue'
 import { useUiStore } from '@/stores/ui'
 import { useVaultStore, type BrowsingMode } from '@/stores/vault'
 
@@ -32,7 +33,7 @@ const onDrive = computed(() => mode.value === 'drive')
 
 const kinds: { key: KindFilter; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'folders', label: 'Dirs' },
+  { key: 'folders', label: 'Folders' },
   { key: 'files', label: 'Files' },
 ]
 
@@ -114,18 +115,11 @@ function restoreSelection() {
 </script>
 
 <template>
-  <div class="shrink-0 border-b border-line bg-ink">
+  <div class="shrink-0 border-b border-line bg-base-100">
     <div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 md:px-4">
-      <button
-        v-if="onDrive && vault.folder"
-        class="btn btn-ghost btn-sm px-1.5"
-        type="button"
-        aria-label="Go up one folder"
-        title="Go up"
-        @click="up"
-      >
+      <IconButton v-if="onDrive && vault.folder" label="Go up" @click="up">
         <ArrowUp16 />
-      </button>
+      </IconButton>
 
       <nav class="flex min-w-0 items-center gap-1 overflow-hidden text-2xs" aria-label="Breadcrumb">
         <template v-for="(crumb, index) in vault.crumbs" :key="crumb.id ?? 'root'">
@@ -157,8 +151,9 @@ function restoreSelection() {
         {{ vault.activePool.name }}
         <button
           type="button"
-          class="ml-0.5 text-brass/70 transition-colors hover:text-brass"
+          class="-my-1 -mr-1 ml-0.5 grid size-6 place-items-center text-brass/70 transition-colors hover:text-brass"
           aria-label="Clear pool filter"
+          title="Clear pool filter"
           @click="vault.setPoolFilter(null)"
         >
           <Close16 class="h-3 w-3" />
@@ -166,16 +161,13 @@ function restoreSelection() {
       </span>
 
       <div class="ml-auto flex items-center gap-1">
-        <button
-          class="btn btn-ghost btn-sm px-1.5"
-          type="button"
+        <IconButton
+          :label="vault.loading ? 'Refreshing listing' : 'Refresh listing'"
           :disabled="vault.loading"
-          aria-label="Refresh listing"
-          title="Refresh listing"
           @click="refresh"
         >
           <Renew16 :class="vault.loading ? 'animate-spin' : ''" />
-        </button>
+        </IconButton>
         <template v-if="onDrive">
           <button class="btn btn-outline btn-sm" type="button" @click="newFolder">
             <FolderAdd16 class="mr-1.5" />
@@ -230,15 +222,9 @@ function restoreSelection() {
               Recycle
             </button>
           </template>
-          <button
-            class="btn btn-ghost btn-sm px-1.5"
-            type="button"
-            aria-label="Clear selection"
-            title="Clear selection (Esc)"
-            @click="vault.clearSelection()"
-          >
+          <IconButton label="Clear selection" @click="vault.clearSelection()">
             <Close16 />
-          </button>
+          </IconButton>
         </div>
       </template>
 
@@ -261,6 +247,7 @@ function restoreSelection() {
             type="button"
             class="absolute right-1.5 grid size-5 place-items-center text-faint transition-colors hover:text-base-content"
             aria-label="Clear search"
+            title="Clear search"
             @click="clearSearch"
           >
             <Close16 class="h-3.5 w-3.5" />
@@ -293,11 +280,7 @@ function restoreSelection() {
               :key="entry.key"
               type="button"
               class="flex h-8 items-center gap-1 px-2 text-2xs uppercase tracking-[0.08em] transition-colors"
-              :class="
-                vault.order === entry.key
-                  ? 'text-base-content'
-                  : 'text-faint hover:text-dim'
-              "
+              :class="vault.order === entry.key ? 'text-base-content' : 'text-faint hover:text-dim'"
               :aria-pressed="vault.order === entry.key"
               @click="sortBy(entry.key)"
             >
@@ -319,6 +302,7 @@ function restoreSelection() {
               "
               :aria-pressed="vault.viewMode === 'list'"
               aria-label="List view"
+              title="List view"
               @click="vault.storeView('list')"
             >
               <List16 />
@@ -333,6 +317,7 @@ function restoreSelection() {
               "
               :aria-pressed="vault.viewMode === 'grid'"
               aria-label="Grid view"
+              title="Grid view"
               @click="vault.storeView('grid')"
             >
               <Grid16 />
