@@ -1,0 +1,69 @@
+# Dyson Drive (web)
+
+The built-in web client for DysonFS. A desktop-like file manager built with Vue 3,
+Pinia, Vue Router, Tailwind 4 and daisyUI, styled as an extension of the Solar
+Network console (IBM Plex, ink-blue ground, periwinkle signal, brass instruments).
+
+## Requirements
+
+- [Bun](https://bun.sh/) (the repository's lockfile is `bun.lock`)
+- A running DysonFS API
+
+## Develop
+
+```sh
+bun install
+bun run dev
+```
+
+The dev server proxies `/api` and `/health` to `http://localhost:8080`. Point it
+elsewhere when the API runs on another port:
+
+```sh
+DYSON_API_TARGET=http://localhost:8081 bun run dev
+```
+
+Because the session cookie is `HttpOnly` and first-party, the browser must reach
+both the app and the API on the same origin. In development that means going
+through the Vite proxy rather than calling the API host directly.
+
+## Sample mode
+
+The client ships with a coherent set of fixtures so the UI can be exercised
+without a backend. Enable it with any of:
+
+- `http://localhost:5173/drive?demo=1`
+- `VITE_DEMO=1 bun run dev`
+- `sessionStorage.setItem('dysonfs:sample', '1')`
+
+Sample mode is always labelled in the title bar and never mixes with live data.
+
+## Scripts
+
+| Script               | Purpose                                            |
+| -------------------- | -------------------------------------------------- |
+| `bun run dev`        | Vite dev server with API proxy and HMR             |
+| `bun run build`      | Type-check then build the production SPA to `dist` |
+| `bun run preview`    | Serve the production build locally                 |
+| `bun run type-check` | `vue-tsc` project build                            |
+| `bun run lint`       | oxlint + ESLint (both with `--fix`)                |
+| `bun run format`     | oxfmt the `src` tree                               |
+| `bun run test:unit`  | Vitest (add `--run` for CI)                        |
+
+## Deploying
+
+`bun run build` produces `web/dist`. Serve it as a static SPA with a history
+fallback to `index.html`, and reverse-proxy `/api` to the DysonFS master so the
+session cookie stays first-party. Wiring `web/dist` into the Go router so the
+master serves the client itself is a deliberate follow-up, not yet implemented.
+
+## Layout
+
+```
+src/
+  assets/main.css        design tokens and component classes
+  components/            app shell, sidebar, file table/grid, inspector, dialogs
+  lib/                   API client, formatting, file kinds, sample fixtures
+  stores/                session, vault (drive state), upload, ui, notice
+  views/                 DriveView, StorageView
+```

@@ -1,1 +1,54 @@
 /// <reference types="vite/client" />
+
+declare module '@carbon/icons-vue' {
+  import type { Component } from 'vue'
+  export const Archive16: Component
+  export const ArrowDown16: Component
+  export const ArrowRight16: Component
+  export const ArrowUp16: Component
+  export const Checkmark16: Component
+  export const ChevronDown16: Component
+  export const ChevronRight16: Component
+  export const ChevronUp16: Component
+  export const CircleDash16: Component
+  export const Close16: Component
+  export const CloudOffline16: Component
+  export const Code16: Component
+  export const CopyLink16: Component
+  export const DataBase16: Component
+  export const DataTable16: Component
+  export const Document16: Component
+  export const DocumentBlank16: Component
+  export const DocumentPdf16: Component
+  export const Download16: Component
+  export const Edit16: Component
+  export const Error16: Component
+  export const Folder16: Component
+  export const FolderAdd16: Component
+  export const FolderDetails16: Component
+  export const FolderOpen16: Component
+  export const Grid16: Component
+  export const Image16: Component
+  export const Information16: Component
+  export const Keyboard16: Component
+  export const Link16: Component
+  export const List16: Component
+  export const Login16: Component
+  export const Menu16: Component
+  export const Move16: Component
+  export const Music16: Component
+  export const PresentationFile16: Component
+  export const Renew16: Component
+  export const Search16: Component
+  export const SidePanelClose16: Component
+  export const SidePanelOpen16: Component
+  export const StoragePool16: Component
+  export const TimePlot16: Component
+  export const TrashCan16: Component
+  export const Undo16: Component
+  export const Upload16: Component
+  export const Video16: Component
+  export const View16: Component
+  export const VolumeObjectStorage16: Component
+  export const WarningAlt16: Component
+}
