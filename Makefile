@@ -29,7 +29,7 @@ run:
 	CONFIG_PATH=$(CONFIG) go run ./cmd --mode master
 
 # Build the console and the service, then start the master on :8080.
-# web/dist is served by your static host or reverse proxy for now.
+# The master serves web/dist at / (see web.staticDir).
 start: web build
 	CONFIG_PATH=$(CONFIG) ./bin/$(BINARY) --mode master
 

@@ -57,6 +57,11 @@ preferredStorage = "local"
 gatewayUrl = "http://localhost:8080"
 accessSecret = "change-me"
 
+[web]
+# Built web console served by the master at /. Build it with `make web`.
+# Set to "" to disable the console and keep JSON 404s for unknown paths.
+staticDir = "web/dist"
+
 [wopi]
 enabled = false
 publicUrl = "https://files.example.com"

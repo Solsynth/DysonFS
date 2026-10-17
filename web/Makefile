@@ -38,7 +38,6 @@ format:
 
 check: type-check lint test build
 
-# The Go master does not serve dist/ yet. Build the SPA here, run the API, and
-# point a static host or reverse proxy at dist/ with /api on the same origin.
+# Build the SPA, then run the Go master, which serves dist/ at /.
 serve: build
 	cd .. && $(MAKE) CONFIG=$(CONFIG) run

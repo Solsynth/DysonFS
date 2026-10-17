@@ -52,10 +52,11 @@ Sample mode is always labelled in the title bar and never mixes with live data.
 
 ## Deploying
 
-`bun run build` produces `web/dist`. Serve it as a static SPA with a history
-fallback to `index.html`, and reverse-proxy `/api` to the DysonFS master so the
-session cookie stays first-party. Wiring `web/dist` into the Go router so the
-master serves the client itself is a deliberate follow-up, not yet implemented.
+`bun run build` produces `web/dist`. The master serves that directory at `/`
+(`web.staticDir`, default `web/dist`) with a history fallback to `index.html`,
+so the SPA and the API share an origin and the session cookie stays
+first-party. `make start` from the repo root builds both and runs the master;
+the Docker image does the same in a Bun build stage.
 
 ## Layout
 

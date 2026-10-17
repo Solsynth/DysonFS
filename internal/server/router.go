@@ -12,6 +12,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/handler"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
+	"src.solsynth.dev/sosys/filesystem/internal/webui"
 	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
 
 	"github.com/gin-gonic/gin"
@@ -35,6 +36,14 @@ func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi
 		}
 
 		r.Use(func(c *gin.Context) {
+			// Console assets and SPA routes are public. Skipping auth here keeps
+			// a page load from doing a gRPC token lookup per asset; API
+			// authentication still runs on /api path requests below.
+			if isConsoleRequest(c.Request) {
+				c.Next()
+				return
+			}
+
 			if isWOPICallbackRequest(c.Request) {
 				c.Next()
 				return
@@ -95,7 +104,52 @@ func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi
 
 	handler.RegisterRoutes(r, cfg, files, wopi, tasks, quota, bus, dispatcher)
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true, "mode": mode}) })
+	mountWebConsole(r, cfg)
 	return r
+}
+
+// mountWebConsole serves the built console from cfg.Web.StaticDir. RegisterRoutes
+// installs a JSON 404 as the catch-all, so mounting after it replaces that
+// fallback; unknown API paths keep returning JSON instead of index.html.
+func mountWebConsole(r *gin.Engine, cfg *config.Config) {
+	if strings.TrimSpace(cfg.Web.StaticDir) == "" {
+		return
+	}
+
+	console, err := webui.New(cfg.Web.StaticDir)
+	if err != nil {
+		log.Warn().Err(err).Str("dir", cfg.Web.StaticDir).Msg("web console not served")
+		return
+	}
+
+	log.Info().Str("dir", cfg.Web.StaticDir).Msg("serving web console")
+	r.NoRoute(func(c *gin.Context) {
+		if isAPIPath(c.Request.URL.Path) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		console.ServeHTTP(c.Writer, c.Request)
+	})
+}
+
+func isConsoleRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	return !isAPIPath(r.URL.Path)
+}
+
+func isAPIPath(upath string) bool {
+	upath = strings.TrimSuffix(upath, "/")
+	for _, prefix := range []string{"/api", "/wopi", "/webdav", "/_dfs", "/swagger"} {
+		if upath == prefix || strings.HasPrefix(upath, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func isWOPICallbackRequest(r *http.Request) bool {

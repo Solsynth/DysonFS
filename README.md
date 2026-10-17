@@ -32,6 +32,23 @@ go run ./cmd validate-storage --config ./config.toml
 go run ./cmd master
 ```
 
+### Web console
+
+The Vue console lives in `web/`. The master serves its build output from
+`web.staticDir` (default `web/dist`) at `/`, on the same origin as the API so
+the auth cookie stays first-party. Unknown paths fall back to `index.html` for
+client-side routing; unknown `/api` paths still return JSON 404s. Set
+`web.staticDir = ""` to disable the console.
+
+```bash
+make web     # bun install --frozen-lockfile && bun run build
+make start   # build the console and the service, then run the master on :8080
+make dev     # Go master on :8080 + Vite on :5173 with /api proxied
+```
+
+The Docker image builds the console in a Bun stage and copies `dist/` into the
+runtime image, so `docker run` serves the console without extra setup.
+
 ### Legacy migration
 
 Use the one-shot migrator to import data from the old C# database into the new schema:
@@ -647,6 +664,7 @@ Key settings:
 - `grpc.keyFile`
 - `storage.tempDir`
 - `storage.localDir`
+- `web.staticDir`
 - `auth.target`
 - `auth.target` also supplies the Padlock permission service; uploads require
   the `files.upload` permission node (or superuser access)

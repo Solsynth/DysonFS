@@ -24,6 +24,7 @@ type Config struct {
 	Files       FileConfig        `mapstructure:"files"`
 	WOPI        WOPIConfig        `mapstructure:"wopi"`
 	WebDAV      WebDAVConfig      `mapstructure:"webdav"`
+	Web         WebConfig         `mapstructure:"web"`
 	Media       MediaConfig       `mapstructure:"media"`
 	Pools       []PoolConfig      `mapstructure:"pools"`
 	S3          S3Config          `mapstructure:"s3"`
@@ -126,6 +127,14 @@ type WOPIConfig struct {
 type WebDAVConfig struct {
 	Enabled bool   `mapstructure:"enabled"`
 	Prefix  string `mapstructure:"prefix"`
+}
+
+// WebConfig points the master at the built web console (Vite's dist output).
+// When the directory holds an index.html, the master serves it as an SPA; when
+// it does not, the console is simply not mounted and unknown paths keep
+// returning JSON 404s.
+type WebConfig struct {
+	StaticDir string `mapstructure:"staticDir"`
 }
 
 // MediaConfig configures the on-the-fly media transform proxy on the content
@@ -274,6 +283,7 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("wopi.proofCacheTtl", 1*time.Hour)
 	viper.SetDefault("webdav.enabled", false)
 	viper.SetDefault("webdav.prefix", "/webdav")
+	viper.SetDefault("web.staticDir", "web/dist")
 	viper.SetDefault("media.enable", false)
 	viper.SetDefault("media.maxSourceBytes", 10*1024*1024) // stop for more than 10MB files
 	viper.SetDefault("media.maxWidth", 4096)

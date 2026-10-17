@@ -1,0 +1,10 @@
+.git
+.github
+bin
+config.toml
+web/node_modules
+web/dist
+web/.eslintcache
+web/coverage
+**/*.log
+.DS_Store
