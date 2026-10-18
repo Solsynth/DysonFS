@@ -24,9 +24,23 @@ elsewhere when the API runs on another port:
 DYSON_API_TARGET=http://localhost:8081 bun run dev
 ```
 
-Because the session cookie is `HttpOnly` and first-party, the browser must reach
-both the app and the API on the same origin. In development that means going
-through the Vite proxy rather than calling the API host directly.
+Because the session cookie is `HttpOnly`, the browser must reach both the app
+and the API on the same origin. In development that means going through the
+Vite proxy rather than calling the API host directly.
+
+## Signing in
+
+The drive has no login form. Signing in opens the identity console's shared page
+(`https://id.solian.app/sign-in?redirectUri=…`), which sets the `AuthToken`
+cookie for the whole `solian.app` domain and hands the browser back to the
+drive. Point `VITE_AUTH_URL` at another page when the identity host differs:
+
+```sh
+VITE_AUTH_URL=http://localhost:8080/sign-in bun run dev
+```
+
+That only works when the page and the drive share the cookie's domain — an
+unshared host signs the person in and then drops them on a signed-out drive.
 
 ## Sample mode
 

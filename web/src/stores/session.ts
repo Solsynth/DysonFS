@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import { DriveError, onUnauthorized } from '@/lib/api/client'
 import { driveApi } from '@/lib/api/drive'
 import type { AccountIdentity } from '@/lib/api/types'
+import { signInUrl } from '@/lib/auth'
 import { enableSampleData, isSampleData, sampleIdentity } from '@/lib/demo'
 
 type SessionState = 'loading' | 'ready' | 'signed-out' | 'offline'
@@ -15,16 +16,9 @@ export const useSessionStore = defineStore('session', () => {
   const sample = ref(isSampleData())
 
   const signedIn = computed(() => state.value === 'ready' && identity.value !== null)
-  const authUrl = computed(() => {
-    const base = import.meta.env.VITE_AUTH_URL || 'https://solsynth.dev/auth'
-    try {
-      const url = new URL(base, window.location.origin)
-      url.searchParams.set('next', window.location.href)
-      return url.toString()
-    } catch {
-      return base
-    }
-  })
+  // The identity console's shared sign-in page, with this drive as the place
+  // to come back to. Both origins share the session cookie's domain.
+  const authUrl = computed(signInUrl)
 
   onUnauthorized(() => {
     if (sample.value) return
