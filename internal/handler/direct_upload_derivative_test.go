@@ -58,11 +58,13 @@ func TestDirectUploadImageGeneratesCompressionDerivative(t *testing.T) {
 	jpeg := generateTestJPEG(t)
 
 	w := worker.New(nil, files, &database.DB{DB: db}, t.TempDir())
+	w.SetAnalysis(analysisRegistryFor(files))
+	w.SetDerivatives(derivativeRegistryFor(w))
 	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, dispatcher)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota, Dispatcher: dispatcher, Analysis: analysisRegistryFor(files), Derivatives: derivativeRegistryFor(w)})
 
 	prepareBody := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","pool_id":%q}`, len(jpeg), poolID)
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
@@ -210,11 +212,13 @@ func TestDirectUploadVideoGeneratesThumbnailDerivative(t *testing.T) {
 	}
 
 	w := worker.New(nil, files, &database.DB{DB: db}, t.TempDir())
+	w.SetAnalysis(analysisRegistryFor(files))
+	w.SetDerivatives(derivativeRegistryFor(w))
 	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, dispatcher)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota, Dispatcher: dispatcher, Analysis: analysisRegistryFor(files), Derivatives: derivativeRegistryFor(w)})
 
 	prepareBody := fmt.Sprintf(`{"file_name":"movie.mp4","file_size":%d,"content_type":"video/mp4","pool_id":%q}`, len(mp4Bytes), poolID)
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
@@ -303,11 +307,13 @@ func TestDirectUploadMultipartImageGeneratesCompressionDerivative(t *testing.T) 
 	jpeg := generateTestJPEG(t)
 
 	w := worker.New(nil, files, &database.DB{DB: db}, t.TempDir())
+	w.SetAnalysis(analysisRegistryFor(files))
+	w.SetDerivatives(derivativeRegistryFor(w))
 	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, dispatcher)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota, Dispatcher: dispatcher, Analysis: analysisRegistryFor(files), Derivatives: derivativeRegistryFor(w)})
 
 	prepareBody := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","multipart":true,"pool_id":%q}`, len(jpeg), poolID)
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
@@ -406,10 +412,12 @@ func TestDirectUploadClientMediaSkipsSourceAnalysis(t *testing.T) {
 	source := generateTestJPEG(t)
 	thumbnail := generateTestJPEG(t)
 	w := worker.New(nil, files, &database.DB{DB: db}, t.TempDir())
+	w.SetAnalysis(analysisRegistryFor(files))
+	w.SetDerivatives(derivativeRegistryFor(w))
 	dispatcher := dispatch.NewBundled([]*worker.Worker{w})
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, dispatcher)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota, Dispatcher: dispatcher, Analysis: analysisRegistryFor(files), Derivatives: derivativeRegistryFor(w)})
 
 	prepareBody := fmt.Sprintf(`{"file_name":"movie.mp4","file_size":%d,"content_type":"video/mp4","pool_id":%q,"multipart":true,"client_analysis":{"width":1920,"height":1080,"duration_ms":83420,"aspect_ratio":"16:9"},"want_thumbnail":true,"want_compression":true}`, len(source), poolID)
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
@@ -530,7 +538,9 @@ func TestDirectUploadClientImageCompressionSkipsSourceAnalysis(t *testing.T) {
 	source, thumbnail, compression := generateTestJPEG(t), generateTestJPEG(t), generateTestWebP(t)
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+	// Client-assisted uploads are queued for reanalysis by the analysis
+	// module; a build without it accepts the client metadata as final.
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota, Analysis: analysisRegistryFor(files)})
 
 	body := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","pool_id":%q,"multipart":true,"client_analysis":{"width":64,"height":64},"want_thumbnail":true,"want_compression":true}`, len(source), poolID)
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(body))
@@ -632,7 +642,7 @@ func TestDirectUploadJpegCompressionDerivative(t *testing.T) {
 	source, compression := generateTestJPEG(t), generateTestJPEG(t)
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota, Analysis: analysisRegistryFor(files)})
 
 	body := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","pool_id":%q,"multipart":true,"client_analysis":{"width":64,"height":64},"want_compression":true,"compression_mime_type":"image/jpeg"}`, len(source), poolID)
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(body))

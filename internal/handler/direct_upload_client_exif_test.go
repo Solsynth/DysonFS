@@ -53,7 +53,7 @@ func startClientExifUpload(t *testing.T) (*service.FileService, *database.CloudF
 	source, compression := generateTestJPEG(t), generateTestJPEG(t)
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota})
 
 	body := fmt.Sprintf(`{"file_name":"photo.jpg","file_size":%d,"content_type":"image/jpeg","pool_id":%q,"client_analysis":%s,"want_compression":true,"compression_mime_type":"image/jpeg"}`,
 		len(source), poolID, clientExifAnalysis)

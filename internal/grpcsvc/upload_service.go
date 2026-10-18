@@ -376,9 +376,6 @@ func (s *fileServiceServer) prepareUpload(ctx context.Context, input *gen.DyFile
 	if s.files == nil || s.quota == nil {
 		return nil, status.Error(codes.FailedPrecondition, "upload services are not configured")
 	}
-	if s.publisher == nil {
-		return nil, status.Error(codes.FailedPrecondition, "upload event publisher is not configured")
-	}
 	accountID, err := uuid.Parse(strings.TrimSpace(input.GetAccountId()))
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "account_id must be a UUID")
@@ -482,7 +479,7 @@ func (s *fileServiceServer) persistStagedUpload(ctx context.Context, options *no
 		err         error
 	)
 	if options.fastMode && options.overwriteID != nil {
-		analysis, analysisErr = s.files.AnalyzeSourceFile(ctx, stagedPath, options.contentType)
+		analysis, analysisErr = s.analyzeSource(ctx, stagedPath, options.contentType)
 		created, _, err = s.files.FastOverwriteFile(*options.overwriteID, stagedPath, analysis)
 		if err != nil {
 			return nil, uploadStatus(err)
@@ -509,7 +506,7 @@ func (s *fileServiceServer) persistStagedUpload(ctx context.Context, options *no
 		analysisCh := make(chan analysisResult, 1)
 		storageCh := make(chan storageResult, 1)
 		go func() {
-			value, err := s.files.AnalyzeSourceFile(ctx, stagedPath, info.ContentType)
+			value, err := s.analyzeSource(ctx, stagedPath, info.ContentType)
 			analysisCh <- analysisResult{value: value, err: err}
 		}()
 		go func() {

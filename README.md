@@ -10,6 +10,33 @@ Go implementation of the Dyson Network file service.
 - `worker`: post-upload media processing, derived file generation, cleanup
 - `storage`: optional local storage node for filesystem-backed deployments
 
+## Modules
+
+DysonFS is built from compile-time modules selected at runtime by config, the
+same way Stargate is. Authentication, content editing, per-kind file analysis,
+preview derivatives, media transforms, WebDAV, WOPI and both S3 gateways are
+each an optional module: leaving one out of the build registers no routes and
+owns no tables.
+
+Running without Stargate is a supported mode — set `[auth] target = ""` and
+every request belongs to one synthesized account with all permission checks
+skipped:
+
+```toml
+[auth]
+target = ""
+
+[modules]
+# Empty enabled = every module whose default is on.
+enabled = []
+disabled = ["app.solian.files.media"]
+```
+
+Overrides: `DYSONFS_MODULES_ENABLED` / `DYSONFS_MODULES_DISABLED`.
+
+`GET /api/modules` reports what this build resolved. Full inventory, schema
+ownership and the extension guide: [docs/module-system.md](docs/module-system.md).
+
 ## CLI
 
 Use the first positional argument as the command.

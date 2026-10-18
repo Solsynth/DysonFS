@@ -18,6 +18,7 @@ import (
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"src.solsynth.dev/sosys/filesystem/internal/core"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
@@ -25,10 +26,12 @@ import (
 )
 
 type Worker struct {
-	bus     *eventbus.Bus
-	files   *service.FileService
-	db      *database.DB
-	tempDir string
+	bus         *eventbus.Bus
+	files       *service.FileService
+	db          *database.DB
+	tempDir     string
+	derivatives *core.DerivativeRegistry
+	analysis    *core.AnalysisRegistry
 }
 
 const compressedImageTargetBytes = 100 * 1024
@@ -40,6 +43,14 @@ const compressedImageTargetBytes = 100 * 1024
 func New(bus *eventbus.Bus, files *service.FileService, db *database.DB, tempDir string) *Worker {
 	return &Worker{bus: bus, files: files, db: db, tempDir: tempDir}
 }
+
+// SetDerivatives installs the derivative registry. A worker without one
+// produces no previews: the compiled derivative modules own every kind.
+func (w *Worker) SetDerivatives(registry *core.DerivativeRegistry) { w.derivatives = registry }
+
+// SetAnalysis installs the analysis registry. The reanalysis queue only runs
+// when the analysis module enabled it.
+func (w *Worker) SetAnalysis(registry *core.AnalysisRegistry) { w.analysis = registry }
 
 func (w *Worker) Start(ctx context.Context) error {
 	if w.bus != nil {
@@ -95,6 +106,11 @@ const reanalysisQueueDelay = 30 * time.Second
 // recomputed here and republished to the fleet.
 func (w *Worker) processReanalysisQueue(ctx context.Context) {
 	if w.files == nil || w.db == nil {
+		return
+	}
+	// The analysis modules own this queue: without one, client-supplied
+	// metadata is authoritative and nothing is re-derived.
+	if w.analysis == nil || !w.analysis.Any() {
 		return
 	}
 	var objects []database.FileObject
@@ -577,16 +593,28 @@ func (w *Worker) processDerived(path string, evt eventbus.FileUploadedEvent, par
 		mimeType = "application/octet-stream"
 	}
 
-	if strings.HasPrefix(mimeType, "image/") {
-		if err := w.processImage(path, evt, parent, mimeType); err != nil {
-			return err
-		}
-	} else if strings.HasPrefix(mimeType, "video/") {
-		if err := w.processVideo(path, evt, parent, mimeType); err != nil {
-			return err
-		}
+	if w.derivatives == nil {
+		return nil
 	}
-	return nil
+	handler, ok := w.derivatives.Handler(mimeType)
+	if !ok {
+		return nil
+	}
+	return handler(context.Background(), parent, path)
+}
+
+// mimeOf returns the object's MIME type, or an empty string.
+func mimeOf(file *database.CloudFile) string {
+	if file == nil || file.Object == nil {
+		return ""
+	}
+	return file.Object.MimeType
+}
+
+// ProcessImage writes the image derivative set: a lossless webp baseline and a
+// compressed variant. Multi-page (animated) images are left untouched.
+func (w *Worker) ProcessImage(ctx context.Context, parent *database.CloudFile, path string) error {
+	return w.processImage(path, eventbus.FileUploadedEvent{FileID: parent.ID}, parent, mimeOf(parent))
 }
 
 func (w *Worker) processImage(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {
@@ -696,6 +724,11 @@ func exportCompressedWebp(img *vips.ImageRef, original []byte, targetBytes int) 
 		return original, nil
 	}
 	return smallest, nil
+}
+
+// ProcessVideo extracts the first frame as the video thumbnail.
+func (w *Worker) ProcessVideo(ctx context.Context, parent *database.CloudFile, path string) error {
+	return w.processVideo(path, eventbus.FileUploadedEvent{FileID: parent.ID}, parent, mimeOf(parent))
 }
 
 func (w *Worker) processVideo(path string, evt eventbus.FileUploadedEvent, parent *database.CloudFile, mimeType string) error {

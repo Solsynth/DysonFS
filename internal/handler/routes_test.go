@@ -97,7 +97,7 @@ func TestRegisterRoutesNoPanic(t *testing.T) {
 		}
 	}()
 
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, (*eventbus.Bus)(nil), nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota})
 }
 
 func TestDirectUploadReturnsSynchronousSourceMetadata(t *testing.T) {
@@ -112,7 +112,7 @@ func TestDirectUploadReturnsSynchronousSourceMetadata(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{Storage: config.StorageConfig{TempDir: tempDir}}, files, nil, tasks, quota, nil, dispatcher)
+	RegisterRoutes(r, Deps{Config: &config.Config{Storage: config.StorageConfig{TempDir: tempDir}}, Files: files, Tasks: tasks, Quota: quota, Dispatcher: dispatcher, Analysis: analysisRegistryFor(files)})
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -183,7 +183,7 @@ func TestDirectUploadRequiresFilesUploadPermission(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{Storage: config.StorageConfig{TempDir: t.TempDir()}}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{Storage: config.StorageConfig{TempDir: t.TempDir()}}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/files/upload/direct", nil))
@@ -209,7 +209,7 @@ func TestAdminStorageConfigRequiresFilesManagePermission(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/admin/storage/config", nil))
@@ -243,7 +243,7 @@ func TestAdminUploadGCRunsExpirySweep(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/admin/uploads/gc", nil))
@@ -293,7 +293,7 @@ func TestOpenFileFallsBackToLegacyThumbnailStorageKey(t *testing.T) {
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+fileID+"?thumbnail=1", nil)
 	w := httptest.NewRecorder()
@@ -329,7 +329,7 @@ func TestOpenFileFallsBackToLegacyCompressionStorageKey(t *testing.T) {
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+fileID, nil)
 	w := httptest.NewRecorder()
@@ -375,7 +375,7 @@ func TestOpenFileNormalizesDerivedCompressionStorageKeyFromObjectID(t *testing.T
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+parentFileID, nil)
 	w := httptest.NewRecorder()
@@ -425,7 +425,7 @@ func TestOpenFileFallsBackToOriginalWhenDerivedCompressionIsMissing(t *testing.T
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+parentFileID, nil)
 	w := httptest.NewRecorder()
@@ -466,7 +466,7 @@ func TestListRootOwnedFiltersByUsageAndApplicationType(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/me?usage=avatar&application_type=image/png", nil)
 	w := httptest.NewRecorder()
@@ -513,7 +513,7 @@ func TestListUnindexedFiltersByUsageAndApplicationType(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/unindexed?usage=import&application_type=application/zip", nil)
 	w := httptest.NewRecorder()
@@ -607,7 +607,7 @@ func TestListRootOwnedFiltersByContentTypeAndExtendedFields(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/me?content_type=image/png&extension=png&pool_id="+poolID+"&has_thumbnail=1&has_compression=1&min_size=120&max_size=140&created_after=2026-05-28T00:00:00Z&updated_before=2026-05-30T00:00:00Z", nil)
 	w := httptest.NewRecorder()
@@ -665,7 +665,7 @@ func TestListUnindexedFiltersByMimeTypeAliasAndFlags(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/unindexed?mime_type=application/zip&pool="+poolID+"&recycled=1&indexed=0&has_compression=1&extension=zip&min_size=200", nil)
 	w := httptest.NewRecorder()
@@ -706,7 +706,7 @@ func TestFileBreadcrumbReturnsRootToCurrent(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+file.ID+"/breadcrumb", nil)
 	w := httptest.NewRecorder()
@@ -746,7 +746,7 @@ func TestFileBreadcrumbRequiresReadAccess(t *testing.T) {
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+file.ID+"/breadcrumb", nil)
 	w := httptest.NewRecorder()
@@ -772,7 +772,7 @@ func TestListFilesMetadataPreservesRequestedOrder(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+second.ID+","+first.ID+"&ids=missing", nil)
 	w := httptest.NewRecorder()
@@ -815,7 +815,7 @@ func TestListFilesMetadataRequiresIDsAndFiltersUnreadableFiles(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(viewerID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	missingReq := httptest.NewRequest(http.MethodGet, "/api/files/meta", nil)
 	missingRes := httptest.NewRecorder()
@@ -868,7 +868,7 @@ func TestListPoolsRequiresAuthAndRedactsStorageSecrets(t *testing.T) {
 	}
 
 	anon := gin.New()
-	RegisterRoutes(anon, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(anon, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 	for _, path := range []string{"/api/pools", "/api/pools/" + pool.ID} {
 		rec := httptest.NewRecorder()
 		anon.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
@@ -879,7 +879,7 @@ func TestListPoolsRequiresAuthAndRedactsStorageSecrets(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 	for _, path := range []string{"/api/pools", "/api/pools/me", "/api/pools/" + pool.ID} {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
@@ -901,7 +901,7 @@ func TestCreatePoolAndUpdatePoolRedactStorageSecrets(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	body := `{"name":"primary","storage_config":{"enable_signed":true,"enable_ssl":false,"endpoint":"127.0.0.1:9000","bucket":"test","secret_id":"test-access-key","secret_key":"test-secret-key"}}`
 	createRec := httptest.NewRecorder()
@@ -964,7 +964,7 @@ func TestOpenFileRequiresAuthUnlessFileIsPublic(t *testing.T) {
 	publishFile(t, db, publicID)
 
 	anon := gin.New()
-	RegisterRoutes(anon, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(anon, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	privateRec := httptest.NewRecorder()
 	anon.ServeHTTP(privateRec, httptest.NewRequest(http.MethodGet, "/api/files/"+privateID, nil))
@@ -991,7 +991,7 @@ func TestOpenFileRequiresAuthUnlessFileIsPublic(t *testing.T) {
 
 	other := gin.New()
 	other.Use(testAuthMiddleware(uuid.New()))
-	RegisterRoutes(other, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(other, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 	otherRec := httptest.NewRecorder()
 	other.ServeHTTP(otherRec, httptest.NewRequest(http.MethodGet, "/api/files/"+privateID, nil))
 	if otherRec.Code != http.StatusForbidden {
@@ -1000,7 +1000,7 @@ func TestOpenFileRequiresAuthUnlessFileIsPublic(t *testing.T) {
 
 	owner := gin.New()
 	owner.Use(testAuthMiddleware(ownerID))
-	RegisterRoutes(owner, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(owner, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 	ownerRec := httptest.NewRecorder()
 	owner.ServeHTTP(ownerRec, httptest.NewRequest(http.MethodGet, "/api/files/"+privateID, nil))
 	if ownerRec.Code != http.StatusTemporaryRedirect {
@@ -1039,7 +1039,7 @@ func TestOpenFileServesSharedPoolFilesToAnonymousCallers(t *testing.T) {
 	}
 
 	anon := gin.New()
-	RegisterRoutes(anon, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(anon, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	openRec := httptest.NewRecorder()
 	anon.ServeHTTP(openRec, httptest.NewRequest(http.MethodGet, "/api/files/"+fileID, nil))
@@ -1090,7 +1090,7 @@ func TestListChildrenFiltersPermissionlessChildOfOtherAccount(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(viewerID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/files/"+folderID+"/children", nil))
@@ -1124,7 +1124,7 @@ func TestListFilesMetadataHidesFreshlyUploadedFileFromOtherAccount(t *testing.T)
 	metadata := func(accountID uuid.UUID) *httptest.ResponseRecorder {
 		r := gin.New()
 		r.Use(testAuthMiddleware(accountID))
-		RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+		RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/files/meta?ids="+uploaded.ID, nil))
 		return rec
@@ -1187,7 +1187,7 @@ func TestPatchFileRenamesOwnedFile(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1225,7 +1225,7 @@ func TestPatchFileRequiresAuth(t *testing.T) {
 	}
 
 	r := gin.New()
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1254,7 +1254,7 @@ func TestPatchFileRejectsForbiddenRename(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(viewerID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+file.ID, strings.NewReader(`{"name":"after.txt"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1290,7 +1290,7 @@ func TestCreateEditSessionAndWOPIRoundTrip(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, wopi, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Wopi: wopi, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	editReq := httptest.NewRequest(http.MethodPost, "/api/files/"+fileID+"/edit", nil)
 	editRes := httptest.NewRecorder()
@@ -1380,7 +1380,7 @@ func TestWOPIPutFileRejectsLockMismatch(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, wopi, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Wopi: wopi, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	editReq := httptest.NewRequest(http.MethodPost, "/api/files/"+fileID+"/edit", nil)
 	editRes := httptest.NewRecorder()
@@ -1429,7 +1429,7 @@ func TestWOPIEndpointsAcceptBearerAccessToken(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, wopi, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Wopi: wopi, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	editReq := httptest.NewRequest(http.MethodPost, "/api/files/"+fileID+"/edit", nil)
 	editRes := httptest.NewRecorder()
@@ -1615,7 +1615,7 @@ func TestPrepareDirectUploadMultipartFallsBackToProxied(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota})
 
 	body := `{"file_name":"a.bin","file_size":1024,"content_type":"application/octet-stream","multipart":true}`
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(body))
@@ -1665,7 +1665,7 @@ func TestPrepareDirectUploadMultipartRoundTrip(t *testing.T) {
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
 	dispatcher := &recordingDispatcher{}
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, dispatcher)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota, Dispatcher: dispatcher})
 
 	fileSize := int64(12*1024*1024 + 7) // 3 parts at 5 MiB
 	prepareBody := fmt.Sprintf(`{"file_name":"big.bin","file_size":%d,"content_type":"application/octet-stream","multipart":true,"pool_id":%q}`, fileSize, poolID)
@@ -1792,7 +1792,7 @@ func TestPrepareDirectUploadDefaultsMissingFileName(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota})
 
 	// file_name omitted: the server must default it instead of rejecting
 	// with "file_name and positive file_size are required".
@@ -1829,7 +1829,7 @@ func TestCreateUploadTaskDefaultsMissingFileName(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota})
 
 	// file_name omitted on the chunked flow defaults from the content type.
 	body := `{"file_size":1024,"content_type":"application/octet-stream"}`
@@ -1881,7 +1881,7 @@ func TestPrepareDirectUploadMultipartResumesByHash(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota})
 
 	const hash = "0123456789abcdef0123456789abcdef"
 	fileSize := int64(12*1024*1024 + 7)
@@ -2013,7 +2013,7 @@ func TestPresignUploadPartRejectsOutOfRangeAndUnknownTask(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, tasks, quota, nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: tasks, Quota: quota})
 
 	prepareBody := `{"file_name":"small.bin","file_size":1024,"content_type":"application/octet-stream","multipart":true,"pool_id":"` + poolID + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/files/upload/prepare", strings.NewReader(prepareBody))
@@ -2079,7 +2079,7 @@ func TestPutFileContentOverwritesInPlace(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, dispatcher)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db}), Dispatcher: dispatcher})
 
 	const edited = "# notes\n\nedited body"
 	req := httptest.NewRequest(http.MethodPut, "/api/files/"+fileID+"/content", strings.NewReader(edited))
@@ -2158,7 +2158,7 @@ func TestPutFileContentRequiresWritePermission(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(callerID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/files/"+fileID+"/content", strings.NewReader("hijacked")))
@@ -2180,7 +2180,7 @@ func TestPutFileContentRejectsFilesLockedByAnotherEditor(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	blocked := httptest.NewRecorder()
 	r.ServeHTTP(blocked, httptest.NewRequest(http.MethodPut, "/api/files/"+fileID+"/content", strings.NewReader("stale")))

@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
+	analysispkg "src.solsynth.dev/sosys/filesystem/internal/analysis"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
@@ -1901,7 +1902,7 @@ func TestStoreSourceAnalysisStoresSharedMediaDimensions(t *testing.T) {
 	if got, _ := meta["aspect_ratio"].(string); got != "16:9" {
 		t.Fatalf("meta aspect_ratio = %q, want %q", got, "16:9")
 	}
-	if width, height := mediaDimensions(analysis.Media); width != 1920 || height != 1080 {
+	if width, height := analysispkg.MediaDimensions(analysis.Media); width != 1920 || height != 1080 {
 		t.Fatalf("mediaDimensions() = (%d, %d), want (1920, 1080)", width, height)
 	}
 	if !updated.Object.HasThumbnail || updated.Object.HasCompression {

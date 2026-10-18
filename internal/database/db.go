@@ -29,11 +29,12 @@ func Open(cfg *config.Config) (*DB, error) {
 	return &DB{DB: db}, nil
 }
 
-func (d *DB) AutoMigrate() error {
-	if err := d.DB.AutoMigrate(
-		&FilePool{}, &FileObject{}, &CloudFile{}, &FilePermission{}, &PoolPermission{}, &PersistentTask{}, &UploadChunk{}, &FileLock{}, &WebDAVToken{}, &StorageNode{}, &S3Token{},
-	); err != nil {
-		return err
+// Models lists every model the package defines. Schema ownership belongs to
+// the modules that declare which of these they use; this list exists so tests
+// and tooling can enumerate the domain in one place.
+func Models() []any {
+	return []any{
+		&FilePool{}, &FileObject{}, &CloudFile{}, &FilePermission{}, &PoolPermission{},
+		&PersistentTask{}, &UploadChunk{}, &FileLock{}, &WebDAVToken{}, &StorageNode{}, &S3Token{},
 	}
-	return nil
 }

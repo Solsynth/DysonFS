@@ -89,6 +89,14 @@ func (p *recordingUploadPublisher) PublishFileUploaded(_ context.Context, event 
 	return nil
 }
 
+func (p *recordingUploadPublisher) PublishFileAction(context.Context, eventbus.FileActionEvent) error {
+	return nil
+}
+
+func (p *recordingUploadPublisher) PublishFileMetadataUpdated(context.Context, eventbus.FileMetadataUpdatedEvent) error {
+	return nil
+}
+
 type uploadTestFixture struct {
 	client    gen.DyFileServiceClient
 	db        *gorm.DB
@@ -125,7 +133,7 @@ func newUploadTestFixture(t *testing.T) *uploadTestFixture {
 	publisher := &recordingUploadPublisher{}
 	listener := bufconn.Listen(1024 * 1024)
 	server := grpc.NewServer()
-	Register(server, &config.Config{Storage: config.StorageConfig{TempDir: tempDir}}, files, tasks, quota, publisher)
+	Register(server, Deps{Config: &config.Config{Storage: config.StorageConfig{TempDir: tempDir}}, Files: files, Tasks: tasks, Quota: quota, Publisher: publisher})
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 

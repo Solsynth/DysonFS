@@ -31,9 +31,34 @@ worker_num = 1
 # Stargate gRPC endpoint (DyAuthService + DyPermissionService; took over the
 # Padlock auth surface). It authenticates requests and authorizes uploads with
 # the files.upload permission node. Stargate serves the fleet self-signed cert.
+#
+# Leave target empty for a standalone deployment: the auth module then
+# synthesizes one account, every request belongs to it, and every permission
+# check is skipped. See docs/module-system.md.
 target = "stargate:9090"
 useTLS = true
 tlsSkipVerify = true
+# Identity used when target = "". Keep the id stable so file ownership survives
+# a later move to Stargate.
+syntheticAccountId = "00000000-0000-0000-0000-000000000001"
+syntheticAccountName = "dyson"
+syntheticAccountNick = "Dyson"
+
+[modules]
+# Which compiled-in modules run. Empty enabled = every module whose default is
+# on. See docs/module-system.md for the inventory.
+enabled = []
+# Modules to leave out. Dependents are removed automatically and logged.
+# Disabling a required module (auth, core) fails startup.
+disabled = []
+# Per-module settings, addressed by module ID:
+# [modules.settings."app.solian.files.media"]
+# cacheControlMaxAge = "1h"
+
+[ports]
+# Only needed when two enabled modules provide the same port. One provider is
+# selected automatically; a feature provider beats an integration provider.
+# files = "app.solian.files.s3"
 
 [workspace]
 # WattEngine DyWorkspaceService endpoint. Required for workspace uploads.

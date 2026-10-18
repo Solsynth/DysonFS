@@ -50,7 +50,7 @@ func TestCreateNodeCreatesOwnedPoolAfterValidation(t *testing.T) {
 	accountID := uuid.New()
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 
 	request := map[string]any{
 		"name":       "Test node",

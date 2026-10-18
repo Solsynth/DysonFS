@@ -9,10 +9,6 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 
 	"src.solsynth.dev/sosys/filesystem/internal/config"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
@@ -43,7 +39,10 @@ func TestRecordServerFailuresCountsUploadFailuresAndCapturesDetail(t *testing.T)
 	}
 }
 
-func TestMountWebConsoleServesSPAAndKeepsAPI404(t *testing.T) {
+// TestHostServesSPAAndKeepsAPI404 covers the host-level contract: the console
+// owns non-API GETs, and every API path keeps a JSON 404 even when no module
+// mounted a matching route.
+func TestHostServesSPAAndKeepsAPI404(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	dir := t.TempDir()
@@ -58,10 +57,9 @@ func TestMountWebConsoleServesSPAAndKeepsAPI404(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	r := gin.New()
-	r.GET("/api/files/meta", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
-	r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}) })
-	mountWebConsole(r, &config.Config{Web: config.WebConfig{StaticDir: dir}})
+	files := service.NewFileService(&database.DB{}, storage.NewLocalBackend(t.TempDir()))
+	cfg := &config.Config{Web: config.WebConfig{StaticDir: dir}}
+	r := New(cfg, "master", files).Engine
 
 	tests := []struct {
 		target      string
@@ -93,6 +91,49 @@ func TestMountWebConsoleServesSPAAndKeepsAPI404(t *testing.T) {
 	}
 }
 
+// TestHostWithoutConsoleKeepsJSON404 verifies an unbuilt console leaves the API
+// only and never falls back to a stray file.
+func TestHostWithoutConsoleKeepsJSON404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	files := service.NewFileService(&database.DB{}, storage.NewLocalBackend(t.TempDir()))
+	srv := New(&config.Config{Web: config.WebConfig{StaticDir: t.TempDir()}}, "master", files)
+	if srv.WebError == nil {
+		t.Fatal("WebError = nil, want an error for a dist dir without index.html")
+	}
+
+	rec := httptest.NewRecorder()
+	srv.Engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/drive", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHostHealthAndModulesEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	files := service.NewFileService(&database.DB{}, storage.NewLocalBackend(t.TempDir()))
+	srv := New(&config.Config{}, "master", files)
+	srv.MountModules(ModulesResponse{
+		Modules:      []ModuleInfo{{ID: "app.solian.files.core", Kind: "feature"}},
+		Capabilities: []string{"files.read"},
+	})
+
+	health := httptest.NewRecorder()
+	srv.Engine.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), `"mode":"master"`) {
+		t.Fatalf("health = %d %s", health.Code, health.Body.String())
+	}
+
+	modules := httptest.NewRecorder()
+	srv.Engine.ServeHTTP(modules, httptest.NewRequest(http.MethodGet, "/api/modules", nil))
+	if modules.Code != http.StatusOK {
+		t.Fatalf("modules status = %d, want 200", modules.Code)
+	}
+	body := modules.Body.String()
+	if !strings.Contains(body, "app.solian.files.core") || !strings.Contains(body, "files.read") {
+		t.Fatalf("modules body = %s, want the resolved module and capability", body)
+	}
+}
+
 func TestIsAPIPath(t *testing.T) {
 	apiPaths := []string{
 		"/api",
@@ -113,122 +154,5 @@ func TestIsAPIPath(t *testing.T) {
 		if isAPIPath(path) {
 			t.Fatalf("isAPIPath(%q) = true, want false", path)
 		}
-	}
-}
-
-func TestIsConsoleRequest(t *testing.T) {
-	tests := []struct {
-		method string
-		target string
-		want   bool
-	}{
-		{http.MethodGet, "/", true},
-		{http.MethodGet, "/drive/folder/01ABC", true},
-		{http.MethodHead, "/assets/index-abc.js", true},
-		{http.MethodGet, "/api/files/meta", false},
-		{http.MethodGet, "/wopi/files/01ABC", false},
-		{http.MethodPost, "/api/files", false},
-		{http.MethodPost, "/drive", false},
-	}
-	for _, tt := range tests {
-		if got := isConsoleRequest(httptest.NewRequest(tt.method, tt.target, nil)); got != tt.want {
-			t.Fatalf("isConsoleRequest(%s %s) = %v, want %v", tt.method, tt.target, got, tt.want)
-		}
-	}
-}
-
-func TestAuthenticateWebDAVAcceptsTokenIDAndSecret(t *testing.T) {
-	files := newWebDAVAuthTestService(t)
-	accountID := uuid.New()
-	tokenID := database.NewID()
-	secret := database.NewID()
-	createWebDAVAuthTestToken(t, files, tokenID, accountID, secret)
-
-	req := httptest.NewRequest("PROPFIND", "/webdav/", nil)
-	req.SetBasicAuth(tokenID, secret)
-
-	gotAccountID, ok := authenticateWebDAV(req, files)
-	if !ok {
-		t.Fatal("authenticateWebDAV() ok = false, want true")
-	}
-	if gotAccountID != accountID.String() {
-		t.Fatalf("authenticateWebDAV() accountID = %q, want %q", gotAccountID, accountID.String())
-	}
-}
-
-func TestAuthenticateWebDAVAcceptsEmbeddedPasswordToken(t *testing.T) {
-	files := newWebDAVAuthTestService(t)
-	accountID := uuid.New()
-	tokenID := database.NewID()
-	secret := database.NewID()
-	createWebDAVAuthTestToken(t, files, tokenID, accountID, secret)
-
-	req := httptest.NewRequest("PROPFIND", "/webdav/", nil)
-	req.SetBasicAuth("anything", tokenID+":"+secret)
-
-	gotAccountID, ok := authenticateWebDAV(req, files)
-	if !ok {
-		t.Fatal("authenticateWebDAV() ok = false, want true")
-	}
-	if gotAccountID != accountID.String() {
-		t.Fatalf("authenticateWebDAV() accountID = %q, want %q", gotAccountID, accountID.String())
-	}
-}
-
-func TestAuthenticateWebDAVAcceptsSecretOnlyPassword(t *testing.T) {
-	files := newWebDAVAuthTestService(t)
-	accountID := uuid.New()
-	tokenID := database.NewID()
-	secret := database.NewID()
-	createWebDAVAuthTestToken(t, files, tokenID, accountID, secret)
-
-	req := httptest.NewRequest("PROPFIND", "/webdav/", nil)
-	req.SetBasicAuth("anything", secret)
-
-	gotAccountID, ok := authenticateWebDAV(req, files)
-	if !ok {
-		t.Fatal("authenticateWebDAV() ok = false, want true")
-	}
-	if gotAccountID != accountID.String() {
-		t.Fatalf("authenticateWebDAV() accountID = %q, want %q", gotAccountID, accountID.String())
-	}
-}
-
-func newWebDAVAuthTestService(t *testing.T) *service.FileService {
-	t.Helper()
-
-	db, err := gorm.Open(sqlite.Open("file:"+database.NewID()+"?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-	if err := db.AutoMigrate(&database.WebDAVToken{}); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatalf("db.DB() error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = sqlDB.Close()
-	})
-
-	return service.NewFileService(&database.DB{DB: db}, nil)
-}
-
-func createWebDAVAuthTestToken(t *testing.T, files *service.FileService, tokenID string, accountID uuid.UUID, secret string) {
-	t.Helper()
-
-	hashBytes, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		t.Fatalf("GenerateFromPassword() error = %v", err)
-	}
-	token := database.WebDAVToken{
-		ID:        tokenID,
-		AccountID: accountID,
-		TokenHash: string(hashBytes),
-		Label:     "test",
-	}
-	if err := files.DB().Create(&token).Error; err != nil {
-		t.Fatalf("Create() error = %v", err)
 	}
 }

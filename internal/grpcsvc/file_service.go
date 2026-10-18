@@ -10,8 +10,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
+	"src.solsynth.dev/sosys/filesystem/internal/core"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
-	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	gen "src.solsynth.dev/sosys/go/proto"
 
@@ -49,16 +49,33 @@ type fileServiceServer struct {
 	files     *service.FileService
 	tasks     *service.TaskService
 	quota     *service.QuotaService
-	publisher uploadEventPublisher
+	publisher core.Publisher
+	analysis  *core.AnalysisRegistry
 }
 
-type uploadEventPublisher interface {
-	PublishFileUploaded(context.Context, eventbus.FileUploadedEvent) error
+// analyzeSource runs the compiled analyzer, or returns no analysis when the
+// analysis module is absent.
+func (s *fileServiceServer) analyzeSource(ctx context.Context, path, mimeType string) (*service.SourceAnalysis, error) {
+	return s.analysis.AnalyzeSource(ctx, path, mimeType)
 }
 
-func Register(s *grpc.Server, cfg *config.Config, files *service.FileService, tasks *service.TaskService, quota *service.QuotaService, publisher uploadEventPublisher) {
-	gen.RegisterDyFileServiceServer(s, &fileServiceServer{cfg: cfg, files: files, tasks: tasks, quota: quota, publisher: publisher})
-	registerQuotaService(s, quota)
+// Deps is the gRPC service dependency set.
+type Deps struct {
+	Config    *config.Config
+	Files     *service.FileService
+	Tasks     *service.TaskService
+	Quota     *service.QuotaService
+	Publisher core.Publisher
+	Analysis  *core.AnalysisRegistry
+}
+
+// Register mounts the file and quota gRPC services.
+func Register(s *grpc.Server, deps Deps) {
+	gen.RegisterDyFileServiceServer(s, &fileServiceServer{
+		cfg: deps.Config, files: deps.Files, tasks: deps.Tasks, quota: deps.Quota,
+		publisher: deps.Publisher, analysis: deps.Analysis,
+	})
+	registerQuotaService(s, deps.Quota)
 }
 
 func (s *fileServiceServer) GetFile(_ context.Context, req *gen.DyGetFileRequest) (*gen.DyCloudFile, error) {

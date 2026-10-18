@@ -1,80 +1,81 @@
+// Package app owns the DysonFS process bootstrap. It builds the shared core
+// services, resolves the compiled-in module set and starts the host listeners.
+// cmd/main.go is deliberately thin.
 package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/nats-io/nats.go"
+	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/reflection"
+
+	gen "src.solsynth.dev/sosys/go/proto"
+	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
+
 	"src.solsynth.dev/sosys/filesystem/internal/config"
+	"src.solsynth.dev/sosys/filesystem/internal/core"
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/dispatch"
 	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
 	"src.solsynth.dev/sosys/filesystem/internal/grpcsvc"
-	"src.solsynth.dev/sosys/filesystem/internal/handler"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
-	"src.solsynth.dev/sosys/filesystem/internal/media"
-	"src.solsynth.dev/sosys/filesystem/internal/s3server"
+	"src.solsynth.dev/sosys/filesystem/internal/module"
 	"src.solsynth.dev/sosys/filesystem/internal/server"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/storage"
 	"src.solsynth.dev/sosys/filesystem/internal/worker"
-	sharedcache "src.solsynth.dev/sosys/go/pkg/cache"
-
-	"github.com/davidbyttow/govips/v2/vips"
-	"github.com/gin-gonic/gin"
-	"github.com/nats-io/nats.go"
-	"github.com/redis/go-redis/v9"
-	"github.com/rs/zerolog"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/reflection"
-	gen "src.solsynth.dev/sosys/go/proto"
 )
 
-type App struct {
-	cfg            *config.Config
-	mode           string
-	db             *database.DB
-	bus            *eventbus.Bus
-	redis          *redis.Client
-	stor           storage.Backend
-	files          *service.FileService
-	media          *media.Service
-	wopi           *service.WOPIService
-	tasks          *service.TaskService
-	quota          *service.QuotaService
-	worker         *worker.Worker
-	dispatcher     dispatch.Dispatcher
-	httpSrv        *http.Server
-	masterS3Srv    *http.Server
-	grpcSrv        *grpc.Server
-	accountConn    *grpc.ClientConn
-	permissionConn *grpc.ClientConn
-	workspaceConn  *grpc.ClientConn
-	paymentConn    *grpc.ClientConn
-	natsConn       *nats.Conn
-	logger         zerolog.Logger
+// Runtime is a constructed process: the core service graph plus the listeners
+// the mode owns. Modules are configured against it.
+type Runtime struct {
+	Config *config.Config
+	Mode   string
+	Core   *core.Services
+
+	db       *database.DB
+	redis    *redis.Client
+	natsConn *nats.Conn
+
+	httpSrv *http.Server
+	grpcSrv *grpc.Server
+
+	resolution *module.Resolution
 }
 
-func (a *App) Files() *service.FileService { return a.files }
+// Files exposes the file service for CLI subcommands.
+func (r *Runtime) Files() *service.FileService { return r.Core.Files }
 
-func New(cfg *config.Config, mode string) (*App, error) {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		mode = "master"
+// DB exposes the database handle for CLI subcommands.
+func (r *Runtime) DB() *database.DB { return r.db }
+
+// New constructs the runtime for a mode. The module set is resolved first, so
+// the schema that is migrated is exactly the schema the enabled modules own;
+// seeding then writes into tables that are guaranteed to exist.
+func New(ctx context.Context, cfg *config.Config, mode string, factories []module.Factory) (*Runtime, error) {
+	mode = normalizeMode(cfg, mode)
+
+	resolution, err := module.Resolve(factories, cfg.Modules.Enabled, cfg.Modules.Disabled)
+	if err != nil {
+		return nil, fmt.Errorf("resolve modules: %w", err)
 	}
-	if cfg.Bundled.Enable && mode == "master" {
-		mode = "bundled"
+	for _, warning := range resolution.Warnings {
+		logging.Log.Warn().Msg(warning)
 	}
+	logging.Log.Info().Strs("modules", module.IDs(resolution.Factories)).Str("mode", mode).Msg("modules resolved")
 
 	db, err := database.Open(cfg)
 	if err != nil {
-		return nil, err
-	}
-	if err := db.AutoMigrate(); err != nil {
 		return nil, err
 	}
 
@@ -85,6 +86,7 @@ func New(cfg *config.Config, mode string) (*App, error) {
 
 	stor := storage.NewLocalBackend(cfg.Storage.LocalDir)
 
+	var bus *eventbus.Bus
 	var natsConn *nats.Conn
 	if cfg.NATS.URL != "" {
 		conn, err := nats.Connect(cfg.NATS.URL, nats.Name(cfg.App.Name), nats.MaxReconnects(-1), nats.ReconnectWait(2*time.Second))
@@ -92,6 +94,7 @@ func New(cfg *config.Config, mode string) (*App, error) {
 			return nil, err
 		}
 		natsConn = conn
+		bus = eventbus.New(conn)
 	}
 
 	files := service.NewFileService(db, stor)
@@ -108,229 +111,309 @@ func New(cfg *config.Config, mode string) (*App, error) {
 	if redisClient != nil {
 		quota.SetCache(sharedcache.NewRedisCacheService(redisClient))
 	}
-	app := &App{cfg: cfg, mode: mode, db: db, redis: redisClient, stor: stor, files: files, wopi: wopi, tasks: service.NewTaskService(db), quota: quota, natsConn: natsConn, logger: logging.Log}
-	if cfg.Auth.Target != "" {
-		// Stargate hosts the account, auth and permission surfaces; a single
-		// [auth] target drives all three clients.
-		accountClient, accountConn, err := service.NewAccountClient(cfg.Auth)
-		if err != nil {
-			return nil, err
-		}
-		app.accountConn = accountConn
-		app.quota.SetAccountClient(accountClient)
+	tasks := service.NewTaskService(db)
 
-		permissionClient, permissionConn, err := service.NewPermissionClient(cfg.Auth)
-		if err != nil {
-			return nil, err
-		}
-		app.permissionConn = permissionConn
-		app.files.SetPermissionClient(permissionClient)
-	}
 	if cfg.Workspace.Target != "" {
-		workspaceClient, workspaceConn, err := service.NewWorkspaceClient(cfg.Workspace)
+		workspaceClient, conn, err := service.NewWorkspaceClient(cfg.Workspace)
 		if err != nil {
 			return nil, err
 		}
-		app.workspaceConn = workspaceConn
-		app.quota.SetWorkspaceClient(workspaceClient)
-		app.quota.SetSharedQuotaClient(gen.NewDyQuotaServiceClient(workspaceConn))
+		quota.SetWorkspaceClient(workspaceClient)
+		quota.SetSharedQuotaClient(gen.NewDyQuotaServiceClient(conn))
 	}
-	defaultPoolID, err := app.files.SeedPools(cfg)
+
+	// Schema first: every model and SQL hook an enabled module declares, then
+	// seed the configured pools into the tables that now exist.
+	if err := migrate(ctx, db, resolution.Factories); err != nil {
+		return nil, err
+	}
+	services := &core.Services{Enabled: resolution.Enabled}
+
+	defaultPoolID, err := files.SeedPools(cfg)
 	if err != nil {
 		return nil, err
 	}
-	backend, err := app.files.BackendForPoolID(&defaultPoolID)
+	backend, err := files.BackendForPoolID(&defaultPoolID)
 	if err != nil {
 		return nil, err
 	}
-	app.stor = backend
-	app.files.SetStorage(backend)
-	if cfg.Media.Enable {
-		vips.Startup(nil) // idempotent; configures libvips once, before any worker use
-		cacheBackend := app.stor
-		if cfg.Media.Cache.Kind == "s3" {
-			pid := strings.TrimSpace(cfg.Media.Cache.PoolID)
-			if pid == "" {
-				return nil, fmt.Errorf(`init media: media.cache.poolId is required when cache.kind = "s3"`)
-			}
-			poolBackend, err := app.files.BackendForPoolID(&pid)
-			if err != nil {
-				return nil, fmt.Errorf("init media: resolve cache pool %q: %w", pid, err)
-			}
-			cacheBackend = poolBackend
-		}
-		med, err := media.New(cfg.Media, cacheBackend)
-		if err != nil {
-			return nil, fmt.Errorf("init media: %w", err)
-		}
-		app.files.SetMedia(med)
-		app.media = med
-	}
-	if natsConn != nil {
-		app.bus = eventbus.New(natsConn)
-	}
-	app.worker = worker.New(app.bus, app.files, app.db, app.cfg.Storage.TempDir)
+	files.SetStorage(backend)
+
+	var dispatcher dispatch.Dispatcher
 	if cfg.Bundled.Enable {
 		count := cfg.Bundled.WorkerNum
 		if count < 1 {
 			count = 1
 		}
 		workers := make([]*worker.Worker, 0, count)
-		for i := 0; i < count; i++ {
-			workers = append(workers, worker.New(nil, app.files, app.db, app.cfg.Storage.TempDir))
+		for range count {
+			workers = append(workers, worker.New(nil, files, db, cfg.Storage.TempDir))
 		}
-		app.dispatcher = dispatch.NewBundled(workers)
+		dispatcher = dispatch.NewBundled(workers)
 	}
-	return app, nil
+
+	// The worker and the per-kind registries are shared objects: modules
+	// enable kinds on them during Configure, and the worker reads the same
+	// instances while processing. They are created here so the analysis and
+	// derivative modules never have to (and never accidentally replace them).
+	workerInstance := worker.New(bus, files, db, cfg.Storage.TempDir)
+	analysisRegistry := core.NewAnalysisRegistry(files)
+	derivativeRegistry := core.NewDerivativeRegistry()
+	workerInstance.SetAnalysis(analysisRegistry)
+	workerInstance.SetDerivatives(derivativeRegistry)
+
+	services.Config = cfg
+	services.Mode = mode
+	services.DB = db
+	services.Redis = redisClient
+	services.Bus = bus
+	services.Files = files
+	services.Tasks = tasks
+	services.Quota = quota
+	services.Wopi = wopi
+	services.Analysis = analysisRegistry
+	services.Derivatives = derivativeRegistry
+	services.Worker = workerInstance
+	services.Log = logging.Log
+	switch {
+	case dispatcher != nil:
+		services.Dispatcher = dispatcher
+		services.Publisher = core.DispatcherPublisher{Dispatcher: dispatcher}
+	case bus != nil:
+		services.Publisher = core.BusPublisher{Bus: bus}
+	}
+
+	return &Runtime{
+		Config: cfg, Mode: mode, Core: services,
+		db: db, redis: redisClient, natsConn: natsConn,
+		resolution: resolution,
+	}, nil
 }
 
-func (a *App) Start(ctx context.Context) error {
-	switch a.mode {
-	case "master":
-		return a.startMaster(ctx)
-	case "bundled":
-		return a.startBundled(ctx)
-	case "worker":
-		return a.startWorker(ctx)
-	case "storage":
-		return a.startStorage(ctx)
-	default:
-		return fmt.Errorf("unknown mode %q", a.mode)
+func normalizeMode(cfg *config.Config, mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "master"
 	}
+	if cfg.Bundled.Enable && mode == "master" {
+		return "bundled"
+	}
+	return mode
 }
 
-func (a *App) Stop(ctx context.Context) error {
-	if a.httpSrv != nil {
-		_ = a.httpSrv.Shutdown(ctx)
+// Run configures the resolved module set and serves until ctx is done. The
+// module set and its schema were applied by New.
+func (r *Runtime) Run(ctx context.Context) error {
+	instances := make([]namedInstance, 0, len(r.resolution.Factories))
+	for _, factory := range r.resolution.Factories {
+		instance := factory.New()
+		if instance == nil {
+			return fmt.Errorf("module %s returned a nil instance", factory.ID)
+		}
+		instances = append(instances, namedInstance{factory: factory, instance: instance})
 	}
-	if a.masterS3Srv != nil {
-		_ = a.masterS3Srv.Shutdown(ctx)
-	}
-	if a.grpcSrv != nil {
-		a.grpcSrv.GracefulStop()
-	}
-	if a.natsConn != nil {
-		a.natsConn.Close()
-	}
-	if a.accountConn != nil {
-		_ = a.accountConn.Close()
-	}
-	if a.permissionConn != nil {
-		_ = a.permissionConn.Close()
-	}
-	if a.workspaceConn != nil {
-		_ = a.workspaceConn.Close()
-	}
-	if a.paymentConn != nil {
-		_ = a.paymentConn.Close()
-	}
-	if a.redis != nil {
-		_ = a.redis.Close()
-	}
-	return nil
-}
 
-func (a *App) startMaster(ctx context.Context) error {
-	r := server.NewRouter(a.cfg, a.mode, a.files, a.wopi, a.tasks, a.quota, a.bus, nil)
-	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
-
-	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
+	// Process-wide middleware is collected before the engine exists, so every
+	// route a module later registers inherits it.
+	middleware, err := prepareMiddleware(ctx, r.Core, instances)
 	if err != nil {
 		return err
 	}
-	grpcOpts := []grpc.ServerOption{}
-	if a.cfg.GRPC.UseTLS {
-		if a.cfg.GRPC.CertFile == "" || a.cfg.GRPC.KeyFile == "" {
-			return fmt.Errorf("grpc tls requires grpc.certFile and grpc.keyFile")
-		}
-		creds, err := credentials.NewServerTLSFromFile(a.cfg.GRPC.CertFile, a.cfg.GRPC.KeyFile)
-		if err != nil {
-			return fmt.Errorf("load grpc tls credentials: %w", err)
-		}
-		grpcOpts = append(grpcOpts, grpc.Creds(creds))
-	}
-	a.grpcSrv = grpc.NewServer(grpcOpts...)
-	if a.bus == nil {
-		grpcsvc.Register(a.grpcSrv, a.cfg, a.files, a.tasks, a.quota, nil)
-	} else {
-		grpcsvc.Register(a.grpcSrv, a.cfg, a.files, a.tasks, a.quota, a.bus)
-	}
-	reflection.Register(a.grpcSrv)
 
-	go func() { _ = a.grpcSrv.Serve(lis) }()
-	go func() { _ = a.httpSrv.ListenAndServe() }()
-	a.startMasterS3()
-	a.startUploadExpirySweep(ctx)
-	if a.media != nil {
-		go a.media.Start(ctx)
-	}
-	logging.Log.Info().Str("mode", a.mode).Msg("master started")
-	return nil
-}
-
-func (a *App) startWorker(ctx context.Context) error {
-	go func() { _ = a.worker.Start(ctx) }()
-	a.startUploadExpirySweep(ctx)
-	logging.Log.Info().Str("mode", a.mode).Msg("worker started")
-	return nil
-}
-
-func (a *App) startBundled(ctx context.Context) error {
-	go func() { _ = a.worker.Start(ctx) }()
-	r := server.NewRouter(a.cfg, a.mode, a.files, a.wopi, a.tasks, a.quota, nil, a.dispatcher)
-	a.httpSrv = &http.Server{Addr: ":" + a.cfg.HTTP.Port, Handler: r, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
-	lis, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
+	host, err := r.host(r.resolution, middleware)
 	if err != nil {
 		return err
 	}
-	grpcOpts := []grpc.ServerOption{}
-	if a.cfg.GRPC.UseTLS {
-		if a.cfg.GRPC.CertFile == "" || a.cfg.GRPC.KeyFile == "" {
-			return fmt.Errorf("grpc tls requires grpc.certFile and grpc.keyFile")
+
+	for _, entry := range instances {
+		if provider, ok := entry.instance.(module.PortProvider); ok {
+			if err := provider.ProvidePorts(ctx, host); err != nil {
+				return &module.BuildError{Module: entry.factory.ID, Err: err}
+			}
 		}
-		creds, err := credentials.NewServerTLSFromFile(a.cfg.GRPC.CertFile, a.cfg.GRPC.KeyFile)
+	}
+
+	registered := make([]module.Instance, 0, len(instances))
+	for _, entry := range instances {
+		if err := entry.instance.Configure(ctx, host); err != nil {
+			stopInstances(registered)
+			return &module.BuildError{Module: entry.factory.ID, Err: err}
+		}
+		registered = append(registered, entry.instance)
+	}
+	defer stopInstances(registered)
+
+	if err := r.serve(ctx, host); err != nil {
+		return err
+	}
+
+	<-ctx.Done()
+	logging.Log.Info().Msg("shutting down")
+	return r.Stop(context.Background())
+}
+
+// prepareMiddleware asks every module for its process-wide middleware, in
+// dependency order. Only the auth module normally contributes one.
+func prepareMiddleware(ctx context.Context, services *core.Services, instances []namedInstance) ([]gin.HandlerFunc, error) {
+	var chain []gin.HandlerFunc
+	for _, entry := range instances {
+		preparer, ok := entry.instance.(module.PreHost)
+		if !ok {
+			continue
+		}
+		handlers, err := preparer.Prepare(ctx, services)
 		if err != nil {
-			return fmt.Errorf("load grpc tls credentials: %w", err)
+			return nil, &module.BuildError{Module: entry.factory.ID, Err: err}
 		}
-		grpcOpts = append(grpcOpts, grpc.Creds(creds))
+		chain = append(chain, handlers...)
 	}
-	a.grpcSrv = grpc.NewServer(grpcOpts...)
-	grpcsvc.Register(a.grpcSrv, a.cfg, a.files, a.tasks, a.quota, a.dispatcher)
-	reflection.Register(a.grpcSrv)
-	go func() { _ = a.grpcSrv.Serve(lis) }()
-	go func() { _ = a.httpSrv.ListenAndServe() }()
-	a.startMasterS3()
-	a.startUploadExpirySweep(ctx)
-	if a.media != nil {
-		go a.media.Start(ctx)
+	return chain, nil
+}
+
+// migrate applies the schema owned by the resolved modules. Nothing is ever
+// dropped, so disabling a module leaves its existing tables and data alone.
+func migrate(ctx context.Context, db *database.DB, factories []module.Factory) error {
+	if models := coreModels(factories); len(models) > 0 {
+		if err := db.DB.AutoMigrate(models...); err != nil {
+			return fmt.Errorf("core AutoMigrate: %w", err)
+		}
 	}
-	logging.Log.Info().Str("mode", a.mode).Msg("bundled started")
+	return module.MigrateSchema(ctx, db.DB, factories)
+}
+
+// host assembles the module host for this mode. The HTTP engine exists only in
+// the modes that serve HTTP; a worker-only process leaves Engine nil and the
+// surface modules that need it are not part of its resolved set.
+func (r *Runtime) host(resolution *module.Resolution, middleware []gin.HandlerFunc) (*module.Host, error) {
+	host := &module.Host{
+		Core:     r.Core,
+		Ports:    module.NewPortRegistry(),
+		Enabled:  resolution.Enabled,
+		Settings: r.Config.Modules.Settings,
+		Log:      logging.Log,
+	}
+	host.Ports.Select(r.Config.Ports)
+
+	if servesHTTP(r.Mode) {
+		srv := server.New(r.Config, r.Mode, r.Core.Files, middleware...)
+		if srv.WebError != nil {
+			logging.Log.Warn().Err(srv.WebError).Str("dist", r.Config.Web.StaticDir).Msg("web SPA hosting disabled")
+		}
+		srv.MountModules(modulesResponse(resolution.Factories))
+		host.Engine = srv.Engine
+		host.API = srv.API()
+	}
+
+	if servesGRPC(r.Mode) {
+		grpcOpts := []grpc.ServerOption{}
+		if r.Config.GRPC.UseTLS {
+			if r.Config.GRPC.CertFile == "" || r.Config.GRPC.KeyFile == "" {
+				return nil, fmt.Errorf("grpc tls requires grpc.certFile and grpc.keyFile")
+			}
+			creds, err := credentials.NewServerTLSFromFile(r.Config.GRPC.CertFile, r.Config.GRPC.KeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("load grpc tls credentials: %w", err)
+			}
+			grpcOpts = append(grpcOpts, grpc.Creds(creds))
+		}
+		r.grpcSrv = grpc.NewServer(grpcOpts...)
+		host.GRPC = r.grpcSrv
+	}
+	return host, nil
+}
+
+func servesHTTP(mode string) bool { return mode == "master" || mode == "bundled" }
+
+func servesGRPC(mode string) bool { return mode == "master" || mode == "bundled" }
+
+func servesTaskSweep(mode string) bool {
+	return mode == "master" || mode == "bundled" || mode == "worker"
+}
+
+// serve starts the mode's listeners after every module has configured itself.
+func (r *Runtime) serve(ctx context.Context, host *module.Host) error {
+	if host.Engine != nil {
+		r.httpSrv = &http.Server{
+			Addr:         ":" + r.Config.HTTP.Port,
+			Handler:      host.Engine,
+			ReadTimeout:  60 * time.Second,
+			WriteTimeout: 60 * time.Second,
+		}
+		logging.Log.Info().Str("addr", r.httpSrv.Addr).Msg("http server listening")
+		go func() {
+			if err := r.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logging.Log.Error().Err(err).Msg("http server failed")
+			}
+		}()
+	}
+
+	if host.GRPC != nil {
+		lis, err := net.Listen("tcp", ":"+r.Config.GRPC.Port)
+		if err != nil {
+			return err
+		}
+		// Core gRPC surface: the file and quota services are host-level, they
+		// only exist where the file modules are enabled.
+		if r.Core.Enabled[core.ModuleFilesGRPC] {
+			grpcsvc.Register(host.GRPC, grpcsvc.Deps{
+				Config: r.Config, Files: r.Core.Files, Tasks: r.Core.Tasks,
+				Quota: r.Core.Quota, Publisher: r.Core.Publisher, Analysis: r.Core.Analysis,
+			})
+		}
+		reflection.Register(host.GRPC)
+		logging.Log.Info().Str("addr", ":"+r.Config.GRPC.Port).Msg("grpc server listening")
+		go func() { _ = host.GRPC.Serve(lis) }()
+	}
+
+	if servesTaskSweep(r.Mode) {
+		r.startUploadExpirySweep(ctx)
+	}
+	return nil
+}
+
+// Stop shuts the runtime down.
+func (r *Runtime) Stop(ctx context.Context) error {
+	if r.httpSrv != nil {
+		_ = r.httpSrv.Shutdown(ctx)
+	}
+	for _, srv := range r.Core.Servers {
+		_ = srv.Shutdown(ctx)
+	}
+	if r.grpcSrv != nil {
+		r.grpcSrv.GracefulStop()
+	}
+	if r.natsConn != nil {
+		r.natsConn.Close()
+	}
+	if r.redis != nil {
+		_ = r.redis.Close()
+	}
 	return nil
 }
 
 // startUploadExpirySweep runs the stale-upload expiry sweep immediately and
-// then every hour, in every mode that owns the task table (master, worker,
-// bundled). Broken direct uploads otherwise leave their multipart sessions and
-// single-PUT objects in the storage pool forever.
-func (a *App) startUploadExpirySweep(ctx context.Context) {
+// then every hour, in every mode that owns the task table. Broken direct
+// uploads otherwise leave their multipart sessions and single-PUT objects in
+// the storage pool forever.
+func (r *Runtime) startUploadExpirySweep(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
-		a.runUploadExpirySweep(ctx)
+		r.runUploadExpirySweep(ctx)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				a.runUploadExpirySweep(ctx)
+				r.runUploadExpirySweep(ctx)
 			}
 		}
 	}()
 }
 
-func (a *App) runUploadExpirySweep(ctx context.Context) {
+func (r *Runtime) runUploadExpirySweep(ctx context.Context) {
 	started := time.Now()
-	count, err := a.files.ExpireStaleUploadTasks(ctx)
+	count, err := r.Core.Files.ExpireStaleUploadTasks(ctx)
 	if err != nil {
 		logging.Log.Error().Err(err).Msg("upload expiry sweep failed")
 		return
@@ -340,70 +423,53 @@ func (a *App) runUploadExpirySweep(ctx context.Context) {
 	}
 }
 
-func (a *App) startStorage(context.Context) error {
-	logging.Log.Info().Str("mode", a.mode).Msg("storage mode started")
-
-	r := gin.New()
-	r.Use(gin.Recovery())
-
-	dfs := r.Group("/_dfs")
-	{
-		dfs.GET("/version", func(c *gin.Context) {
-			handler.StorageNodeVersion(c, a.cfg.StorageNode)
-		})
-		dfs.GET("/identity", func(c *gin.Context) {
-			handler.StorageNodeIdentity(c, a.cfg.StorageNode)
-		})
-		dfs.POST("/auth/validate", func(c *gin.Context) {
-			handler.StorageNodeAuthValidate(c, a.cfg.StorageNode)
+// modulesResponse describes the resolved module set for GET /api/modules.
+func modulesResponse(factories []module.Factory) server.ModulesResponse {
+	out := make([]server.ModuleInfo, 0, len(factories))
+	for _, factory := range factories {
+		out = append(out, server.ModuleInfo{
+			ID:           factory.ID,
+			Kind:         string(factory.Kind),
+			Capabilities: factory.Capabilities,
 		})
 	}
-
-	backend := s3server.NewStorageBackend(a.stor)
-	s3srv := s3server.New(backend, a.cfg.StorageNode.S3AccessKey, a.cfg.StorageNode.S3SecretKey)
-	s3handler := s3srv.Handler()
-	r.NoRoute(func(c *gin.Context) { s3handler(c.Writer, c.Request) })
-
-	a.httpSrv = &http.Server{
-		Addr:         ":" + a.cfg.StorageNode.Port,
-		Handler:      r,
-		ReadTimeout:  120 * time.Second,
-		WriteTimeout: 120 * time.Second,
-	}
-
-	go func() {
-		logging.Log.Info().Str("addr", a.httpSrv.Addr).Msg("storage node HTTP server listening")
-		if err := a.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logging.Log.Fatal().Err(err).Msg("storage node HTTP server failed")
-		}
-	}()
-
-	return nil
+	return server.ModulesResponse{Modules: out, Capabilities: module.Capabilities(factories)}
 }
 
-func (a *App) startMasterS3() {
-	if !a.cfg.MasterS3.Enabled {
-		return
-	}
-	backend := s3server.NewMasterBackend(a.files, a.cfg.Storage.TempDir)
-	s3srv := s3server.NewWithResolver(backend, backend)
-	s3handler := s3srv.Handler()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s3handler)
-	a.masterS3Srv = &http.Server{
-		Addr:         ":" + a.cfg.MasterS3.Port,
-		Handler:      mux,
-		ReadTimeout:  120 * time.Second,
-		WriteTimeout: 120 * time.Second,
-	}
-
-	go func() {
-		logging.Log.Info().Str("addr", a.masterS3Srv.Addr).Msg("master S3 API listening")
-		if err := a.masterS3Srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logging.Log.Fatal().Err(err).Msg("master S3 server failed")
+// coreModels returns the models AutoMigrate applies: every model any enabled
+// module declares, de-duplicated. A disabled module contributes nothing, which
+// is what keeps a fresh database free of its tables. Module SQL hooks run
+// afterwards through module.MigrateSchema.
+func coreModels(factories []module.Factory) []any {
+	seen := map[string]bool{}
+	out := make([]any, 0, len(factories))
+	for _, factory := range factories {
+		for _, model := range factory.Models {
+			name := fmt.Sprintf("%T", model)
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, model)
 		}
-	}()
+	}
+	return out
 }
 
-func (a *App) runWorker() error { return nil }
+type namedInstance struct {
+	factory  module.Factory
+	instance module.Instance
+}
+
+func stopInstances(instances []module.Instance) {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for i := len(instances) - 1; i >= 0; i-- {
+		if err := instances[i].Stop(shutdownCtx); err != nil {
+			logging.Log.Warn().Err(err).Msg("stop module")
+		}
+	}
+}
+
+// ensure the gin import is retained for the host engine type.
+var _ *gin.Engine

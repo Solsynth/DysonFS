@@ -43,7 +43,7 @@ func mediaTestConfig() config.MediaConfig {
 func mediaTestRouter(t *testing.T, cfg *config.Config, files *service.FileService, db *gorm.DB) *gin.Engine {
 	t.Helper()
 	r := gin.New()
-	RegisterRoutes(r, cfg, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: cfg, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 	return r
 }
 

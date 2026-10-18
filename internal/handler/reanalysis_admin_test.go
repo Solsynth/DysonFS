@@ -56,7 +56,7 @@ func newReanalysisTestRouter(t *testing.T, db *gorm.DB, files *service.FileServi
 	t.Helper()
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, &config.Config{}, files, nil, service.NewTaskService(&database.DB{DB: db}), service.NewQuotaService(&database.DB{DB: db}), nil, nil)
+	RegisterRoutes(r, Deps{Config: &config.Config{}, Files: files, Tasks: service.NewTaskService(&database.DB{DB: db}), Quota: service.NewQuotaService(&database.DB{DB: db})})
 	return r
 }
 

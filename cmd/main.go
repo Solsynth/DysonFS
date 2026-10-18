@@ -17,6 +17,7 @@ import (
 	"src.solsynth.dev/sosys/filesystem/internal/database"
 	"src.solsynth.dev/sosys/filesystem/internal/logging"
 	"src.solsynth.dev/sosys/filesystem/internal/migratelegacy"
+	"src.solsynth.dev/sosys/filesystem/internal/modules/standard"
 	"src.solsynth.dev/sosys/filesystem/internal/repairlegacy"
 	sentryutil "src.solsynth.dev/sosys/filesystem/internal/sentry"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
@@ -104,21 +105,21 @@ func main() {
 		return
 	}
 
-	runner, err := app.New(cfg, mode)
-	if err != nil {
-		logging.Log.Fatal().Err(err).Str("mode", mode).Msg("failed to create runtime")
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := runner.Start(ctx); err != nil {
-		logging.Log.Fatal().Err(err).Str("mode", mode).Msg("runtime failed")
+	runner, err := app.New(ctx, cfg, mode, standard.Modules())
+	if err != nil {
+		logging.Log.Fatal().Err(err).Str("mode", mode).Msg("failed to create runtime")
 	}
+	defer func() {
+		if err := runner.Stop(context.Background()); err != nil {
+			logging.Log.Error().Err(err).Msg("shutdown error")
+		}
+	}()
 
-	<-ctx.Done()
-	if err := runner.Stop(context.Background()); err != nil {
-		logging.Log.Error().Err(err).Msg("shutdown error")
+	if err := runner.Run(ctx); err != nil {
+		logging.Log.Fatal().Err(err).Str("mode", mode).Msg("runtime failed")
 	}
 
 	fmt.Println("shutdown complete")
@@ -137,7 +138,7 @@ func extractPositionalMode() string {
 }
 
 func runReanalysisCLI(ctx context.Context, cfg *config.Config, limit, previewCount int, skipConfirm bool, fileIDs []string) error {
-	runner, err := app.New(cfg, "master")
+	runner, err := app.New(context.Background(), cfg, "master", standard.Modules())
 	if err != nil {
 		return err
 	}
@@ -191,7 +192,7 @@ func runReanalysisCLI(ctx context.Context, cfg *config.Config, limit, previewCou
 }
 
 func runLegacyStorageRepairCLI(ctx context.Context, cfg *config.Config, legacyDSN string, dryRun bool, batchSize, previewCount, limit int, continueOnError, onlyDerived, onlyOriginal, skipConfirm bool) error {
-	runner, err := app.New(cfg, "master")
+	runner, err := app.New(context.Background(), cfg, "master", standard.Modules())
 	if err != nil {
 		return err
 	}
@@ -261,7 +262,7 @@ func runProgressBar(ctx context.Context, files *service.FileService, candidates 
 }
 
 func runStorageValidationCLI(ctx context.Context, cfg *config.Config, snapshotPath, prefix string, batchSize int, skipConfirm bool) error {
-	runner, err := app.New(cfg, "master")
+	runner, err := app.New(context.Background(), cfg, "master", standard.Modules())
 	if err != nil {
 		return err
 	}

@@ -45,7 +45,7 @@ func TestProcessUploadedFileFallsBackToStorageWhenTempPathMissing(t *testing.T) 
 	if err := stor.Put(context.Background(), storageKey, strings.NewReader(string(content)), int64(len(content)), "video/mp4"); err != nil {
 		t.Fatalf("put object: %v", err)
 	}
-	w := New(nil, svc, &database.DB{DB: db}, tmp)
+	w := newTestWorker(svc, db, tmp)
 	err := w.ProcessUploadedFile(context.Background(), eventbus.FileUploadedEvent{FileID: fileID, ContentType: "video/mp4", ProcessingFilePath: tmp + "/missing-file", IsTempFile: true})
 	if err == nil {
 		t.Fatal("expected ffmpeg processing error after storage fallback, got nil")
@@ -97,7 +97,7 @@ func TestProcessPoolMigrationsMovesObjectAndTracksProgress(t *testing.T) {
 		t.Fatalf("create migration task: %v", err)
 	}
 
-	w := New(nil, svc, &database.DB{DB: db}, t.TempDir())
+	w := newTestWorker(svc, db, t.TempDir())
 	w.processPoolMigrations(context.Background())
 
 	if err := db.First(&task, "task_id = ?", task.TaskID).Error; err != nil {
@@ -197,7 +197,7 @@ func TestProcessReanalysisQueueReanalyzesFlaggedObject(t *testing.T) {
 		t.Fatalf("age queue entry: %v", err)
 	}
 
-	w := New(nil, svc, &database.DB{DB: db}, tmp)
+	w := newTestWorker(svc, db, tmp)
 	w.processReanalysisQueue(context.Background())
 
 	var object database.FileObject
@@ -235,7 +235,7 @@ func TestProcessReanalysisQueueRetriesThenGivesUp(t *testing.T) {
 		t.Fatalf("create file: %v", err)
 	}
 
-	w := New(nil, svc, &database.DB{DB: db}, tmp)
+	w := newTestWorker(svc, db, tmp)
 	for attempt := 1; attempt <= sourceReanalysisMaxAttempts; attempt++ {
 		if err := db.Model(&database.FileObject{}).Where("id = ?", objectID).Updates(map[string]any{"updated_at": time.Now().Add(-time.Hour)}).Error; err != nil {
 			t.Fatalf("age queue entry: %v", err)

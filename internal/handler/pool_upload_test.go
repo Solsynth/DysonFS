@@ -59,7 +59,7 @@ func TestProxiedUploadStoresBytesInRequestedPool(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, cfg, files, nil, tasks, quota, nil, &recordingDispatcher{})
+	RegisterRoutes(r, Deps{Config: cfg, Files: files, Tasks: tasks, Quota: quota, Dispatcher: &recordingDispatcher{}})
 
 	content := []byte("hello")
 
@@ -218,7 +218,7 @@ func TestProxiedUploadOverwriteKeepsTargetPool(t *testing.T) {
 
 	r := gin.New()
 	r.Use(testAuthMiddleware(accountID))
-	RegisterRoutes(r, cfg, files, nil, tasks, quota, nil, &recordingDispatcher{})
+	RegisterRoutes(r, Deps{Config: cfg, Files: files, Tasks: tasks, Quota: quota, Dispatcher: &recordingDispatcher{}})
 
 	content := []byte("replacement")
 	body := fmt.Sprintf(`{"file_name":"ignored.txt","file_size":%d,"content_type":"text/plain","overwrite_id":%q,"chunk_size":%d}`, len(content), fileID, len(content))

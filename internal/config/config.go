@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -31,6 +32,19 @@ type Config struct {
 	MasterS3    MasterS3Config    `mapstructure:"masterS3"`
 	StorageNode StorageNodeConfig `mapstructure:"storageNode"`
 	Sentry      SentryConfig      `mapstructure:"sentry"`
+	Modules     ModulesConfig     `mapstructure:"modules"`
+	Ports       map[string]string `mapstructure:"ports"`
+}
+
+// ModulesConfig selects which compiled-in modules run.
+type ModulesConfig struct {
+	// Enabled is an allowlist. Empty means "every compiled-in module whose
+	// DefaultEnabled is set".
+	Enabled []string `mapstructure:"enabled"`
+	// Disabled removes modules; dependents cascade away with a warning.
+	Disabled []string `mapstructure:"disabled"`
+	// Settings is the decoded [modules.settings."<id>"] subtree.
+	Settings map[string]map[string]any `mapstructure:"settings"`
 }
 
 type SentryConfig struct {
@@ -78,10 +92,18 @@ type BundledConfig struct {
 	WorkerNum int  `mapstructure:"worker_num"`
 }
 
+// AuthConfig points at the Stargate gRPC endpoint. When Target is empty the
+// auth module synthesizes one account and skips every permission check.
 type AuthConfig struct {
 	Target        string `mapstructure:"target"`
 	UseTLS        bool   `mapstructure:"useTLS"`
 	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
+
+	// Synthesized identity used when Target is empty. Stable IDs keep file
+	// ownership intact across restarts.
+	SyntheticAccountID   string `mapstructure:"syntheticAccountId"`
+	SyntheticAccountName string `mapstructure:"syntheticAccountName"`
+	SyntheticAccountNick string `mapstructure:"syntheticAccountNick"`
 }
 
 // WorkspaceConfig configures the WattEngine workspace gRPC endpoint used to
@@ -259,6 +281,9 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("auth.target", "stargate:9090")
 	viper.SetDefault("auth.useTLS", true)
 	viper.SetDefault("auth.tlsSkipVerify", true)
+	viper.SetDefault("auth.syntheticAccountId", "00000000-0000-0000-0000-000000000001")
+	viper.SetDefault("auth.syntheticAccountName", "dyson")
+	viper.SetDefault("auth.syntheticAccountNick", "Dyson")
 	viper.SetDefault("workspace.target", "")
 	viper.SetDefault("workspace.useTLS", false)
 	viper.SetDefault("workspace.tlsSkipVerify", false)
@@ -312,6 +337,8 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("sentry.tracesSampleRate", 0.01)
 	viper.SetDefault("sentry.environment", "")
 	viper.SetDefault("sentry.release", "")
+	viper.SetDefault("modules.enabled", []string{})
+	viper.SetDefault("modules.disabled", []string{})
 
 	if configPath != "" {
 		if err := viper.ReadInConfig(); err != nil {
@@ -331,6 +358,16 @@ func Load(configPath string) (*Config, error) {
 
 func applyEnvAliases() {
 	_ = time.Second
+	// Module selection overrides, comma separated. They mirror Stargate so one
+	// fleet convention drives both services.
+	for env, key := range map[string]string{
+		"DYSONFS_MODULES_ENABLED":  "modules.enabled",
+		"DYSONFS_MODULES_DISABLED": "modules.disabled",
+	} {
+		if value := strings.TrimSpace(os.Getenv(env)); value != "" {
+			viper.Set(key, splitList(value))
+		}
+	}
 	if v := os.Getenv("SENTRY_DSN"); v != "" {
 		viper.Set("sentry.dsn", v)
 	}
@@ -352,4 +389,16 @@ func applyEnvAliases() {
 			viper.Set("bundled.enable", true)
 		}
 	}
+}
+
+// splitList splits a comma-separated environment value, dropping blanks.
+func splitList(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }

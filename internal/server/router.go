@@ -1,147 +1,113 @@
+// Package server hosts the HTTP engine and the mount points modules register
+// against. It owns nothing but the middleware chain, health, the API docs and
+// the built console; every feature route belongs to a module.
 package server
 
 import (
 	"net/http"
 	"strings"
-	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 
 	docs "src.solsynth.dev/sosys/filesystem/docs"
 	"src.solsynth.dev/sosys/filesystem/internal/config"
-	"src.solsynth.dev/sosys/filesystem/internal/database"
-	"src.solsynth.dev/sosys/filesystem/internal/dispatch"
-	"src.solsynth.dev/sosys/filesystem/internal/eventbus"
-	"src.solsynth.dev/sosys/filesystem/internal/handler"
 	"src.solsynth.dev/sosys/filesystem/internal/service"
 	"src.solsynth.dev/sosys/filesystem/internal/webui"
-	dyauth "src.solsynth.dev/sosys/go/pkg/auth"
 
-	"github.com/gin-gonic/gin"
-	"github.com/oklog/ulid/v2"
-	"github.com/rs/zerolog/log"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	"golang.org/x/crypto/bcrypt"
 )
 
-func NewRouter(cfg *config.Config, mode string, files *service.FileService, wopi *service.WOPIService, tasks *service.TaskService, quota *service.QuotaService, bus *eventbus.Bus, dispatcher dispatch.Dispatcher) *gin.Engine {
-	r := gin.New()
-	r.Use(recordServerFailures(files))
-	r.Use(gin.Recovery())
+// Server hosts the HTTP API.
+type Server struct {
+	Engine *gin.Engine
+	cfg    *config.Config
+	api    *gin.RouterGroup
+	// WebError reports why the SPA was not mounted (missing dist directory or
+	// no index.html). The server stays API-only in that case.
+	WebError error
+}
 
-	if cfg.Auth.Target != "" {
-		log.Info().Str("target", cfg.Auth.Target).Bool("useTLS", cfg.Auth.UseTLS).Msg("auth client enabled")
-		authenticator, err := dyauth.NewGrpcTokenAuthenticator(dyauth.GrpcAuthDialConfig{Target: cfg.Auth.Target, UseTLS: cfg.Auth.UseTLS, TLSSkipVerify: cfg.Auth.TLSSkipVerify})
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to init authenticator")
+// New builds the gin engine with the core middleware chain and the host-level
+// endpoints. Module routes are mounted afterwards through Host().
+//
+// The auth middleware is deliberately not installed here: the auth module owns
+// it, so a build without that module has no authentication middleware at all.
+func New(cfg *config.Config, mode string, files *service.FileService, middleware ...gin.HandlerFunc) *Server {
+	gin.SetMode(gin.ReleaseMode)
+	engine := gin.New()
+	engine.Use(recordServerFailures(files))
+	engine.Use(gin.Recovery())
+	// Authentication is installed here, before any module registers a route:
+	// gin only applies middleware to routes created after Use.
+	for _, fn := range middleware {
+		if fn != nil {
+			engine.Use(fn)
 		}
+	}
 
-		r.Use(func(c *gin.Context) {
-			// Console assets and SPA routes are public. Skipping auth here keeps
-			// a page load from doing a gRPC token lookup per asset; API
-			// authentication still runs on /api path requests below.
-			if isConsoleRequest(c.Request) {
-				c.Next()
-				return
-			}
+	s := &Server{Engine: engine, cfg: cfg}
 
-			if isWOPICallbackRequest(c.Request) {
-				c.Next()
-				return
-			}
-
-			if isWebDAVRequest(c.Request) {
-				if accountID, ok := authenticateWebDAV(c.Request, files); ok {
-					c.Set(handler.WebDAVAccountIDKey, accountID)
+	if cfg != nil && strings.TrimSpace(cfg.Web.StaticDir) != "" {
+		console, err := webui.New(cfg.Web.StaticDir)
+		if err != nil {
+			s.WebError = err
+		} else {
+			engine.NoRoute(func(c *gin.Context) {
+				// Module routes own every API path; the console only serves
+				// non-API GETs so an unknown API path keeps returning JSON.
+				if isAPIPath(c.Request.URL.Path) {
+					c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+					return
 				}
-				c.Next()
-				return
-			}
-
-			tokenInfo, ok := dyauth.ExtractToken(c.Request)
-			if ok {
-				log.Debug().
-					Str("method", c.Request.Method).
-					Str("path", c.Request.URL.Path).
-					Str("tokenType", string(tokenInfo.Type)).
-					Msg("auth token extracted")
-			} else {
-				log.Debug().
-					Str("method", c.Request.Method).
-					Str("path", c.Request.URL.Path).
-					Msg("no auth token extracted")
-			}
-
-			result, err := dyauth.AuthenticateRequest(c.Request.Context(), authenticator, c.Request)
-			if err != nil {
-				if ok {
-					log.Warn().
-						Err(err).
-						Str("method", c.Request.Method).
-						Str("path", c.Request.URL.Path).
-						Str("tokenType", string(tokenInfo.Type)).
-						Msg("auth token present but request was not authenticated")
-				}
-				c.Next()
-				return
-			}
-
-			dyauth.WithAuth(c, result, tokenInfo)
-			log.Debug().
-				Str("method", c.Request.Method).
-				Str("path", c.Request.URL.Path).
-				Str("accountId", result.Account.GetId()).
-				Str("sessionId", result.Session.GetId()).
-				Str("tokenType", string(tokenInfo.Type)).
-				Msg("request authenticated")
-			_ = dyauth.HydrateAndTouch(c.Request.Context(), nil, nil, result)
-			c.Next()
-		})
+				console.ServeHTTP(c.Writer, c.Request)
+			})
+		}
 	}
 
 	docs.SwaggerInfo.BasePath = "/"
 	docs.SwaggerInfo.Schemes = []string{"http"}
-	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
+	engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
+	engine.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true, "mode": mode}) })
+	engine.GET("/alive", func(c *gin.Context) { c.Status(http.StatusOK) })
 
-	handler.RegisterRoutes(r, cfg, files, wopi, tasks, quota, bus, dispatcher)
-	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true, "mode": mode}) })
-	mountWebConsole(r, cfg)
-	return r
+	s.api = engine.Group("/api")
+
+	log.Info().Str("mode", mode).Msg("http host ready")
+	return s
 }
 
-// mountWebConsole serves the built console from cfg.Web.StaticDir. RegisterRoutes
-// installs a JSON 404 as the catch-all, so mounting after it replaces that
-// fallback; unknown API paths keep returning JSON instead of index.html.
-func mountWebConsole(r *gin.Engine, cfg *config.Config) {
-	if strings.TrimSpace(cfg.Web.StaticDir) == "" {
+// ModuleInfo is one entry in GET /api/modules.
+type ModuleInfo struct {
+	ID           string   `json:"id"`
+	Kind         string   `json:"kind"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// ModulesResponse is the resolved module set plus its capabilities: the
+// runtime answer to "what is compiled and enabled in this build".
+type ModulesResponse struct {
+	Modules      []ModuleInfo `json:"modules"`
+	Capabilities []string     `json:"capabilities"`
+}
+
+// MountModules advertises the resolved module set. The app calls it after
+// resolution so the endpoint reflects the enabled set, not the compiled set.
+func (s *Server) MountModules(response ModulesResponse) {
+	if s == nil || s.Engine == nil {
 		return
 	}
-
-	console, err := webui.New(cfg.Web.StaticDir)
-	if err != nil {
-		log.Warn().Err(err).Str("dir", cfg.Web.StaticDir).Msg("web console not served")
-		return
-	}
-
-	log.Info().Str("dir", cfg.Web.StaticDir).Msg("serving web console")
-	r.NoRoute(func(c *gin.Context) {
-		if isAPIPath(c.Request.URL.Path) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		console.ServeHTTP(c.Writer, c.Request)
-	})
+	s.Engine.GET("/api/modules", func(c *gin.Context) { c.JSON(http.StatusOK, response) })
 }
 
-func isConsoleRequest(r *http.Request) bool {
-	if r == nil || r.URL == nil {
-		return false
-	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		return false
-	}
-	return !isAPIPath(r.URL.Path)
-}
+// Host returns the gin engine modules mount their routes on.
+func (s *Server) Host() *gin.Engine { return s.Engine }
 
+// API returns the shared /api router group.
+func (s *Server) API() *gin.RouterGroup { return s.api }
+
+// isAPIPath reports whether a path belongs to an API surface.
 func isAPIPath(upath string) bool {
 	upath = strings.TrimSuffix(upath, "/")
 	for _, prefix := range []string{"/api", "/wopi", "/webdav", "/_dfs", "/swagger"} {
@@ -150,127 +116,4 @@ func isAPIPath(upath string) bool {
 		}
 	}
 	return false
-}
-
-func isWOPICallbackRequest(r *http.Request) bool {
-	if r == nil || r.URL == nil {
-		return false
-	}
-	if !strings.HasPrefix(r.URL.Path, "/wopi/") {
-		return false
-	}
-	if strings.TrimSpace(r.URL.Query().Get("access_token")) != "" {
-		return true
-	}
-	authz := strings.TrimSpace(r.Header.Get("Authorization"))
-	return strings.HasPrefix(strings.ToLower(authz), "bearer ")
-}
-
-func isWebDAVRequest(r *http.Request) bool {
-	return r != nil && r.URL != nil && strings.HasPrefix(r.URL.Path, "/webdav/")
-}
-
-// authenticateWebDAV handles WebDAV authentication independently from the global
-// dyauth middleware. It checks Basic Auth credentials against the web_dav_tokens
-// table first. If that fails and the password looks like a JWT/API key, it falls
-// back to dyauth. Returns the account ID if authenticated.
-func authenticateWebDAV(r *http.Request, files *service.FileService) (string, bool) {
-	if r == nil {
-		return "", false
-	}
-	username, password, ok := r.BasicAuth()
-	if !ok {
-		return "", false
-	}
-
-	username = strings.TrimSpace(username)
-	password = strings.TrimSpace(password)
-	if password == "" {
-		return "", false
-	}
-
-	if isLikelyWebDAVTokenID(username) {
-		if accountID, ok := authenticateWebDAVTokenCredentials(files, username, password); ok {
-			return accountID, true
-		}
-	}
-
-	if tokenID, secret, ok := parseEmbeddedWebDAVToken(password); ok {
-		if accountID, ok := authenticateWebDAVTokenCredentials(files, tokenID, secret); ok {
-			return accountID, true
-		}
-	}
-
-	if accountID, ok := authenticateWebDAVTokenSecret(files, password); ok {
-		return accountID, true
-	}
-
-	log.Warn().Str("username", username).Msg("webdav: token authentication failed")
-	return "", false
-}
-
-func isLikelyWebDAVTokenID(value string) bool {
-	if strings.TrimSpace(value) == "" {
-		return false
-	}
-	_, err := ulid.ParseStrict(value)
-	return err == nil
-}
-
-func parseEmbeddedWebDAVToken(password string) (string, string, bool) {
-	parts := strings.SplitN(password, ":", 2)
-	if len(parts) != 2 {
-		return "", "", false
-	}
-	tokenID := strings.TrimSpace(parts[0])
-	secret := strings.TrimSpace(parts[1])
-	if tokenID == "" || secret == "" {
-		return "", "", false
-	}
-	return tokenID, secret, true
-}
-
-func authenticateWebDAVTokenCredentials(files *service.FileService, tokenID, secret string) (string, bool) {
-	var token database.WebDAVToken
-	if err := files.DB().Where("id = ?", tokenID).First(&token).Error; err != nil {
-		return "", false
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(token.TokenHash), []byte(secret)); err != nil {
-		return "", false
-	}
-
-	markWebDAVTokenUsed(files, &token)
-	return token.AccountID.String(), true
-}
-
-func authenticateWebDAVTokenSecret(files *service.FileService, secret string) (string, bool) {
-	var tokens []database.WebDAVToken
-	if err := files.DB().Find(&tokens).Error; err != nil {
-		return "", false
-	}
-
-	for i := range tokens {
-		token := &tokens[i]
-		if err := bcrypt.CompareHashAndPassword([]byte(token.TokenHash), []byte(secret)); err != nil {
-			continue
-		}
-
-		markWebDAVTokenUsed(files, token)
-		return token.AccountID.String(), true
-	}
-	return "", false
-}
-
-func markWebDAVTokenUsed(files *service.FileService, token *database.WebDAVToken) {
-	if token == nil {
-		return
-	}
-
-	now := time.Now()
-	_ = files.DB().Model(token).Update("last_used_at", &now)
-	log.Info().
-		Str("accountId", token.AccountID.String()).
-		Str("tokenId", token.ID).
-		Msg("webdav: authenticated via token")
 }
