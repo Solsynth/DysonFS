@@ -4,7 +4,6 @@ import { computed } from 'vue'
 import {
   ArrowRight16,
   CloudOffline16,
-  FolderOpen16,
   Login16,
   Moon16,
   Renew16,
@@ -72,22 +71,7 @@ const state = computed(() => session.state)
               {{ t('session.signIn') }}
               <ArrowRight16 class="ml-0.5" />
             </a>
-            <button class="btn btn-outline h-9" type="button" @click="session.startSample()">
-              <FolderOpen16 />
-              {{ t('session.sample') }}
-            </button>
           </div>
-
-          <dl class="mt-9 grid grid-cols-2 gap-5 border-t border-line pt-4 text-[11px]">
-            <div>
-              <dt class="text-faint">{{ t('session.account') }}</dt>
-              <dd class="mt-0.5 text-dim">{{ t('session.accountBody') }}</dd>
-            </div>
-            <div>
-              <dt class="text-faint">{{ t('session.sampleMode') }}</dt>
-              <dd class="mt-0.5 text-dim">{{ t('session.sampleModeBody') }}</dd>
-            </div>
-          </dl>
         </div>
 
         <div v-else key="offline" class="w-full max-w-[440px]">
@@ -107,10 +91,6 @@ const state = computed(() => session.state)
             <button class="btn btn-primary h-9" type="button" @click="session.retry()">
               <Renew16 />
               {{ t('session.tryAgain') }}
-            </button>
-            <button class="btn btn-outline h-9" type="button" @click="session.startSample()">
-              <FolderOpen16 />
-              {{ t('session.continueSample') }}
             </button>
           </div>
         </div>

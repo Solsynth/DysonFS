@@ -4,7 +4,6 @@ import { computed, ref } from 'vue'
 import { DriveError } from '@/lib/api/client'
 import { driveApi, thumbnailUrl } from '@/lib/api/drive'
 import type {
-  BreadcrumbItem,
   CloudFile,
   FileOrder,
   FilePermission,
@@ -14,24 +13,6 @@ import type {
   UsageSummary,
   ViewMode,
 } from '@/lib/api/types'
-import {
-  isSampleData,
-  sampleBreadcrumb,
-  sampleCreateFolder,
-  sampleFile as findSampleFile,
-  sampleFiles,
-  sampleList,
-  sampleMove,
-  samplePermissions,
-  samplePoolUsage,
-  samplePools,
-  samplePurge,
-  sampleQuota,
-  sampleRecycle,
-  sampleRename,
-  sampleSetVisibility,
-  sampleUsage,
-} from '@/lib/demo'
 import { formatCount, formatBytes } from '@/lib/format'
 import { translate } from '@/lib/i18n'
 
@@ -125,7 +106,6 @@ export const useVaultStore = defineStore('vault', () => {
   const poolUsage = ref<Record<string, number>>({})
   const volumeLoading = ref(false)
   const volumeError = ref('')
-  const sample = ref(isSampleData())
 
   const poolRows = computed(() =>
     pools.value.map((pool) => ({
@@ -255,18 +235,6 @@ export const useVaultStore = defineStore('vault', () => {
 
   async function fetchPage(offset: number, signal?: AbortSignal) {
     const options = buildOptions(offset)
-    if (sample.value) {
-      const result = sampleList(mode.value, folderId.value, {
-        query: options.query,
-        isFolder: options.is_folder,
-        poolId: options.pool_id ?? null,
-        order: options.order,
-        orderDesc: options.orderDesc,
-        offset,
-        take: options.take,
-      })
-      return result
-    }
     if (mode.value === 'recycle') return driveApi.owned(options, signal)
     if (mode.value === 'unindexed') return driveApi.unindexed(options, signal)
     return folderId.value
@@ -313,7 +281,6 @@ export const useVaultStore = defineStore('vault', () => {
   }
 
   async function open(nextMode: BrowsingMode, nextFolderId: string | null = null) {
-    sample.value = isSampleData()
     mode.value = nextMode
     folderId.value = nextFolderId
     query.value = ''
@@ -343,30 +310,15 @@ export const useVaultStore = defineStore('vault', () => {
     loading.value = true
     error.value = ''
     try {
-      if (sample.value) {
-        const found = findSampleFile(nextFolderId)
-        if (!found || !found.is_folder) {
-          throw new DriveError(404, 'This folder is not in the drive.')
-        }
-        folder.value = found
-        crumbs.value = [
-          { id: null, name: translate('nav.drive') },
-          ...sampleBreadcrumb(nextFolderId).map((crumb: BreadcrumbItem) => ({
-            id: crumb.id,
-            name: crumb.name,
-          })),
-        ]
-      } else {
-        const [info, chain] = await Promise.all([
-          driveApi.file(nextFolderId),
-          driveApi.breadcrumb(nextFolderId),
-        ])
-        folder.value = info
-        crumbs.value = [
-          { id: null, name: translate('nav.drive') },
-          ...chain.map((crumb) => ({ id: crumb.id, name: crumb.name })),
-        ]
-      }
+      const [info, chain] = await Promise.all([
+        driveApi.file(nextFolderId),
+        driveApi.breadcrumb(nextFolderId),
+      ])
+      folder.value = info
+      crumbs.value = [
+        { id: null, name: translate('nav.drive') },
+        ...chain.map((crumb) => ({ id: crumb.id, name: crumb.name })),
+      ]
     } catch (caught) {
       error.value = errorMessage(caught)
       folder.value = null
@@ -381,14 +333,6 @@ export const useVaultStore = defineStore('vault', () => {
     volumeLoading.value = true
     volumeError.value = ''
     try {
-      if (sample.value || isSampleData()) {
-        usage.value = sampleUsage
-        quota.value = sampleQuota
-        pools.value = samplePools
-        poolUsage.value = { ...samplePoolUsage }
-        return
-      }
-
       const [usageResult, quotaResult, poolsResult] = await Promise.allSettled([
         driveApi.usage(),
         driveApi.quota(),
@@ -479,8 +423,7 @@ export const useVaultStore = defineStore('vault', () => {
     if (!trimmed || trimmed === file.name) return
     actionBusy.value = 'rename'
     try {
-      if (sample.value) sampleRename(file.id, trimmed)
-      else await driveApi.rename(file.id, trimmed)
+      await driveApi.rename(file.id, trimmed)
       if (folder.value?.id === file.id) setFolderName(trimmed)
       notice.ok(translate('notice.renamed', { name: trimmed }))
       await load()
@@ -497,8 +440,7 @@ export const useVaultStore = defineStore('vault', () => {
     if (!trimmed) return
     actionBusy.value = 'new-folder'
     try {
-      if (sample.value) sampleCreateFolder(trimmed, folderId.value)
-      else await driveApi.createFolder(trimmed, folderId.value)
+      await driveApi.createFolder(trimmed, folderId.value)
       notice.ok(translate('notice.folderCreated', { name: trimmed }))
       await Promise.all([load(), loadVolume()])
     } catch (caught) {
@@ -514,8 +456,7 @@ export const useVaultStore = defineStore('vault', () => {
     const ids = files.map((file) => file.id)
     actionBusy.value = 'move'
     try {
-      if (sample.value) sampleMove(ids, parentId)
-      else await driveApi.move(ids, parentId)
+      await driveApi.move(ids, parentId)
       notice.ok(
         files.length === 1
           ? translate('notice.oneMoved', { name: files[0]?.name ?? translate('dialog.object') })
@@ -536,8 +477,7 @@ export const useVaultStore = defineStore('vault', () => {
     const ids = files.map((file) => file.id)
     actionBusy.value = 'recycle'
     try {
-      if (sample.value) sampleRecycle(ids, true)
-      else await driveApi.recycle(ids)
+      await driveApi.recycle(ids)
       notice.ok(
         files.length === 1
           ? translate('notice.oneRecycled', {
@@ -560,8 +500,7 @@ export const useVaultStore = defineStore('vault', () => {
     const ids = files.map((file) => file.id)
     actionBusy.value = 'restore'
     try {
-      if (sample.value) sampleRecycle(ids, false)
-      else await driveApi.restore(ids)
+      await driveApi.restore(ids)
       notice.ok(
         files.length === 1
           ? translate('notice.oneRestored', {
@@ -584,8 +523,7 @@ export const useVaultStore = defineStore('vault', () => {
     const ids = files.map((file) => file.id)
     actionBusy.value = 'purge'
     try {
-      if (sample.value) samplePurge(ids)
-      else await driveApi.purge(ids)
+      await driveApi.purge(ids)
       notice.ok(
         files.length === 1
           ? translate('notice.onePurged', {
@@ -604,7 +542,6 @@ export const useVaultStore = defineStore('vault', () => {
   }
 
   async function permissionsFor(file: CloudFile): Promise<FilePermission[]> {
-    if (sample.value) return samplePermissions(file.id)
     return driveApi.permissions(file.id)
   }
 
@@ -623,8 +560,7 @@ export const useVaultStore = defineStore('vault', () => {
         subject_id: '',
         permission: 'read',
       })
-      if (sample.value) sampleSetVisibility(file.id, isPublic)
-      else await driveApi.setPermissions(file.id, next)
+      await driveApi.setPermissions(file.id, next)
       notice.ok(translate(isPublic ? 'notice.published' : 'notice.unpublished'))
       await load()
     } catch (caught) {
@@ -642,12 +578,6 @@ export const useVaultStore = defineStore('vault', () => {
       order: 'name' as const,
       orderDesc: false,
       recycled: false,
-    }
-    if (sample.value) {
-      return sampleFiles.filter(
-        (file) =>
-          file.is_folder && !file.is_marked_recycle && (file.parent_id ?? null) === parentId,
-      )
     }
     const page = parentId
       ? await driveApi.children(parentId, options)
@@ -690,7 +620,6 @@ export const useVaultStore = defineStore('vault', () => {
     poolRows,
     volumeLoading,
     volumeError,
-    sample,
     usedBytes,
     quotaBytes,
     extraBytes,

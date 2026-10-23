@@ -6,13 +6,11 @@ import { ArrowRight16, Checkmark16, Renew16, TrashCan16, WarningAlt16 } from '@c
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import VolumePlatter from '@/components/VolumePlatter.vue'
-import { formatBytes, formatCount, formatPercent, initialOf } from '@/lib/format'
-import { useSessionStore } from '@/stores/session'
+import { formatBytes, formatCount, formatPercent } from '@/lib/format'
 import { useVaultStore } from '@/stores/vault'
 
 const { t } = useI18n()
 const vault = useVaultStore()
-const session = useSessionStore()
 
 const MiB = 1024 * 1024
 
@@ -33,11 +31,6 @@ const totalQuotaMb = computed(() => quota.value?.total_quota ?? 0)
 const averageObject = computed(() => (vault.fileCount > 0 ? vault.usedBytes / vault.fileCount : 0))
 const poolTotal = computed(() => vault.poolRows.reduce((sum, row) => sum + row.bytes, 0))
 const maxPool = computed(() => Math.max(1, ...vault.poolRows.map((row) => row.bytes)))
-const operator = computed(
-  () => session.identity?.nick || session.identity?.name || t('storage.account'),
-)
-
-
 function poolWidth(bytes: number): string {
   return `${Math.max(1.5, (bytes / maxPool.value) * 100)}%`
 }
@@ -60,13 +53,6 @@ function quotaWidth(mb: number): string {
         :description="t('storage.description')"
       >
         <template #actions>
-          <span
-            v-if="vault.sample"
-            class="flex items-center gap-1.5 text-[11px] text-faint"
-          >
-            <span class="dot bg-primary" aria-hidden="true" />
-            {{ t('storage.sampleData') }}
-          </span>
           <button
             class="btn btn-outline btn-sm"
             type="button"
@@ -250,7 +236,7 @@ function quotaWidth(mb: number): string {
         </div>
       </ConsolePanel>
 
-      <div class="mt-4 grid gap-4 md:grid-cols-2">
+      <div class="mt-4">
         <ConsolePanel :title="t('storage.reclaim')">
           <div class="flex items-start gap-3">
             <TrashCan16 class="mt-0.5 h-4 w-4 shrink-0 text-faint" />
@@ -268,38 +254,6 @@ function quotaWidth(mb: number): string {
                 {{ t('storage.openRecycle') }}
                 <ArrowRight16 class="h-3 w-3" />
               </RouterLink>
-            </div>
-          </div>
-        </ConsolePanel>
-
-        <ConsolePanel
-          :title="t('storage.account')"
-          :note="session.sample ? t('storage.sampleData') : t('storage.liveAccount')"
-        >
-          <div class="flex items-center gap-2.5">
-            <span
-              class="grid size-8 place-items-center rounded-full bg-base-300 text-[11px] font-semibold text-dim"
-            >
-              {{ initialOf(operator) }}
-            </span>
-            <div class="min-w-0">
-              <div class="truncate text-[13px] text-base-content">{{ operator }}</div>
-              <div class="text-[11px] text-faint">
-                {{ session.identity?.is_superuser ? t('storage.superuser') : t('storage.authenticated') }}
-              </div>
-            </div>
-            <span class="ml-auto dot bg-success" aria-hidden="true" />
-          </div>
-          <div class="mt-4 space-y-2 text-[11px]">
-            <div class="flex items-center justify-between text-faint">
-              <span>{{ t('storage.account') }}</span>
-              <span class="font-mono text-dim">{{ session.identity?.name || '—' }}</span>
-            </div>
-            <div class="flex items-center justify-between text-faint">
-              <span>{{ t('storage.state') }}</span>
-              <span class="text-dim">{{
-                session.sample ? t('storage.sampleData') : t('storage.liveAccount')
-              }}</span>
             </div>
           </div>
         </ConsolePanel>

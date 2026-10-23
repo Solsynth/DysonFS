@@ -93,15 +93,6 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="ml-auto flex shrink-0 items-center gap-1">
-      <span
-        v-if="session.sample"
-        class="mr-1 hidden items-center gap-1.5 text-2xs text-faint lg:flex"
-        :title="t('app.sampleHint')"
-      >
-        <span class="dot bg-warning" aria-hidden="true" />
-        {{ t('app.sampleBadge') }}
-      </span>
-
       <button
         class="btn btn-ghost btn-xs grid size-7 place-items-center px-0 md:hidden"
         type="button"

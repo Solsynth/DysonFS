@@ -42,17 +42,6 @@ VITE_AUTH_URL=http://localhost:8080/sign-in bun run dev
 That only works when the page and the drive share the cookie's domain — an
 unshared host signs the person in and then drops them on a signed-out drive.
 
-## Sample mode
-
-The client ships with a coherent set of fixtures so the UI can be exercised
-without a backend. Enable it with any of:
-
-- `http://localhost:5173/drive?demo=1`
-- `VITE_DEMO=1 bun run dev`
-- `sessionStorage.setItem('snfs:sample', '1')`
-
-Sample mode is always labelled in the title bar and never mixes with live data.
-
 ## Scripts
 
 | Script               | Purpose                                            |

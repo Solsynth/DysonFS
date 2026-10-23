@@ -16,12 +16,4 @@ describe('signInUrl', () => {
     expect(url.pathname).toBe('/sign-in')
     expect(url.searchParams.get('redirectUri')).toBe(window.location.href)
   })
-
-  it('does not carry sample mode into a real sign-in', () => {
-    window.history.replaceState(null, '', '/drive?demo=1')
-    const redirect = new URL(signInUrl()).searchParams.get('redirectUri') ?? ''
-    expect(redirect).not.toContain('demo')
-    expect(redirect).toContain('/drive')
-    window.history.replaceState(null, '', '/drive')
-  })
 })

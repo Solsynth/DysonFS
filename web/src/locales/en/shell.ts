@@ -16,8 +16,6 @@ export default {
     searchFiles: 'Search files',
     upload: 'Upload',
     uploadFiles: 'Upload files',
-    sampleBadge: 'Sample',
-    sampleHint: 'Showing sample data. No live drive is connected.',
     uploadDisabled: 'Open a drive folder to upload',
     signedInAs: 'Signed in as {name}',
   },

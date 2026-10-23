@@ -5,7 +5,6 @@ import { DriveError, onUnauthorized } from '@/lib/api/client'
 import { driveApi } from '@/lib/api/drive'
 import type { AccountIdentity } from '@/lib/api/types'
 import { signInUrl } from '@/lib/auth'
-import { enableSampleData, isSampleData, sampleIdentity } from '@/lib/demo'
 
 type SessionState = 'loading' | 'ready' | 'signed-out' | 'offline'
 
@@ -13,7 +12,6 @@ export const useSessionStore = defineStore('session', () => {
   const state = ref<SessionState>('loading')
   const identity = ref<AccountIdentity | null>(null)
   const error = ref('')
-  const sample = ref(isSampleData())
 
   const signedIn = computed(() => state.value === 'ready' && identity.value !== null)
   // The identity console's shared sign-in page, with this drive as the place
@@ -21,7 +19,6 @@ export const useSessionStore = defineStore('session', () => {
   const authUrl = computed(signInUrl)
 
   onUnauthorized(() => {
-    if (sample.value) return
     identity.value = null
     state.value = 'signed-out'
     error.value = 'The session expired. Sign in again to reach the drive.'
@@ -29,14 +26,6 @@ export const useSessionStore = defineStore('session', () => {
 
   /** Resolves the signed-in account once at boot. */
   async function load() {
-    sample.value = isSampleData()
-    if (sample.value) {
-      identity.value = sampleIdentity
-      state.value = 'ready'
-      error.value = ''
-      return
-    }
-
     state.value = 'loading'
     error.value = ''
     try {
@@ -81,31 +70,13 @@ export const useSessionStore = defineStore('session', () => {
     await load()
   }
 
-  function startSample() {
-    enableSampleData(true)
-    sample.value = true
-    identity.value = sampleIdentity
-    state.value = 'ready'
-    error.value = ''
-  }
-
-  function stopSample() {
-    enableSampleData(false)
-    sample.value = false
-    identity.value = null
-    state.value = 'signed-out'
-  }
-
   return {
     state,
     identity,
     error,
-    sample,
     signedIn,
     authUrl,
     load,
     retry,
-    startSample,
-    stopSample,
   }
 })

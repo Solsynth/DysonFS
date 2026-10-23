@@ -39,7 +39,14 @@ function restore(): DriveTab[] {
       if (!id || seen.has(id)) continue
       if (typeof candidate.name !== 'string' || typeof candidate.kind !== 'string') continue
       seen.add(id)
-      tabs.push({ id, kind: candidate.kind as TabKind, name: candidate.name, note: candidate.note })
+      const kind = candidate.kind as TabKind
+      // Older builds stored a tab per folder. Only the last visited location
+      // is kept, so a restore lands on the browsing tab this build maintains.
+      if (kind !== 'preview') {
+        const previous = tabs.findIndex((tab) => tab.kind !== 'preview')
+        if (previous >= 0) tabs.splice(previous, 1)
+      }
+      tabs.push({ id, kind, name: candidate.name, note: candidate.note })
     }
   } catch {
     return []
@@ -79,9 +86,23 @@ export const useTabStore = defineStore('tabs', () => {
         return
       }
       open.value = open.value.map((entry, index) => (index === existing ? tab : entry))
-    } else {
-      open.value = [...open.value, tab].slice(-LIMIT)
+      persist()
+      return
     }
+
+    if (tab.kind === 'preview') {
+      open.value = [...open.value, tab].slice(-LIMIT)
+      persist()
+      return
+    }
+
+    // Browsing reuses one tab: folders, My Drive, the bin, and Storage all
+    // replace the same strip entry instead of accumulating one per location.
+    const browsing = open.value.findIndex((entry) => entry.kind !== 'preview')
+    open.value =
+      browsing >= 0
+        ? open.value.map((entry, index) => (index === browsing ? tab : entry))
+        : [...open.value, tab]
     persist()
   }
 

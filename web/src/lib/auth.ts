@@ -17,16 +17,13 @@ const DEFAULT_AUTH_PAGE = 'https://id.solian.app/sign-in'
  * The address of the sign-in page for the page the person is on. Stargate
  * accepts only a target the session cookie reaches: this app's origin and the
  * identity host share `cookieDomain`, so the drive's own URL is the right
- * hand-off target. A read-only `demo` flag is dropped so sample mode does not
- * survive a real sign-in.
+ * hand-off target.
  */
 export function signInUrl(): string {
   const base = import.meta.env.VITE_AUTH_URL || DEFAULT_AUTH_PAGE
   try {
     const url = new URL(base, window.location.origin)
-    const back = new URL(window.location.href)
-    back.searchParams.delete('demo')
-    url.searchParams.set('redirectUri', back.toString())
+    url.searchParams.set('redirectUri', window.location.href)
     return url.toString()
   } catch {
     return base

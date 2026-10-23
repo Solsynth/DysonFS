@@ -83,13 +83,7 @@ async function load() {
   source.value = ''
   sourceState.value = 'idle'
   try {
-    if (vault.sample) {
-      const found = vault.items.find((item) => item.id === id) ?? null
-      if (!found) throw new Error(t('preview.notInSample'))
-      file.value = found
-    } else {
-      file.value = await driveApi.file(id)
-    }
+    file.value = await driveApi.file(id)
     vault.setPreviewFile(file.value)
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : t('preview.readFailed')
@@ -101,13 +95,6 @@ async function load() {
 
 async function loadSource() {
   if (mode.value !== 'text') return
-  // Sample fixtures have no stored bytes, so the preview says so rather than
-  // sitting on an empty pane that reads as a rendering failure.
-  if (vault.sample) {
-    sourceError.value = t('preview.sampleNoContent')
-    sourceState.value = 'failed'
-    return
-  }
   if (sourceState.value === 'loading') return
   sourceState.value = 'loading'
   sourceError.value = ''
@@ -159,11 +146,16 @@ function backToFolder() {
 }
 
 function download() {
-  if (!file.value || vault.sample) {
-    notice.info(t('preview.sampleDownload'))
-    return
-  }
-  window.open(openUrl(file.value.id, true), '_blank', 'noopener')
+  if (!file.value) return
+  // A same-origin anchor download streams the file in place; `window.open`
+  // would leave an extra browser tab behind for a transfer the user only
+  // asked to save.
+  const link = document.createElement('a')
+  link.href = openUrl(file.value.id, true)
+  link.download = file.value.name || ''
+  document.body.append(link)
+  link.click()
+  link.remove()
 }
 
 function rename() {

@@ -16,8 +16,6 @@ export default {
     searchFiles: '搜索文件',
     upload: '上传',
     uploadFiles: '上传文件',
-    sampleBadge: '示例',
-    sampleHint: '正在显示示例数据。未连接任何云盘。',
     uploadDisabled: '打开云盘文件夹以上传',
     signedInAs: '已登录为 {name}',
   },

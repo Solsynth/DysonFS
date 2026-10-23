@@ -42,7 +42,7 @@ function onKeydown(event: KeyboardEvent, file: CloudFile) {
 }
 
 function showPreview(file: CloudFile): boolean {
-  return !vault.sample && hasPreview(file) && !failed.value.includes(file.id)
+  return hasPreview(file) && !failed.value.includes(file.id)
 }
 
 function markFailed(id: string) {

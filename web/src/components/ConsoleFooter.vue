@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { Moon16, Sun16 } from '@carbon/icons-vue'
+import { ChevronDown16, Moon16, Sun16 } from '@carbon/icons-vue'
 
 import { useUiStore } from '@/stores/ui'
 import type { Locale } from '@/lib/prefs'
@@ -31,10 +31,10 @@ function onChangeLocale(event: Event) {
         <Moon16 v-else aria-hidden="true" />
       </button>
 
-      <label class="flex items-center gap-1.5">
+      <label class="relative flex items-center">
         <span class="sr-only">{{ t('app.language') }}</span>
         <select
-          class="select select-xs footer-locale"
+          class="footer-locale"
           :value="ui.locale"
           :aria-label="t('app.language')"
           @change="onChangeLocale"
@@ -42,19 +42,44 @@ function onChangeLocale(event: Event) {
           <option value="en">{{ t('app.languageEnglish') }}</option>
           <option value="zh-CN">{{ t('app.languageChinese') }}</option>
         </select>
+        <ChevronDown16
+          class="pointer-events-none absolute right-0 h-3 w-3 text-faint"
+          aria-hidden="true"
+        />
       </label>
     </div>
   </footer>
 </template>
 
 <style scoped>
-/* The language picker is inline, not a full-width form field. */
-select.select.footer-locale {
+/* The language picker is a footer control, not a form field: it drops the
+   field border, fill, and shadow so it reads as one more piece of footer
+   text. `appearance: none` needs a chevron, drawn as a mask so it inherits
+   the footer's color in both themes. */
+select.footer-locale {
+  appearance: none;
   inline-size: auto;
   width: auto;
-  height: 1.75rem;
-  min-height: 1.75rem;
-  padding-block: 0;
+  height: 1.5rem;
+  padding: 0 1rem 0 0;
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: inherit;
+  font-family: inherit;
   font-size: 0.6875rem;
+  line-height: 1.5rem;
+  cursor: pointer;
+}
+
+select.footer-locale:hover {
+  color: var(--color-dim);
+}
+
+select.footer-locale:focus-visible {
+  outline: 1px solid var(--color-primary);
+  outline-offset: 2px;
 }
 </style>

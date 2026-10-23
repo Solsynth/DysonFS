@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { uploadDirect } from '@/lib/api/drive'
-import { isSampleData, sampleUpload } from '@/lib/demo'
 import { formatCount } from '@/lib/format'
 
 import { useNoticeStore } from './notice'
@@ -35,7 +34,6 @@ export const useUploadStore = defineStore('upload', () => {
   const parents = new Map<string, string | null>()
   const queue: string[] = []
   let running = 0
-  let sampleTimer: number | undefined
 
   const active = computed(() =>
     tasks.value.filter((task) => task.status === 'queued' || task.status === 'uploading'),
@@ -57,10 +55,6 @@ export const useUploadStore = defineStore('upload', () => {
   }
 
   function enqueue(list: File[], parentId: string | null) {
-    if (isSampleData()) {
-      startSample(list, parentId)
-      return
-    }
     const accepted = list.filter((file) => file.size >= 0)
     if (accepted.length === 0) return
 
@@ -131,44 +125,6 @@ export const useUploadStore = defineStore('upload', () => {
       files.delete(id)
       parents.delete(id)
     }
-  }
-
-  function startSample(list: File[], parentId: string | null) {
-    if (sampleTimer) window.clearTimeout(sampleTimer)
-    const created = list.map<UploadTask>((file) => ({
-      id: `sample-${nextId++}`,
-      name: file.name,
-      size: file.size,
-      progress: 0,
-      status: 'uploading',
-      error: '',
-      startedAt: Date.now(),
-    }))
-    tasks.value = [...tasks.value, ...created]
-    collapsed.value = false
-
-    let tick = 0
-    const advance = () => {
-      tick += 1
-      const step = Math.min(100, tick * 9)
-      for (const task of created) {
-        update(task.id, {
-          progress: step,
-          status: step >= 100 ? 'done' : 'uploading',
-        })
-      }
-      if (step < 100) {
-        sampleTimer = window.setTimeout(advance, 180)
-        return
-      }
-      created.forEach((_, index) => {
-        const file = list[index]
-        if (file) sampleUpload(file, parentId)
-      })
-      notice.info(translate('notice.sampleUpload'))
-      void vault.load()
-    }
-    sampleTimer = window.setTimeout(advance, 180)
   }
 
   function cancel(id: string) {
