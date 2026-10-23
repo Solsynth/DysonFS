@@ -56,8 +56,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upath = "/"
 	}
 	if upath == "/" {
-		h.serveIndex(w, r)
+		h.serveIndex(w, "/", r)
 		return
+	}
+	// The picker is a second document in the same build: a host embeds it in a
+	// frame, so it needs a stable address that is not the drive's shell.
+	if upath == "/picker" || upath == "/picker/" {
+		if h.hasDocument("picker.html") {
+			h.serveIndex(w, "/picker.html", r)
+			return
+		}
 	}
 
 	rel := strings.TrimPrefix(upath, "/")
@@ -80,7 +88,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.serveIndex(w, r)
+	h.serveIndex(w, "/", r)
 }
 
 func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, upath string) {
@@ -88,9 +96,14 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, upath string
 	h.files.ServeHTTP(w, withPath(r, upath))
 }
 
-func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serveIndex(w http.ResponseWriter, document string, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
-	h.files.ServeHTTP(w, withPath(r, "/"))
+	h.files.ServeHTTP(w, withPath(r, document))
+}
+
+func (h *Handler) hasDocument(name string) bool {
+	info, err := os.Stat(filepath.Join(h.root, name))
+	return err == nil && info.Mode().IsRegular()
 }
 
 func cacheControl(upath string) string {

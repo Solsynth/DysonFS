@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/icon-outline.svg" type="image/svg+xml" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="robots" content="noindex" />
+    <title>SnFS picker</title>
+    <script>
+      // The picker is usually a frame inside someone else's page, so it must
+      // paint in the host's theme on the first frame rather than flash.
+      ;(function () {
+        try {
+          var params = new URLSearchParams(window.location.search)
+          var asked = params.get('theme')
+          var stored = localStorage.getItem('snfs.theme')
+          var theme =
+            asked === 'light' || asked === 'dark'
+              ? asked
+              : stored === 'light' || stored === 'dark'
+                ? stored
+                : window.matchMedia('(prefers-color-scheme: light)').matches
+                  ? 'light'
+                  : 'dark'
+          document.documentElement.dataset.theme = theme === 'light' ? 'snfs-light' : 'snfs'
+        } catch (error) {
+          /* Leave the default theme in place. */
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="picker"></div>
+    <script type="module" src="/src/picker/main.ts"></script>
+  </body>
+</html>

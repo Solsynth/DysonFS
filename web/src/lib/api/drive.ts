@@ -138,6 +138,13 @@ export async function fetchTextPreview(fileId: string, limit = 256 * 1024): Prom
 
 export interface UploadOptions {
   parentId?: string | null
+  /**
+   * Whether the new file joins the drive's folder tree. A picker's uploads are
+   * unindexed: the app keeps the id, and the person's drive does not acquire a
+   * copy of every file they hand to another app. Unindexed rows still carry
+   * their own bytes and appear in `/files/unindexed`.
+   */
+  indexed?: boolean
   onProgress?: (percent: number) => void
   signal?: AbortSignal
 }
@@ -150,7 +157,7 @@ export function uploadDirect(file: File, options: UploadOptions = {}): Promise<C
   return new Promise((resolve, reject) => {
     const form = new FormData()
     form.set('file', file)
-    form.set('index', 'true')
+    form.set('index', String(options.indexed !== false))
     if (options.parentId) form.set('parent_id', options.parentId)
 
     const xhr = new XMLHttpRequest()
@@ -174,9 +181,7 @@ export function uploadDirect(file: File, options: UploadOptions = {}): Promise<C
           options.onProgress?.(100)
           resolve(parsed)
         } catch {
-          reject(
-            new DriveError(xhr.status, translate('apiError.unreadableRecord')),
-          )
+          reject(new DriveError(xhr.status, translate('apiError.unreadableRecord')))
         }
         return
       }

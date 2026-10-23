@@ -43,6 +43,28 @@ func serve(h http.Handler, method, target string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// The picker is a second document in the same build, embedded by a host page.
+// It must answer at `/picker` with its own HTML, and a build without it must
+// keep the drive's fallback rather than a 404.
+func TestHandlerServesPickerDocument(t *testing.T) {
+	h := newTestHandler(t)
+	writeTestFile(t, h.root, "picker.html", "<!doctype html><title>picker</title>")
+
+	for _, target := range []string{"/picker", "/picker/"} {
+		rec := serve(h, http.MethodGet, target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want %d", target, rec.Code, http.StatusOK)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "picker") {
+			t.Fatalf("%s: body = %q, want the picker document", target, body)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("%s: Cache-Control = %q, want no-cache", target, got)
+		}
+	}
+}
+
+
 func TestHandlerServesIndexAndAssets(t *testing.T) {
 	h := newTestHandler(t)
 

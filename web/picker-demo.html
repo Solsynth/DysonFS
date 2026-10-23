@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>SnFS picker — embed demo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1c2334;
+        --muted: #5a6378;
+        --line: #ccd3e1;
+        --bg: #f3f5fa;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #ccd2e2;
+          --muted: #9aa3b8;
+          --line: #232a3c;
+          --bg: #0a0d16;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 48px 24px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.6 ui-sans-serif, system-ui, sans-serif;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 4px;
+      }
+      p.lede {
+        color: var(--muted);
+        margin: 0 0 24px;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      button {
+        font: inherit;
+        padding: 7px 14px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: transparent;
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--muted);
+      }
+      pre {
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 12px;
+        min-height: 120px;
+        overflow: auto;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+      }
+      label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-right: 12px;
+        color: var(--muted);
+      }
+      .pick-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 24px;
+        padding: 14px;
+        border: 1px dashed var(--line);
+        border-radius: 4px;
+      }
+      .chip {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 2px 10px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      img.thumb {
+        width: 40px;
+        height: 40px;
+        object-fit: cover;
+        border-radius: 3px;
+        border: 1px solid var(--line);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>SnFS picker</h1>
+      <p class="lede">
+        An ordinary host app: it loads one script and asks SnFS for a file. The frame keeps the
+        drive's session, so this page never sees a token.
+      </p>
+
+      <div class="row">
+        <label><input type="radio" name="view" value="files" checked /> files</label>
+        <label><input type="radio" name="view" value="folders" /> folders</label>
+        <label><input type="radio" name="view" value="any" /> any</label>
+        <label><input type="checkbox" id="multiple" /> multi-select</label>
+        <label><input type="checkbox" id="images" /> images only</label>
+      </div>
+
+      <div class="row">
+        <button type="button" id="pick">Choose a file</button>
+        <button type="button" id="pick-upload">Choose or upload</button>
+        <button type="button" id="pick-attachment">Attachment (image, single)</button>
+      </div>
+
+      <div class="pick-row">
+        <span>Attachment for this post:</span>
+        <span class="chip" id="attachment">none</span>
+        <img class="thumb" id="attachment-thumb" alt="" hidden />
+      </div>
+
+      <pre id="out">No selection yet.</pre>
+    </main>
+
+    <script type="module">
+      import { openSnfsPicker } from '/src/lib/picker/embed.ts'
+
+      const out = document.getElementById('out')
+      const frameUrl = new URL('/picker', window.location.href).toString()
+
+      function request() {
+        const view = document.querySelector('input[name="view"]:checked').value
+        return {
+          view,
+          multiple: document.getElementById('multiple').checked,
+          mimeTypes: document.getElementById('images').checked ? ['image/*'] : undefined,
+        }
+      }
+
+      function show(files) {
+        if (files.length === 0) {
+          out.textContent = 'Cancelled — nothing was chosen.'
+          return
+        }
+        out.textContent = JSON.stringify(
+          files.map(({ file, ...rest }) => rest),
+          null,
+          2,
+        )
+      }
+
+      document.getElementById('pick').addEventListener('click', async () => {
+        show(await openSnfsPicker({ frameUrl, dialogTitle: 'Choose a file' }, request()))
+      })
+
+      document.getElementById('pick-upload').addEventListener('click', async () => {
+        show(
+          await openSnfsPicker(
+            { frameUrl, dialogTitle: 'Choose or upload' },
+            { ...request(), upload: true },
+          ),
+        )
+      })
+
+      document.getElementById('pick-attachment').addEventListener('click', async () => {
+        const [file] = await openSnfsPicker(
+          { frameUrl, dialogTitle: 'Attach an image', width: 680, height: 520 },
+          { view: 'files', mimeTypes: ['image/*'], title: 'Attach an image' },
+        )
+        const label = document.getElementById('attachment')
+        const thumb = document.getElementById('attachment-thumb')
+        label.textContent = file ? file.name : 'none'
+        if (file?.thumbnail_url) {
+          thumb.src = file.thumbnail_url
+          thumb.hidden = false
+        } else {
+          thumb.hidden = true
+        }
+      })
+    </script>
+  </body>
+</html>
