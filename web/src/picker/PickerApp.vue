@@ -13,6 +13,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import PickerPanel from '@/components/picker/PickerPanel.vue'
 import PickerSessionGate from '@/components/picker/PickerSessionGate.vue'
+import { setAuthToken } from '@/lib/api/client'
 import { i18n } from '@/lib/i18n'
 import { applyLocale, applyTheme } from '@/lib/prefs'
 import {
@@ -24,13 +25,18 @@ import {
   type PickerFile,
   type PickerOptions,
 } from '@/lib/picker/protocol'
+import { useSessionStore } from '@/stores/session'
 
+const session = useSessionStore()
 const options = ref<PickerOptions>(optionsFromQuery(window.location.search))
 const embedded = ref(window.parent !== window)
 const result = ref<PickerFile[] | null>(null)
 /** Where answers go; empty until the frame knows the page that framed it. */
 const hostOrigin = ref('')
 const panel = ref<InstanceType<typeof PickerPanel> | null>(null)
+/** Set once a host has supplied a token, so a cookie miss is not reported. */
+const tokenReceived = ref(false)
+let signedOutTimer: number | undefined
 
 const standalone = computed(() => !embedded.value)
 const done = computed(() => result.value !== null)
@@ -69,6 +75,15 @@ function onMessage(event: MessageEvent) {
   if (message.type === 'picker:open') {
     result.value = null
     options.value = normalizeOptions(message.options as Record<string, unknown>)
+    // A host on another site cannot share the drive's cookie, so it hands the
+    // frame a token instead. Re-resolve the account when one arrives: the
+    // gate may already have settled as signed-out.
+    if (message.token) {
+      tokenReceived.value = true
+      if (signedOutTimer) window.clearTimeout(signedOutTimer)
+      setAuthToken(message.token)
+      void session.load()
+    }
     return
   }
   emitCancelled()
@@ -84,8 +99,22 @@ function onPicked(files: PickerFile[]) {
   post({ channel: PICKER_CHANNEL, type: 'picker:action', action: 'picked', files })
 }
 
+/**
+ * The cookie lookup and a token-bearing `picker:open` race: the frame mounts,
+ * finds no cookie, and only then hears from the host. Reporting signed-out
+ * immediately would make a token host tear the frame down before it could
+ * authenticate, so an embedded frame waits out that window.
+ */
 function onSignedOut() {
-  post({ channel: PICKER_CHANNEL, type: 'picker:signed-out' })
+  if (!embedded.value || tokenReceived.value) {
+    post({ channel: PICKER_CHANNEL, type: 'picker:signed-out' })
+    return
+  }
+  if (signedOutTimer) window.clearTimeout(signedOutTimer)
+  signedOutTimer = window.setTimeout(() => {
+    if (tokenReceived.value) return
+    post({ channel: PICKER_CHANNEL, type: 'picker:signed-out' })
+  }, 800)
 }
 
 function onError(message: string) {
@@ -127,12 +156,16 @@ onMounted(() => {
   hostOrigin.value = referrerOrigin()
   window.addEventListener('message', onMessage)
   window.addEventListener('keydown', onKeydown)
+  // The cookie-backed session is the common case (a same-site host); a token
+  // from `picker:open` replaces it when the host is elsewhere.
+  void session.load()
   post({ channel: PICKER_CHANNEL, type: 'picker:ready' })
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('message', onMessage)
   window.removeEventListener('keydown', onKeydown)
+  if (signedOutTimer) window.clearTimeout(signedOutTimer)
 })
 
 defineExpose({ panel })

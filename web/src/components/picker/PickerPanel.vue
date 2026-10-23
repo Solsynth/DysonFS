@@ -24,6 +24,7 @@ import {
   WarningAlt16,
 } from '@carbon/icons-vue'
 
+import BrandMark from '@/components/BrandMark.vue'
 import FileGlyph from '@/components/FileGlyph.vue'
 import type { CloudFile } from '@/lib/api/types'
 import { openUrl, thumbnailUrl, uploadDirect } from '@/lib/api/drive'
@@ -311,7 +312,8 @@ defineExpose({ confirm, cancel, clearSelection })
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
-    <header class="flex shrink-0 items-start gap-3 border-b border-line px-4 py-3">
+    <header class="flex shrink-0 items-start gap-2.5 border-b border-line px-4 py-3">
+      <BrandMark :size="18" class="mt-0.5 text-dim" />
       <div class="min-w-0 flex-1">
         <h1 class="title truncate text-[16px] leading-tight">{{ heading }}</h1>
         <p class="voice mt-0.5 truncate text-[12px]">{{ guidance }}</p>

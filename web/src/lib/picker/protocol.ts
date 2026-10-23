@@ -66,7 +66,19 @@ export interface PickerFile {
 
 /** Host → iframe. */
 export type HostMessage =
-  | { channel: typeof PICKER_CHANNEL; type: 'picker:open'; options: PickerOptions }
+  | {
+      channel: typeof PICKER_CHANNEL
+      type: 'picker:open'
+      options: PickerOptions
+      /**
+       * Access token for the drive API, when the host has one (SunkenLand's
+       * OIDC session, for instance). A cross-site frame cannot receive the
+       * drive's `SameSite=Lax` cookie, so this is how such a host
+       * authenticates it. Omit it when the frame is same-site and the cookie
+       * already works.
+       */
+      token?: string
+    }
   | { channel: typeof PICKER_CHANNEL; type: 'picker:close' }
 /** Iframe → host. */
 export type FrameMessage =
@@ -90,10 +102,12 @@ export function parseHostMessage(data: unknown): HostMessage | null {
   if (!isPickerMessage(data)) return null
   if (data.type === 'picker:open') {
     const options = 'options' in data ? data.options : undefined
+    const token = 'token' in data ? data.token : undefined
     return {
       channel: PICKER_CHANNEL,
       type: 'picker:open',
       options: typeof options === 'object' && options !== null ? (options as PickerOptions) : {},
+      token: typeof token === 'string' && token.trim() ? token.trim() : undefined,
     }
   }
   if (data.type === 'picker:close') {

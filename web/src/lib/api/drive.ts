@@ -1,4 +1,11 @@
-import { buildUrl, DriveError, raiseUnauthorized, request, requestPage } from './client'
+import {
+  authHeaders,
+  buildUrl,
+  DriveError,
+  raiseUnauthorized,
+  request,
+  requestPage,
+} from './client'
 import { translate } from '@/lib/i18n'
 import type {
   AccountIdentity,
@@ -159,11 +166,13 @@ export function uploadDirect(file: File, options: UploadOptions = {}): Promise<C
     form.set('file', file)
     form.set('index', String(options.indexed !== false))
     if (options.parentId) form.set('parent_id', options.parentId)
-
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/files/upload/direct')
     xhr.withCredentials = true
     xhr.setRequestHeader('Accept', 'application/json')
+    for (const [name, value] of Object.entries(authHeaders())) {
+      xhr.setRequestHeader(name, value)
+    }
 
     const abort = () => xhr.abort()
     options.signal?.addEventListener('abort', abort, { once: true })

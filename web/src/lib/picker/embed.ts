@@ -36,6 +36,21 @@ export interface SnfsPickerConfig {
   height?: number
 }
 
+/**
+ * What a host asks for. Either the options themselves (the common case) or a
+ * wrapper that also carries the drive token a cross-site host must supply.
+ */
+export interface SnfsPickerRequest {
+  options?: PickerOptions
+  /**
+   * Access token for the drive API. Supply it when the host page is not on the
+   * drive's site: a cross-site frame cannot receive the drive's `SameSite=Lax`
+   * session cookie, and this is the supported way to authenticate it. The token
+   * is delivered by `postMessage`, never in the frame URL.
+   */
+  token?: string
+}
+
 export interface SnfsPickerHandlers {
   onReady?: () => void
   onSignedOut?: () => void
@@ -60,6 +75,9 @@ const OVERLAY_CSS = `
   display:flex;align-items:center;gap:8px;padding:8px 12px;
   font:500 12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
   color:#9aa3b8;background:#10141f;border-bottom:1px solid rgba(255,255,255,.08);
+}
+.${OVERLAY_ID} .snfs-picker-bar .snfs-picker-mark{
+  width:14px;height:14px;flex:none;background-color:currentColor;
 }
 .${OVERLAY_ID} .snfs-picker-bar button{
   margin-left:auto;border:0;background:transparent;color:#9aa3b8;cursor:pointer;
@@ -87,6 +105,7 @@ export class SnfsPicker {
   private overlay: HTMLDivElement | null = null
   private frame: HTMLIFrameElement | null = null
   private options: PickerOptions = {}
+  private token: string | undefined
   private resolveRequest: ((files: PickerFile[]) => void) | null = null
   private handlers: SnfsPickerHandlers = {}
   private requestId = 0
@@ -111,10 +130,16 @@ export class SnfsPicker {
    * Opens the picker and resolves with the chosen files. An empty array means
    * the person cancelled, so a caller can tell "declined" from "not yet".
    */
-  open(options: PickerOptions = {}, handlers: SnfsPickerHandlers = {}): Promise<PickerFile[]> {
+  open(
+    request: SnfsPickerRequest | PickerOptions = {},
+    handlers: SnfsPickerHandlers = {},
+  ): Promise<PickerFile[]> {
     this.close()
     const id = ++this.requestId
+    const wrapped = 'options' in request || 'token' in request
+    const options = wrapped ? ((request as SnfsPickerRequest).options ?? {}) : (request as PickerOptions)
     this.options = options
+    this.token = wrapped ? (request as SnfsPickerRequest).token : undefined
     this.handlers = handlers
 
     const { promise, resolve } = Promise.withResolvers<PickerFile[]>()
@@ -132,7 +157,7 @@ export class SnfsPicker {
         // view immediately; `picker:open` re-states it, which is what makes a
         // reused frame adopt the new request.
         frame.contentWindow?.postMessage(
-          { channel: PICKER_CHANNEL, type: 'picker:open', options },
+          { channel: PICKER_CHANNEL, type: 'picker:open', options, token: this.token },
           this.origin,
         )
       },
@@ -199,7 +224,17 @@ export class SnfsPicker {
 
     const bar = document.createElement('div')
     bar.className = 'snfs-picker-bar'
-    bar.textContent = this.config.dialogTitle
+    // The drive's own outline mark, masked so it takes the bar's text color:
+    // the host is on another origin, so the glyph is fetched from the drive.
+    const mark = document.createElement('span')
+    mark.className = 'snfs-picker-mark'
+    mark.setAttribute('aria-hidden', 'true')
+    const glyph = new URL('icon-outline.svg', `${this.origin}/`).toString()
+    mark.style.mask = `url("${glyph}") center / contain no-repeat`
+    mark.style.webkitMask = `url("${glyph}") center / contain no-repeat`
+    const title = document.createElement('span')
+    title.textContent = this.config.dialogTitle
+    bar.append(mark, title)
     const close = document.createElement('button')
     close.type = 'button'
     close.textContent = 'Close'
@@ -265,10 +300,10 @@ export class SnfsPicker {
  */
 export function openSnfsPicker(
   config: SnfsPickerConfig,
-  options: PickerOptions = {},
+  request: SnfsPickerRequest | PickerOptions = {},
   handlers: SnfsPickerHandlers = {},
 ): Promise<PickerFile[]> {
-  return new SnfsPicker(config).open(options, handlers)
+  return new SnfsPicker(config).open(request, handlers)
 }
 
 declare global {

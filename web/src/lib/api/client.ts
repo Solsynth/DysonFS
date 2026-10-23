@@ -123,10 +123,29 @@ async function send(url: string, init: RequestInit): Promise<Response> {
   throw error
 }
 
+/**
+ * A bearer token the current page sends instead of relying on the cookie.
+ *
+ * The drive's own console never sets this: its session is an HttpOnly cookie
+ * on the same origin. A picker framed by another app cannot receive that
+ * cookie (it is `SameSite=Lax`), so the host hands the frame a token through
+ * `postMessage` and the frame sends it here. Nothing puts a token in a URL.
+ */
+let bearerToken: string | null = null
+
+export function setAuthToken(token: string | null) {
+  bearerToken = token && token.trim() ? token.trim() : null
+}
+
+export function authHeaders(): Record<string, string> {
+  return bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}
+}
+
 /** Sends one request to DysonFS. The session travels in an HttpOnly cookie. */
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
+    ...authHeaders(),
     ...options.headers,
   }
   if (options.body !== undefined) headers['Content-Type'] = 'application/json'
@@ -149,7 +168,7 @@ export async function requestPage<T>(
   signal?: AbortSignal,
 ): Promise<Page<T>> {
   const response = await send(buildUrl(path, query), {
-    headers: { Accept: 'application/json' },
+    headers: { Accept: 'application/json', ...authHeaders() },
     credentials: 'same-origin',
     signal,
   })

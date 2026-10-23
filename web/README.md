@@ -99,6 +99,9 @@ array when the person cancelled. `frameUrl` is the only required config.
 | `theme`         | `'auto' \| 'dark' \| 'light'`          | Frame theme. Default `auto`.                     |
 | `locale`        | `'en' \| 'zh-CN'`                      | Frame language.                                  |
 
+The second argument may also be `{ options, token }` when the host is on
+another site (see *Cross-site embeds* below).
+
 Folders stay navigable even when `view` is `files`: a file that the options
 refuse is drawn muted with the reason, so an empty folder can explain itself.
 
@@ -129,12 +132,26 @@ selection. `/picker?view=…&mime=…&multiple=1` opens the same surface with th
 request already in the URL, for a host that would rather not script anything.
 `/picker-demo.html` in a dev build is a working example of all of it.
 
-**Same-site requirement.** DysonFS does not set `AuthToken`; Stargate sets it
-with `Path=/`, `SameSite=Lax` on `[auth] cookieDomain`. Browsers refuse
-`SameSite=Lax` cookies in a cross-site frame, so the host app must be on the
-same site as the drive (e.g. both under `solian.app`). A host on a foreign
-origin sees `picker:signed-out` and should fall back to opening the drive in a
-tab or to its own upload path.
+### Cross-site embeds
+
+DysonFS does not set `AuthToken`; Stargate sets it with `Path=/`,
+`SameSite=Lax` on `[auth] cookieDomain`. Browsers refuse `SameSite=Lax` cookies
+in a cross-site frame, so a host on another site cannot authenticate the frame
+with the cookie. Hand the frame a bearer token instead:
+
+```js
+const files = await openSnfsPicker(
+  { frameUrl: 'https://fs.solian.app/picker' },
+  { options: { view: 'files', mimeTypes: ['image/*'] }, token: accessToken },
+)
+```
+
+The token travels in the `picker:open` message — never in the frame URL — and
+the frame sends it as `Authorization: Bearer` on every API call, uploads
+included. A same-site host omits it and keeps using the cookie.
+
+The frame reports `picker:signed-out` only after a short grace period, so a
+token host that answers a fraction late is not torn down as anonymous.
 
 ## Layout
 

@@ -8,7 +8,7 @@
  * framed, and the cookie would land third-party — so the sign-in control
  * leaves the frame and the host is told what happened.
  */
-import { computed, onMounted, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CloudOffline16, Login16, Renew16 } from '@carbon/icons-vue'
 
@@ -37,10 +37,6 @@ watch(
   },
   { immediate: true },
 )
-
-onMounted(() => {
-  if (state.value === 'loading') void session.load()
-})
 </script>
 
 <template>
