@@ -1,5 +1,6 @@
 export default {
   picker: {
+    unindexed: 'Unindexed',
     root: 'My Drive',
     title: 'Choose from SnFS',
     description: 'Pick something from your Solar Network drive.',
@@ -32,6 +33,11 @@ export default {
     dropHint: 'New files go to the app you are picking for.',
     new: 'NEW',
     removeNew: 'Remove this upload',
+    linkById: 'Link by ID',
+    linkByIdHint: 'Paste an object ID to choose a file this listing does not show.',
+    linkByIdPlaceholder: 'Object ID',
+    link: 'Link',
+    linkMissing: 'No object with that ID is readable from this account.',
     errors: {
       forbidden: 'This folder is not readable with this account.',
       missing: 'This folder no longer exists.',

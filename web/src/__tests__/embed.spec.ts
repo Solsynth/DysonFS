@@ -22,6 +22,16 @@ function openPayload(request: SnfsPickerRequest | PickerOptions) {
   return { payload: call?.[0] as Record<string, unknown> | undefined, targetOrigin: call?.[1] }
 }
 
+/** Opens a picker and returns the dialog DOM it built. */
+function openOverlay(options: PickerOptions) {
+  const picker = new SnfsPicker({ frameUrl: FRAME_URL })
+  void picker.open({ options })
+  const overlay = document.querySelector('.snfs-picker-overlay') as HTMLElement
+  if (!overlay) throw new Error('picker overlay was not built')
+  picker.close()
+  return { overlay }
+}
+
 afterEach(() => {
   document.querySelector('.snfs-picker-overlay')?.remove()
 })
@@ -61,5 +71,21 @@ describe('picker embed request', () => {
     })
     expect(payload?.token).toBeUndefined()
     expect(payload?.code).toBeUndefined()
+  })
+
+  it('paints the dialog in the theme the host asked for', () => {
+    const { overlay } = openOverlay({ theme: 'light' })
+    expect(overlay.dataset.theme).toBe('light')
+  })
+
+  it('keeps the dialog dark when the host asks for dark', () => {
+    const { overlay } = openOverlay({ theme: 'dark' })
+    expect(overlay.dataset.theme).toBe('dark')
+  })
+
+  it('resolves an unspecified theme to the display preference', () => {
+    // jsdom answers `matches: false` for every query, so `auto` lands on dark.
+    const { overlay } = openOverlay({})
+    expect(overlay.dataset.theme).toBe('dark')
   })
 })

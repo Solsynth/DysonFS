@@ -43,6 +43,10 @@ export function usePickerBrowser(options: () => PickerOptions) {
   const error = ref('')
   const query = ref('')
 
+  // Unindexed rows have no place in the tree, so they get their own source
+  // rather than a folder: the drive lists them apart for the same reason.
+  const mode = ref<'tree' | 'unindexed'>('tree')
+
   let loadSeq = 0
   let searchTimer: number | undefined
 
@@ -68,9 +72,12 @@ export function usePickerBrowser(options: () => PickerOptions) {
         orderDesc: false,
         recycled: false,
       }
-      const page = folderId.value
-        ? await driveApi.children(folderId.value, listing)
-        : await driveApi.root(listing)
+      const page =
+        mode.value === 'unindexed'
+          ? await driveApi.unindexed(listing)
+          : folderId.value
+            ? await driveApi.children(folderId.value, listing)
+            : await driveApi.root(listing)
       if (seq !== loadSeq) return
       items.value = append ? [...items.value, ...page.items] : page.items
       total.value = page.total
@@ -92,6 +99,7 @@ export function usePickerBrowser(options: () => PickerOptions) {
 
   /** Opens one folder, resolving its breadcrumb chain in parallel. */
   async function enter(id: string | null) {
+    mode.value = 'tree'
     folderId.value = id
     query.value = ''
     if (id === null) {
@@ -113,6 +121,15 @@ export function usePickerBrowser(options: () => PickerOptions) {
     } catch {
       // The listing is already right; a missing chain only costs the trail.
     }
+  }
+
+  /** Unindexed rows have no folder, so they are their own destination. */
+  async function enterUnindexed() {
+    mode.value = 'unindexed'
+    folderId.value = null
+    query.value = ''
+    crumbs.value = [{ id: null, name: translate('picker.unindexed') }]
+    await load()
   }
 
   function jumpTo(index: number) {
@@ -154,6 +171,8 @@ export function usePickerBrowser(options: () => PickerOptions) {
     selectableCount,
     load,
     enter,
+    mode,
+    enterUnindexed,
     jumpTo,
     search,
     retry: () => load(),

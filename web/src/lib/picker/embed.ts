@@ -74,30 +74,55 @@ const OVERLAY_ID = 'snfs-picker-overlay'
 const OVERLAY_STYLE_ID = 'snfs-picker-styles'
 
 const OVERLAY_CSS = `
-.${OVERLAY_ID}{
+${OVERLAY_ID}{
+  --snfs-scrim:rgba(6,8,14,.55);
+  --snfs-surface:#10141f;
+  --snfs-deep:#0a0d16;
+  --snfs-line:rgba(255,255,255,.08);
+  --snfs-dim:#9aa3b8;
+  --snfs-content:#ccd2e2;
+  --snfs-hover:#1c2233;
+  --snfs-shadow:rgba(0,0,0,.45);
   position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;
-  justify-content:center;padding:24px;background:rgba(6,8,14,.55);
+  justify-content:center;padding:24px;background:var(--snfs-scrim);
   backdrop-filter:blur(2px);
 }
-.${OVERLAY_ID} .snfs-picker-frame{
-  display:flex;flex-direction:column;max-width:100%;max-height:100%;
-  overflow:hidden;border-radius:10px;background:#10141f;
-  box-shadow:0 24px 64px rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.08);
+/* The frame around the page is drawn here, not inside the frame's document, so
+   it carries its own palette. Without this override a host in daylight gets a
+   midnight dialog around a paper page: the theme reaches the iframe's URL, but
+   nothing on this side ever reads it. */
+${OVERLAY_ID}[data-theme='light']{
+  --snfs-scrim:rgba(28,35,52,.32);
+  --snfs-surface:#eaeef6;
+  --snfs-deep:#f3f5fa;
+  --snfs-line:#ccd3e1;
+  --snfs-dim:#4d5770;
+  --snfs-content:#1c2334;
+  --snfs-hover:#dbe0ea;
+  --snfs-shadow:rgba(28,35,52,.18);
 }
-.${OVERLAY_ID} .snfs-picker-bar{
+${OVERLAY_ID} .snfs-picker-frame{
+  display:flex;flex-direction:column;max-width:100%;max-height:100%;
+  overflow:hidden;border-radius:10px;background:var(--snfs-surface);
+  box-shadow:0 24px 64px var(--snfs-shadow);border:1px solid var(--snfs-line);
+}
+${OVERLAY_ID} .snfs-picker-bar{
   display:flex;align-items:center;gap:8px;padding:8px 12px;
   font:500 12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
-  color:#9aa3b8;background:#10141f;border-bottom:1px solid rgba(255,255,255,.08);
+  color:var(--snfs-dim);background:var(--snfs-surface);
+  border-bottom:1px solid var(--snfs-line);
 }
-.${OVERLAY_ID} .snfs-picker-bar .snfs-picker-mark{
+${OVERLAY_ID} .snfs-picker-bar .snfs-picker-mark{
   width:14px;height:14px;flex:none;background-color:currentColor;
 }
-.${OVERLAY_ID} .snfs-picker-bar button{
-  margin-left:auto;border:0;background:transparent;color:#9aa3b8;cursor:pointer;
-  font:inherit;padding:2px 6px;border-radius:3px;
+${OVERLAY_ID} .snfs-picker-bar button{
+  margin-left:auto;border:0;background:transparent;color:var(--snfs-dim);
+  cursor:pointer;font:inherit;padding:2px 6px;border-radius:3px;
 }
-.${OVERLAY_ID} .snfs-picker-bar button:hover{background:#1c2233;color:#ccd2e2}
-.${OVERLAY_ID} iframe{border:0;display:block;background:#0a0d16;flex:1;min-height:0}
+${OVERLAY_ID} .snfs-picker-bar button:hover{
+  background:var(--snfs-hover);color:var(--snfs-content);
+}
+${OVERLAY_ID} iframe{border:0;display:block;background:var(--snfs-deep);flex:1;min-height:0}
 `
 
 function injectStyles() {
@@ -106,6 +131,17 @@ function injectStyles() {
   style.id = OVERLAY_STYLE_ID
   style.textContent = OVERLAY_CSS
   document.head.append(style)
+}
+
+/**
+ * The theme the dialog frame should draw itself in. `auto` follows the host's
+ * display preference, which is what the picker page does for itself; the two
+ * would disagree for a moment if the frame did not ask the same question.
+ */
+function resolveTheme(theme: PickerOptions['theme']): 'dark' | 'light' {
+  if (theme === 'dark' || theme === 'light') return theme
+  if (typeof window === 'undefined' || !window.matchMedia) return 'dark'
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 
 /**
@@ -231,6 +267,10 @@ export class SnfsPicker {
     overlay.setAttribute('role', 'dialog')
     overlay.setAttribute('aria-modal', 'true')
     overlay.setAttribute('aria-label', this.config.dialogTitle)
+    // The frame around the page is styled here, so it has to be told the
+    // theme the same way the page is: the request carries it, and `auto`
+    // resolves against the host's own display preference.
+    overlay.dataset.theme = resolveTheme(this.options.theme)
 
     const shell = document.createElement('div')
     shell.className = 'snfs-picker-frame'

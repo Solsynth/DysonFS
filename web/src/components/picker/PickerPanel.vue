@@ -19,6 +19,7 @@ import {
   Checkmark16,
   Close16,
   Folder16,
+  Link16,
   Search16,
   Upload16,
   WarningAlt16,
@@ -27,7 +28,7 @@ import {
 import BrandMark from '@/components/BrandMark.vue'
 import FileGlyph from '@/components/FileGlyph.vue'
 import type { CloudFile } from '@/lib/api/types'
-import { openUrl, thumbnailUrl, uploadDirect } from '@/lib/api/drive'
+import { driveApi, openUrl, thumbnailUrl, uploadDirect } from '@/lib/api/drive'
 import { displayName, extensionOf, formatBytes, kindLabel, mimeOf } from '@/lib/format'
 import { usePickerBrowser } from '@/lib/picker/browse'
 import { isSelectable } from '@/lib/picker/filtering'
@@ -185,6 +186,43 @@ function cancel() {
 
 function clearSelection() {
   chosen.value = new Map()
+}
+
+const linking = ref(false)
+const linkId = ref('')
+const linkPending = ref(false)
+const linkError = ref('')
+
+/**
+ * Chooses a file by its ID rather than by walking to it.
+ *
+ * An unindexed row has no place in the tree, so no amount of browsing reaches
+ * it; the only way to name it is its ID. The object is fetched rather than
+ * trusted, so a pasted ID cannot smuggle in a row the host's rules refuse.
+ */
+async function linkById() {
+  const id = linkId.value.trim()
+  if (!id || linkPending.value) return
+  linkPending.value = true
+  linkError.value = ''
+  try {
+    const file = await driveApi.file(id)
+    if (!isSelectable(file, props.options)) {
+      linkError.value = t('picker.notAccepted')
+      return
+    }
+    if (!multiple.value) chosen.value = new Map()
+    const next = new Map(chosen.value)
+    next.set(file.id, file)
+    chosen.value = next
+    if (!uploads.value.some((row) => row.id === file.id)) uploads.value = [file, ...uploads.value]
+    linkId.value = ''
+    linking.value = false
+  } catch {
+    linkError.value = t('picker.linkMissing')
+  } finally {
+    linkPending.value = false
+  }
 }
 
 function requestUpload() {
@@ -359,6 +397,17 @@ defineExpose({ confirm, cancel, clearSelection })
           </button>
         </template>
       </nav>
+      <!-- Unindexed rows sit outside the tree, so they get a destination of
+           their own rather than a folder to open. -->
+      <button
+        v-if="browser.mode.value !== 'unindexed'"
+        type="button"
+        class="btn btn-ghost btn-xs ml-auto shrink-0 px-1"
+        :title="t('picker.unindexed')"
+        @click="browser.enterUnindexed()"
+      >
+        {{ t('picker.unindexed') }}
+      </button>
     </div>
 
     <div class="flex shrink-0 items-center gap-2 border-b border-line px-3 py-1.5">
@@ -390,6 +439,40 @@ defineExpose({ confirm, cancel, clearSelection })
           {{ uploading ? t('picker.uploading', { percent: uploadPercent }) : t('picker.upload') }}
         </button>
       </template>
+      <!-- A file the listing does not show is still choosable by ID, which is
+           the only way to name an unindexed row. -->
+      <button
+        type="button"
+        class="btn btn-ghost btn-xs shrink-0 gap-1"
+        :aria-expanded="linking"
+        :title="t('picker.linkByIdHint')"
+        @click="linking = !linking"
+      >
+        <Link16 class="h-3 w-3" aria-hidden="true" />
+        {{ t('picker.linkById') }}
+      </button>
+    </div>
+
+    <div v-if="linking" class="shrink-0 border-b border-line px-3 py-1.5">
+      <p class="voice text-2xs text-faint">{{ t('picker.linkByIdHint') }}</p>
+      <form class="mt-1 flex items-center gap-2" @submit.prevent="linkById">
+        <input
+          v-model="linkId"
+          class="input h-7 min-w-0 flex-1 text-[12px]"
+          type="text"
+          :placeholder="t('picker.linkByIdPlaceholder')"
+          :aria-label="t('picker.linkById')"
+          autofocus
+        />
+        <button
+          type="submit"
+          class="btn btn-primary btn-xs shrink-0"
+          :disabled="linkPending || !linkId.trim()"
+        >
+          {{ t('picker.link') }}
+        </button>
+      </form>
+      <p v-if="linkError" class="mt-1 text-2xs text-error">{{ linkError }}</p>
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto scroll-region" @keydown="onKeydown">

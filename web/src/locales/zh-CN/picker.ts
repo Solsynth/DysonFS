@@ -1,5 +1,6 @@
 export default {
   picker: {
+    unindexed: '未索引',
     root: '我的云盘',
     title: '从 SnFS 选择',
     description: '从你的 Solar Network 云盘中选择。',
@@ -32,6 +33,11 @@ export default {
     dropHint: '文件会直接交给正在选择的应用。',
     new: '新',
     removeNew: '移除此上传',
+    linkById: '按 ID 关联',
+    linkByIdHint: '粘贴对象 ID，以选择此列表中未显示的文件。',
+    linkByIdPlaceholder: '对象 ID',
+    link: '关联',
+    linkMissing: '此账号无法读取该 ID 对应的对象。',
     errors: {
       forbidden: '此账号无权读取该文件夹。',
       missing: '该文件夹已不存在。',
