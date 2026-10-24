@@ -107,6 +107,7 @@ Feature modules:
 | `app.solian.files.admin` | `/api/admin/storage`, `/api/admin/uploads`, `/api/admin/reanalysis` | core | none |
 | `app.solian.files.webdav` | `/webdav`, `/api/webdav/tokens` | core | `web_dav_tokens` |
 | `app.solian.files.wopi` | `/wopi`, `POST /api/files/:id/edit` | core | none |
+| `app.solian.files.picker-handoff` | `POST /api/picker/handoff/redeem` (mounted only when `[handoff]` is configured) | — | none |
 | `app.solian.files.grpc` | `DyFileService`, `DyQuotaService` | core | none |
 | `app.solian.files.analysis.image` | image dimensions, EXIF, blurhash | — | none |
 | `app.solian.files.analysis.video` | video probe, dimensions, aspect ratio | — | none |

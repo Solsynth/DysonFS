@@ -11,9 +11,13 @@
  *     { view: 'files', mimeTypes: ['image/*'] },
  *   )
  *
- * The frame keeps the drive's own cookies: nothing about the session crosses
- * into the host page, and the host never has to proxy file bytes through its
- * own origin.
+ * The frame keeps the drive's own cookies when the host is on the drive's
+ * site. A host on another registrable domain has no cookie to share and no
+ * token to read (the session is an HttpOnly cookie), so it obtains a
+ * single-use hand-off code from the identity issuer and passes it here; the
+ * frame redeems it against the drive's own origin and keeps the token in
+ * memory. Either way nothing about the session lives in the host page, and
+ * the host never has to proxy file bytes through its own origin.
  */
 
 import {
@@ -38,7 +42,9 @@ export interface SnfsPickerConfig {
 
 /**
  * What a host asks for. Either the options themselves (the common case) or a
- * wrapper that also carries the drive token a cross-site host must supply.
+ * wrapper that also carries the credential a cross-site host must supply: a
+ * drive token it already holds, or a single-use hand-off code it obtained
+ * from the identity issuer.
  */
 export interface SnfsPickerRequest {
   options?: PickerOptions
@@ -49,6 +55,13 @@ export interface SnfsPickerRequest {
    * is delivered by `postMessage`, never in the frame URL.
    */
   token?: string
+  /**
+   * Single-use hand-off code issued by the identity issuer to this host for
+   * its own session. Pass it when you have no token to give: the frame
+   * redeems it against the drive's own origin and never exposes it beyond
+   * that one call. A code is short-lived and can be redeemed once.
+   */
+  code?: string
 }
 
 export interface SnfsPickerHandlers {
@@ -106,6 +119,7 @@ export class SnfsPicker {
   private frame: HTMLIFrameElement | null = null
   private options: PickerOptions = {}
   private token: string | undefined
+  private code: string | undefined
   private resolveRequest: ((files: PickerFile[]) => void) | null = null
   private handlers: SnfsPickerHandlers = {}
   private requestId = 0
@@ -136,10 +150,11 @@ export class SnfsPicker {
   ): Promise<PickerFile[]> {
     this.close()
     const id = ++this.requestId
-    const wrapped = 'options' in request || 'token' in request
+    const wrapped = 'options' in request || 'token' in request || 'code' in request
     const options = wrapped ? ((request as SnfsPickerRequest).options ?? {}) : (request as PickerOptions)
     this.options = options
     this.token = wrapped ? (request as SnfsPickerRequest).token : undefined
+    this.code = wrapped ? (request as SnfsPickerRequest).code : undefined
     this.handlers = handlers
 
     const { promise, resolve } = Promise.withResolvers<PickerFile[]>()
@@ -157,7 +172,7 @@ export class SnfsPicker {
         // view immediately; `picker:open` re-states it, which is what makes a
         // reused frame adopt the new request.
         frame.contentWindow?.postMessage(
-          { channel: PICKER_CHANNEL, type: 'picker:open', options, token: this.token },
+          { channel: PICKER_CHANNEL, type: 'picker:open', options, token: this.token, code: this.code },
           this.origin,
         )
       },

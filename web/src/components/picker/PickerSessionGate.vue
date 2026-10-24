@@ -6,7 +6,10 @@
  * that chrome would take the whole surface. More importantly a frame cannot
  * complete a sign-in redirect on its own — the identity host refuses to be
  * framed, and the cookie would land third-party — so the sign-in control
- * leaves the frame and the host is told what happened.
+ * leaves the frame and the host is told what happened. A cross-site host
+ * never reaches this gate: it hands the frame a token or a single-use
+ * hand-off code in `picker:open`, which the frame exchanges for a session
+ * before the cookie lookup settles.
  */
 import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'

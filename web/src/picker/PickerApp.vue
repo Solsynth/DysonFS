@@ -14,6 +14,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import PickerPanel from '@/components/picker/PickerPanel.vue'
 import PickerSessionGate from '@/components/picker/PickerSessionGate.vue'
 import { setAuthToken } from '@/lib/api/client'
+import { driveApi } from '@/lib/api/drive'
 import { i18n } from '@/lib/i18n'
 import { applyLocale, applyTheme } from '@/lib/prefs'
 import {
@@ -34,8 +35,10 @@ const result = ref<PickerFile[] | null>(null)
 /** Where answers go; empty until the frame knows the page that framed it. */
 const hostOrigin = ref('')
 const panel = ref<InstanceType<typeof PickerPanel> | null>(null)
-/** Set once a host has supplied a token, so a cookie miss is not reported. */
-const tokenReceived = ref(false)
+/** Set once a host has supplied a token or a code, so a cookie miss is not reported. */
+const credentialReceived = ref(false)
+/** True while a hand-off code is being redeemed; the result decides next. */
+const redeeming = ref(false)
 let signedOutTimer: number | undefined
 
 const standalone = computed(() => !embedded.value)
@@ -79,14 +82,41 @@ function onMessage(event: MessageEvent) {
     // frame a token instead. Re-resolve the account when one arrives: the
     // gate may already have settled as signed-out.
     if (message.token) {
-      tokenReceived.value = true
+      credentialReceived.value = true
       if (signedOutTimer) window.clearTimeout(signedOutTimer)
       setAuthToken(message.token)
       void session.load()
+      return
+    }
+    if (message.code) {
+      // A cross-site host cannot read the drive's HttpOnly session cookie,
+      // so it hands over a single-use hand-off code instead. The drive's
+      // own server redeems it for a token; the frame never sees the client
+      // secret. The flag goes up before the request so the signed-out
+      // report waits out the round trip.
+      credentialReceived.value = true
+      if (signedOutTimer) window.clearTimeout(signedOutTimer)
+      void redeemCode(message.code)
     }
     return
   }
   emitCancelled()
+}
+
+/** Trades a hand-off code for a token and re-resolves the account. */
+async function redeemCode(code: string) {
+  redeeming.value = true
+  try {
+    const pair = await driveApi.redeemHandoffCode(code)
+    setAuthToken(pair.token)
+    await session.load()
+  } catch (caught) {
+    // A refused code means the frame is signed out after all; the host
+    // hears both the error and, via the gate, the signed-out signal.
+    onError(caught instanceof Error ? caught.message : 'The hand-off code was refused.')
+  } finally {
+    redeeming.value = false
+  }
 }
 
 function emitCancelled() {
@@ -100,19 +130,23 @@ function onPicked(files: PickerFile[]) {
 }
 
 /**
- * The cookie lookup and a token-bearing `picker:open` race: the frame mounts,
- * finds no cookie, and only then hears from the host. Reporting signed-out
- * immediately would make a token host tear the frame down before it could
- * authenticate, so an embedded frame waits out that window.
+ * The cookie lookup and a credential-bearing `picker:open` race: the frame
+ * mounts, finds no cookie, and only then hears from the host. Reporting
+ * signed-out immediately would make a token or code host tear the frame down
+ * before it could authenticate, so an embedded frame waits out that window —
+ * and a hand-off redeem in flight waits out itself.
  */
 function onSignedOut() {
-  if (!embedded.value || tokenReceived.value) {
+  if (!embedded.value || (credentialReceived.value && !redeeming.value)) {
     post({ channel: PICKER_CHANNEL, type: 'picker:signed-out' })
     return
   }
+  // A redeem in flight will settle this itself: a successful redeem flips
+  // the session back to ready, a failed one posts `picker:error`.
+  if (redeeming.value) return
   if (signedOutTimer) window.clearTimeout(signedOutTimer)
   signedOutTimer = window.setTimeout(() => {
-    if (tokenReceived.value) return
+    if (credentialReceived.value) return
     post({ channel: PICKER_CHANNEL, type: 'picker:signed-out' })
   }, 800)
 }
@@ -157,7 +191,7 @@ onMounted(() => {
   window.addEventListener('message', onMessage)
   window.addEventListener('keydown', onKeydown)
   // The cookie-backed session is the common case (a same-site host); a token
-  // from `picker:open` replaces it when the host is elsewhere.
+  // or hand-off code from `picker:open` replaces it when the host is elsewhere.
   void session.load()
   post({ channel: PICKER_CHANNEL, type: 'picker:ready' })
 })

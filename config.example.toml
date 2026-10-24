@@ -95,6 +95,18 @@ tokenTtl = "15m"
 requireProof = false
 proofCacheTtl = "1h"
 
+[handoff]
+# Stargate issuer base URL for the picker hand-off (e.g.
+# "https://id.solian.app"). A host on another site gets a single-use code for
+# its own session there; the picker frame redeems it here for a bearer token.
+# Leave empty to disable: no redeem route is mounted and the picker keeps the
+# cookie-backed session.
+issuer = ""
+# This drive's registered hand-off client at the issuer (confidential client).
+clientId = ""
+# Client secret for that client. Server-side only; never sent to the browser.
+clientSecret = ""
+
 [media]
 enable = true
 maxSourceBytes = 10485760

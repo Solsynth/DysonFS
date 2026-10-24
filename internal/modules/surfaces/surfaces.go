@@ -4,6 +4,7 @@ package surfaces
 
 import (
 	"context"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -26,6 +27,7 @@ const (
 	IDAdmin       = "app.solian.files.admin"
 	IDWebDAV      = "app.solian.files.webdav"
 	IDWOPI        = "app.solian.files.wopi"
+	IDHandoff     = "app.solian.files.picker-handoff"
 	IDStorageNode = "app.solian.files.storage-node"
 	IDGRPC        = core.ModuleFilesGRPC
 )
@@ -158,6 +160,28 @@ func WebDAV() module.Factory {
 					return
 				}
 				handler.RegisterWebDAVRoutes(host.Engine, handler.FromCore(host.Core))
+			}}
+		},
+	}
+}
+
+// Handoff returns the picker hand-off module: the server-side redeem of the
+// single-use code a cross-site host obtains from the identity issuer. The
+// route mounts only when [handoff] is configured, so an unconfigured
+// deployment grows no new surface and the picker stays cookie-backed.
+func Handoff() module.Factory {
+	return module.Factory{
+		ID:             IDHandoff,
+		Kind:           module.KindFeature,
+		DefaultEnabled: true,
+		Capabilities:   []string{"files.picker-handoff"},
+		New: func() module.Instance {
+			return &instance{configure: func(host *module.Host) {
+				if strings.TrimSpace(host.Core.Config.Handoff.Issuer) == "" {
+					host.Log.Info().Msg("picker handoff module compiled in but handoff.issuer is empty; not mounted")
+					return
+				}
+				handler.RegisterHandoffRoutes(host.Engine, handler.FromCore(host.Core))
 			}}
 		},
 	}

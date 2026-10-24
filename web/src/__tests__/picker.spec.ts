@@ -141,6 +141,26 @@ describe('picker messages', () => {
       type: 'picker:open',
       options: {},
     })
+    // A wrapper carrying only a code is a valid open request: a cross-site
+    // host with no token of its own redeems one against the drive.
+    expect(
+      parseHostMessage({ channel: PICKER_CHANNEL, type: 'picker:open', options: { view: 'files' }, code: ' handoff-code ' }),
+    ).toEqual({
+      channel: PICKER_CHANNEL,
+      type: 'picker:open',
+      options: { view: 'files' },
+      code: 'handoff-code',
+    })
+    // A token and a code never travel together, but a blank code is dropped
+    // rather than poisoning the request.
+    expect(
+      parseHostMessage({ channel: PICKER_CHANNEL, type: 'picker:open', token: 'tok', code: '  ' }),
+    ).toEqual({
+      channel: PICKER_CHANNEL,
+      type: 'picker:open',
+      options: {},
+      token: 'tok',
+    })
   })
 
   it('ignores values that are not messages', () => {

@@ -116,6 +116,18 @@ export interface AccountIdentity {
   session_id?: string
 }
 
+/**
+ * What POST /api/picker/handoff/redeem returns: the token pair the drive's
+ * server obtained from the identity issuer by trading a single-use
+ * hand-off code. Mirrors the issuer's wire response.
+ */
+export interface HandoffTokenPair {
+  token: string
+  refresh_token?: string
+  expires_in: number
+  refresh_expires_in?: number
+}
+
 export type FileOrder = 'date' | 'name' | 'size'
 export type KindFilter = 'all' | 'folders' | 'files'
 export type ViewMode = 'list' | 'grid' | 'column' | 'waterfall'

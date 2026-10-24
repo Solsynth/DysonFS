@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,6 +23,12 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 	RegisterStorageAdminRoutes(r, d)
 	RegisterReanalysisRoutes(r, d)
 	RegisterStorageNodeRoutes(r, d)
+	// The picker hand-off redeem route mounts only when an issuer is
+	// configured; an unconfigured deployment keeps the picker on the
+	// cookie-backed session exactly as before.
+	if strings.TrimSpace(d.Config.Handoff.Issuer) != "" {
+		RegisterHandoffRoutes(r, d)
+	}
 	if d.Config.WebDAV.Enabled {
 		RegisterWebDAVRoutes(r, d)
 	}

@@ -25,6 +25,7 @@ type Config struct {
 	Files       FileConfig        `mapstructure:"files"`
 	WOPI        WOPIConfig        `mapstructure:"wopi"`
 	WebDAV      WebDAVConfig      `mapstructure:"webdav"`
+	Handoff     HandoffConfig     `mapstructure:"handoff"`
 	Web         WebConfig         `mapstructure:"web"`
 	Media       MediaConfig       `mapstructure:"media"`
 	Pools       []PoolConfig      `mapstructure:"pools"`
@@ -90,6 +91,22 @@ type StorageConfig struct {
 type BundledConfig struct {
 	Enable    bool `mapstructure:"enable"`
 	WorkerNum int  `mapstructure:"worker_num"`
+}
+
+// HandoffConfig points the picker's hand-off redeem route at the Stargate
+// issuer. A host on another registrable domain cannot share the drive's
+// SameSite=Lax session cookie, so such a host obtains a single-use hand-off
+// code for its own session and hands it to the picker frame, which redeems it
+// here for a bearer token. When Issuer is empty the redeem route is not
+// mounted and the cookie-backed picker session behaves exactly as before.
+type HandoffConfig struct {
+	// Issuer is the identity host's base URL, e.g. "https://id.solian.app".
+	Issuer string `mapstructure:"issuer"`
+	// ClientID names this drive's registered hand-off client.
+	ClientID string `mapstructure:"clientId"`
+	// ClientSecret authenticates that client. It stays on the server: the
+	// picker frame and the embedding host never receive it.
+	ClientSecret string `mapstructure:"clientSecret"`
 }
 
 // AuthConfig points at the Stargate gRPC endpoint. When Target is empty the
@@ -306,6 +323,9 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("wopi.tokenTtl", 15*time.Minute)
 	viper.SetDefault("wopi.requireProof", false)
 	viper.SetDefault("wopi.proofCacheTtl", 1*time.Hour)
+	viper.SetDefault("handoff.issuer", "")
+	viper.SetDefault("handoff.clientId", "")
+	viper.SetDefault("handoff.clientSecret", "")
 	viper.SetDefault("webdav.enabled", false)
 	viper.SetDefault("webdav.prefix", "/webdav")
 	viper.SetDefault("web.staticDir", "web/dist")

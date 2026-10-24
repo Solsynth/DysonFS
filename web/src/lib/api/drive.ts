@@ -14,6 +14,7 @@ import type {
   FilePermission,
   FilePool,
   FileOrder,
+  HandoffTokenPair,
   ListQuery,
   PoolUsage,
   QuotaSummary,
@@ -39,6 +40,13 @@ export const driveApi = {
   account: () => request<AccountIdentity>('/account/me'),
 
   quota: () => request<QuotaSummary>('/billing/quota'),
+  /**
+   * Trades a single-use hand-off code for a token pair. The drive's server
+   * holds the client secret; the caller only ever sees the resulting token.
+   */
+  redeemHandoffCode: (code: string) =>
+    request<HandoffTokenPair>('/picker/handoff/redeem', { method: 'POST', body: { code } }),
+
   usage: () => request<UsageSummary>('/billing/usage'),
   pools: () => requestPage<FilePool>('/pools'),
   poolUsage: (poolId: string) => request<PoolUsage>(`/billing/usage/${poolId}`),

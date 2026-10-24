@@ -78,6 +78,14 @@ export type HostMessage =
        * already works.
        */
       token?: string
+      /**
+       * Single-use hand-off code issued by the drive's identity service to
+       * the host. A cross-site host has no token of its own to give (the
+       * session lives in an HttpOnly cookie), so it passes this instead and
+       * the frame redeems it against the drive's own origin. Mutually
+       * exclusive with `token` in practice; `token` wins when both arrive.
+       */
+      code?: string
     }
   | { channel: typeof PICKER_CHANNEL; type: 'picker:close' }
 /** Iframe → host. */
@@ -103,11 +111,13 @@ export function parseHostMessage(data: unknown): HostMessage | null {
   if (data.type === 'picker:open') {
     const options = 'options' in data ? data.options : undefined
     const token = 'token' in data ? data.token : undefined
+    const code = 'code' in data ? data.code : undefined
     return {
       channel: PICKER_CHANNEL,
       type: 'picker:open',
       options: typeof options === 'object' && options !== null ? (options as PickerOptions) : {},
       token: typeof token === 'string' && token.trim() ? token.trim() : undefined,
+      code: typeof code === 'string' && code.trim() ? code.trim() : undefined,
     }
   }
   if (data.type === 'picker:close') {

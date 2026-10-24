@@ -8,8 +8,9 @@
 
   "compilerOptions": {
     // Vitest runs in a different environment than the application code.
-    // Adjust lib and types accordingly.
-    "lib": [],
+    // Tests import app code (the picker SDK) that relies on ES2024 and DOM
+    // globals, which jsdom provides at runtime; mirror the app's lib.
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node", "jsdom"],
 
     // `vue-tsc --build` produces a .tsbuildinfo file for incremental type-checking.

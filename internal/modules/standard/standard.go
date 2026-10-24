@@ -38,6 +38,7 @@ func Modules() []module.Factory {
 		media.Factory(),
 		surfaces.WebDAV(),
 		surfaces.WOPI(),
+		surfaces.Handoff(),
 		surfaces.StorageNode(),
 		surfaces.GRPC(),
 		storage.MasterS3(),
